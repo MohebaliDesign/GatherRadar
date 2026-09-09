@@ -1,0 +1,67 @@
+defaults:
+  timezone: Asia/Tehran
+  locale: fa-IR
+
+sources:
+  - id: davvvat_website
+    publisher_key: davvvat
+    name: Davvvat Website
+    type: website
+    url: https://davvvat.ir/
+    enabled: true
+
+  - id: davvvat_instagram
+    publisher_key: davvvat
+    name: Davvvat Instagram
+    type: instagram
+    url: https://www.instagram.com/davvvat/
+    username: davvvat
+    enabled: true
+
+  - id: vadoostan_website
+    publisher_key: vadoostan
+    name: Vadoostan Website
+    type: website
+    url: https://vadoostan.ir/app/experiences
+    enabled: true
+
+  - id: vadoostan_instagram
+    publisher_key: vadoostan
+    name: Vadoostan Instagram
+    type: instagram
+    url: https://www.instagram.com/vadoostan/
+    username: vadoostan
+    enabled: true
+
+  - id: jabama_events_website
+    publisher_key: jabama_events
+    name: Jabama Events Website
+    type: website
+    url: https://jabama.events/all?city=tehran
+    enabled: true
+    city_hint: Tehran
+
+  - id: jabama_events_instagram
+    publisher_key: jabama_events
+    name: Jabama Events Instagram
+    type: instagram
+    url: https://www.instagram.com/jabama.events/
+    username: jabama.events
+    enabled: true
+
+  - id: emrooz_events_instagram
+    publisher_key: emrooz_events
+    name: Emrooz Events Instagram
+    type: instagram
+    url: https://www.instagram.com/emrooz.events/
+    username: emrooz.events
+    enabled: true
+
+  - id: tehran_by_tehran_instagram
+    publisher_key: tehran_by_tehran
+    name: Tehran by Tehran Instagram
+    type: instagram
+    url: https://www.instagram.com/tehran_by_tehran/
+    username: tehran_by_tehran
+    enabled: true
+    city_hint: Tehran
