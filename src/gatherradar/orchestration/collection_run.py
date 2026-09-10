@@ -17,6 +17,7 @@ class RunSummary:
     source: Source
     observed: int
     new: int
+    changed: int
     already_existing: int
     failed: int
     output_path: Path
@@ -57,6 +58,7 @@ def run_instagram_collection(
         source=source,
         observed=result.observed,
         new=outcome.new,
+        changed=outcome.changed,
         already_existing=outcome.already_existing,
         failed=len(result.failures),
         output_path=outcome.path,

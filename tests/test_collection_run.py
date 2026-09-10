@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from gatherradar.collectors.base import SourceNotFoundError
-from gatherradar.collectors.instagram import InstagramCollector
+from gatherradar.collectors.instagram import ORIGIN_POST, InstagramCollector
 from gatherradar.orchestration.collection_run import (
     find_source,
     instagram_output_path,
@@ -18,13 +18,13 @@ CONFIG = ROOT / "config" / "sources.yaml"
 CAPTURED_AT = datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc)
 
 
-def make_post(shortcode: str):
+def make_post(shortcode: str, caption: str = "کارگاه طراحی شهری"):
     return SimpleNamespace(
         shortcode=shortcode,
         mediaid=17998877665544332,
         typename="GraphImage",
         is_video=False,
-        caption="کارگاه طراحی شهری",
+        caption=caption,
         caption_hashtags=[],
         caption_mentions=[],
         date_utc=datetime(2026, 9, 9, 14, 30),
@@ -33,8 +33,8 @@ def make_post(shortcode: str):
     )
 
 
-def collector_for(shortcodes):
-    posts = [make_post(code) for code in shortcodes]
+def collector_for(shortcodes, caption: str = "کارگاه طراحی شهری"):
+    posts = [(ORIGIN_POST, make_post(code, caption)) for code in shortcodes]
     return InstagramCollector(
         fetch_posts=lambda username, limit: posts[:limit],
         now=lambda: CAPTURED_AT,
@@ -65,13 +65,13 @@ class CollectionRunTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.data_dir = Path(self._tmp.name)
 
-    def run_once(self, shortcodes, limit=5):
+    def run_once(self, shortcodes, limit=5, caption="کارگاه طراحی شهری"):
         return run_instagram_collection(
             "davvvat_instagram",
             config_path=CONFIG,
             data_dir=self.data_dir,
             limit=limit,
-            collector=collector_for(shortcodes),
+            collector=collector_for(shortcodes, caption),
         )
 
     def test_first_run_stores_every_observed_item(self) -> None:
@@ -79,6 +79,7 @@ class CollectionRunTests(unittest.TestCase):
 
         self.assertEqual(summary.observed, 3)
         self.assertEqual(summary.new, 3)
+        self.assertEqual(summary.changed, 0)
         self.assertEqual(summary.already_existing, 0)
         self.assertEqual(summary.failed, 0)
         self.assertTrue(summary.output_path.exists())
@@ -90,6 +91,7 @@ class CollectionRunTests(unittest.TestCase):
 
         self.assertEqual(summary.observed, 3)
         self.assertEqual(summary.new, 0)
+        self.assertEqual(summary.changed, 0)
         self.assertEqual(summary.already_existing, 3)
         self.assertEqual(
             len(summary.output_path.read_text(encoding="utf-8").splitlines()), 3
@@ -102,6 +104,17 @@ class CollectionRunTests(unittest.TestCase):
 
         self.assertEqual(summary.new, 1)
         self.assertEqual(summary.already_existing, 2)
+
+    def test_edited_caption_is_recorded_as_changed(self) -> None:
+        self.run_once(["A1"], caption="Event Friday at 17:00")
+
+        summary = self.run_once(["A1"], caption="Event cancelled")
+
+        self.assertEqual(summary.new, 0)
+        self.assertEqual(summary.changed, 1)
+        self.assertEqual(summary.already_existing, 0)
+        lines = summary.output_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)  # both observations preserved, not overwritten
 
     def test_limit_bounds_the_run(self) -> None:
         summary = self.run_once(["A1", "B2", "C3", "D4", "E5", "F6"], limit=2)

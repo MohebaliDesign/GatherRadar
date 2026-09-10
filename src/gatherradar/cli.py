@@ -53,6 +53,7 @@ def format_summary(summary: RunSummary) -> str:
         "",
         f"Observed: {summary.observed}",
         f"New: {summary.new}",
+        f"Changed: {summary.changed}",
         f"Existing: {summary.already_existing}",
         f"Failed: {summary.failed}",
     ]

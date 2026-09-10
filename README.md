@@ -53,14 +53,16 @@ Collection is always explicit — nothing runs on a schedule. Pass a source id f
 python -m gatherradar collect instagram davvvat_instagram --limit 5
 ```
 
-This reads a bounded number of recent public posts anonymously, maps them onto the `RawItem`
-contract, and appends unseen items to `data/raw/instagram/<username>.jsonl`. Items are keyed
-by a stable id (`instagram:<username>:<shortcode>`), so rerunning the command updates nothing
-and appends nothing:
+This reads a bounded number of recent public posts and Reels anonymously, maps them onto the
+`RawItem` contract, and appends new or changed items to `data/raw/instagram/<username>.jsonl`.
+Items are keyed by a stable id (`instagram:<username>:<shortcode>`); rerunning the command with
+unchanged content appends nothing, and an edited caption is recorded as a new, auditable
+observation rather than silently ignored:
 
 ```text
 Observed: 5
 New: 0
+Changed: 0
 Existing: 5
 ```
 
@@ -78,7 +80,8 @@ content only; it does not log in, and it does not store cookies or sessions.
 
 ## Status
 
-Early MVP. Instagram collection into raw JSONL works through an isolated Instaloader adapter.
+Early MVP. The Instagram collection pipeline is implemented and verified with offline tests.
+Live Instagram access is currently being validated.
 Next milestone: event detection over collected raw items.
 
 ## License

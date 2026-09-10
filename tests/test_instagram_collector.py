@@ -11,6 +11,8 @@ from gatherradar.collectors.base import (
 )
 from gatherradar.collectors.instagram import (
     COLLECTOR_VERSION,
+    ORIGIN_POST,
+    ORIGIN_REEL,
     InstagramCollector,
     build_raw_item_id,
     content_type_for,
@@ -58,9 +60,14 @@ class ContentTypeTests(unittest.TestCase):
         self.assertEqual(content_type_for("GraphImage"), "image")
         self.assertEqual(content_type_for("GraphSidecar"), "carousel")
 
-    def test_reels_and_videos_both_map_to_video(self) -> None:
-        # The anonymous web timeline exposes no clips marker, so reels stay "video".
+    def test_plain_video_post_maps_to_video(self) -> None:
+        # The anonymous web timeline exposes no clips marker on a regular post, so a
+        # video post stays "video" unless it was fetched through get_reels().
         self.assertEqual(content_type_for("GraphVideo"), "video")
+
+    def test_reel_origin_is_labeled_reel_regardless_of_typename(self) -> None:
+        self.assertEqual(content_type_for("GraphVideo", origin=ORIGIN_REEL), "reel")
+        self.assertEqual(content_type_for(None, origin=ORIGIN_REEL), "reel")
 
     def test_unrecognized_typename_is_unknown(self) -> None:
         self.assertEqual(content_type_for("GraphSomethingNew"), "unknown")
@@ -95,6 +102,16 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(item.content_url, "https://www.instagram.com/p/ABC123/")
         self.assertEqual(item.author, "davvvat")
         self.assertEqual(item.image_url, "https://scontent.example.com/image.jpg")
+
+    def test_reel_origin_is_labeled_and_recorded_in_metadata(self) -> None:
+        item = map_post_to_raw_item(make_post(), make_source(), CAPTURED_AT, origin=ORIGIN_REEL)
+
+        self.assertEqual(item.content_type, "reel")
+        self.assertEqual(item.raw_metadata["origin"], ORIGIN_REEL)
+
+    def test_post_origin_is_recorded_in_metadata(self) -> None:
+        item = map_post_to_raw_item(make_post(), make_source(), CAPTURED_AT)
+        self.assertEqual(item.raw_metadata["origin"], ORIGIN_POST)
 
     def test_caption_is_preserved_verbatim(self) -> None:
         caption = "رویداد ویژه\nجمعه ۱۹ مهر ساعت ۱۷:۳۰"
@@ -147,11 +164,54 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(item.author, "davvvat")
 
 
+class ContentHashTests(unittest.TestCase):
+    def test_same_post_content_yields_same_hash(self) -> None:
+        first = map_post_to_raw_item(make_post(), make_source(), CAPTURED_AT)
+        later = map_post_to_raw_item(
+            make_post(), make_source(), datetime(2027, 1, 1, tzinfo=timezone.utc)
+        )
+        self.assertEqual(first.content_hash, later.content_hash)
+
+    def test_captured_at_does_not_affect_the_hash(self) -> None:
+        a = map_post_to_raw_item(make_post(), make_source(), CAPTURED_AT)
+        b = map_post_to_raw_item(
+            make_post(), make_source(), datetime(2030, 5, 1, tzinfo=timezone.utc)
+        )
+        self.assertEqual(a.content_hash, b.content_hash)
+
+    def test_edited_caption_changes_the_hash(self) -> None:
+        original = map_post_to_raw_item(make_post(), make_source(), CAPTURED_AT)
+        edited = map_post_to_raw_item(
+            make_post(caption="رویداد لغو شد"), make_source(), CAPTURED_AT
+        )
+        self.assertNotEqual(original.content_hash, edited.content_hash)
+
+    def test_persian_caption_change_is_detected(self) -> None:
+        a = map_post_to_raw_item(
+            make_post(caption="جمعه ساعت ۱۷"), make_source(), CAPTURED_AT
+        )
+        b = map_post_to_raw_item(
+            make_post(caption="جمعه ساعت ۱۸"), make_source(), CAPTURED_AT
+        )
+        self.assertNotEqual(a.content_hash, b.content_hash)
+
+    def test_empty_caption_still_produces_a_stable_hash(self) -> None:
+        a = map_post_to_raw_item(make_post(caption=""), make_source(), CAPTURED_AT)
+        b = map_post_to_raw_item(make_post(caption=""), make_source(), CAPTURED_AT)
+        self.assertEqual(a.content_hash, b.content_hash)
+        self.assertTrue(a.content_hash)
+
+    def test_hash_is_deterministic_sha256_hex_digest(self) -> None:
+        item = map_post_to_raw_item(make_post(), make_source(), CAPTURED_AT)
+        self.assertEqual(len(item.content_hash), 64)
+        int(item.content_hash, 16)  # raises ValueError if not hex
+
+
 class CollectorTests(unittest.TestCase):
     def test_collects_and_maps_posts(self) -> None:
         posts = [make_post(shortcode="A1"), make_post(shortcode="B2")]
         collector = InstagramCollector(
-            fetch_posts=lambda username, limit: posts[:limit],
+            fetch_posts=lambda username, limit: [(ORIGIN_POST, p) for p in posts[:limit]],
             now=lambda: CAPTURED_AT,
         )
 
@@ -175,7 +235,11 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(seen, {"username": "davvvat", "limit": 3})
 
     def test_one_malformed_post_does_not_discard_the_others(self) -> None:
-        posts = [make_post(shortcode="A1"), make_post(shortcode=None), make_post(shortcode="C3")]
+        posts = [
+            (ORIGIN_POST, make_post(shortcode="A1")),
+            (ORIGIN_POST, make_post(shortcode=None)),
+            (ORIGIN_POST, make_post(shortcode="C3")),
+        ]
         collector = InstagramCollector(
             fetch_posts=lambda username, limit: posts,
             now=lambda: CAPTURED_AT,
@@ -217,6 +281,92 @@ class CollectorTests(unittest.TestCase):
             collector.collect(make_source(), limit=0)
 
 
+class PostsAndReelsTests(unittest.TestCase):
+    """Covers combining Instagram's posts and reels feeds into one bounded sequence."""
+
+    def test_reel_content_type_is_classified_from_origin(self) -> None:
+        candidates = [(ORIGIN_REEL, make_post(shortcode="R1", typename="GraphVideo"))]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=5)
+
+        self.assertEqual(result.items[0].content_type, "reel")
+
+    def test_posts_and_reels_are_combined_into_one_sequence(self) -> None:
+        candidates = [
+            (ORIGIN_POST, make_post(shortcode="P1", date_utc=datetime(2026, 9, 9, 10, 0))),
+            (ORIGIN_REEL, make_post(shortcode="R1", date_utc=datetime(2026, 9, 9, 11, 0))),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=5)
+
+        self.assertEqual(
+            {item.external_id for item in result.items}, {"P1", "R1"}
+        )
+
+    def test_same_shortcode_in_posts_and_reels_is_returned_once(self) -> None:
+        candidates = [
+            (ORIGIN_POST, make_post(shortcode="DUP", date_utc=datetime(2026, 9, 9, 10, 0))),
+            (ORIGIN_REEL, make_post(shortcode="DUP", date_utc=datetime(2026, 9, 9, 10, 0))),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=5)
+
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(result.observed, 1)
+
+    def test_combined_result_is_bounded_by_limit(self) -> None:
+        candidates = [
+            (ORIGIN_POST, make_post(shortcode="P1")),
+            (ORIGIN_POST, make_post(shortcode="P2")),
+            (ORIGIN_REEL, make_post(shortcode="R1")),
+            (ORIGIN_REEL, make_post(shortcode="R2")),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=2)
+
+        self.assertEqual(result.observed, 2)
+
+    def test_most_recent_items_are_preferred_when_bounded(self) -> None:
+        candidates = [
+            (ORIGIN_POST, make_post(shortcode="OLD", date_utc=datetime(2026, 1, 1))),
+            (ORIGIN_REEL, make_post(shortcode="NEW", date_utc=datetime(2026, 9, 9))),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=1)
+
+        self.assertEqual(result.items[0].external_id, "NEW")
+
+    def test_items_without_timestamps_sort_after_timestamped_ones(self) -> None:
+        candidates = [
+            (ORIGIN_POST, make_post(shortcode="NO_DATE", date_utc=None)),
+            (ORIGIN_REEL, make_post(shortcode="DATED", date_utc=datetime(2026, 1, 1))),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=2)
+
+        self.assertEqual(
+            [item.external_id for item in result.items], ["DATED", "NO_DATE"]
+        )
+
+
 class ErrorTranslationTests(unittest.TestCase):
     """Instaloader failures must surface as GatherRadar errors, never library types."""
 
@@ -254,10 +404,26 @@ class ErrorTranslationTests(unittest.TestCase):
         self.assertIsInstance(result, SourceAccessRestrictedError)
         self.assertIn("429", str(result))
 
+    def test_rate_limit_message_does_not_overclaim_an_ip_block(self) -> None:
+        result = self.translate(self.errors.TooManyRequestsException("429 Too Many Requests"))
+        message = str(result).lower()
+        self.assertNotIn("ip", message)
+        self.assertNotIn("blocked", message)
+
     def test_plain_network_failure_stays_unavailable(self) -> None:
         result = self.translate(self.errors.ConnectionException("connection reset"))
         self.assertIsInstance(result, SourceUnavailableError)
         self.assertNotIsInstance(result, SourceAccessRestrictedError)
+
+
+class FetcherConfigurationTests(unittest.TestCase):
+    """A blocked run should fail fast rather than trigger Instaloader's long backoff."""
+
+    def test_default_max_connection_attempts_is_one(self) -> None:
+        from gatherradar.collectors.instagram import InstaloaderPostFetcher
+
+        fetcher = InstaloaderPostFetcher()
+        self.assertEqual(fetcher._max_connection_attempts, 1)
 
 
 if __name__ == "__main__":

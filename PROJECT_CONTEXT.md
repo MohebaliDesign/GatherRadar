@@ -250,21 +250,30 @@ library can be replaced without touching the domain or the rest of the pipeline.
 
 ## 10. Delivery sequence
 
+The project intentionally became Instagram-first for initial source validation: an
+Instagram collector was easier to stand up before a website adapter and gives an early
+read on whether anonymous access is viable at all, which the rest of the pipeline
+depends on knowing.
+
 1. Define schemas, source registry format, and one sanitized fixture.
-2. Implement one website adapter end to end into local storage.
-3. Add deterministic normalization, validation, and repeatable reruns.
-4. Export candidates to a test Google Sheet without overwriting review fields.
-5. Add deduplication and run summaries.
-6. Add a permitted Instagram path after validating access constraints.
-7. Pilot with a small curated source set and refine from measured errors.
-8. Evaluate Telegram and recommendations only after the discovery loop works.
+2. Implement the Instagram collector end to end into local raw JSONL storage.
+3. Complete live Instagram validation (see the open decision below).
+4. Add event detection and structured extraction over collected raw items.
+5. Add deterministic normalization and validation.
+6. Add canonical local storage with deduplication and repeatable reruns.
+7. Export candidates to a test Google Sheet without overwriting review fields.
+8. Add website adapters and broader source coverage.
+9. Pilot with a small curated source set and refine from measured errors.
+10. Evaluate Telegram and recommendations only after the discovery loop works.
 
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Whether anonymous Instagram collection is viable. The first live run against
-  `davvvat_instagram` was refused with HTTP 429 on its first request, so an
-  owner-approved authenticated Instaloader session may be required.
+- Whether anonymous Instagram collection is viable. Live runs against
+  `davvvat_instagram` have been refused with HTTP 429 on the first request (most
+  recently on 2026-09-10, after hardening the collector to fail fast instead of
+  retrying), so an owner-approved authenticated Instaloader session is the next
+  candidate experiment.
 - Extraction approach: rules, LLM, or a hybrid, and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.

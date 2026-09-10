@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from typing import Any
 
-from ..domain import RawItem, Source, SourceType
+from ..domain import RawItem, Source, SourceType, compute_content_hash
 from .base import (
     CollectionResult,
     ItemFailure,
@@ -15,12 +15,16 @@ from .base import (
     SourceUnavailableError,
 )
 
-COLLECTOR_VERSION = "instagram-instaloader/1"
+COLLECTOR_VERSION = "instagram-instaloader/2"
 DEFAULT_LIMIT = 5
 
+ORIGIN_POST = "post"
+ORIGIN_REEL = "reel"
+
 # Instagram's anonymous web timeline exposes only the legacy `__typename`, which
-# carries no "clips" marker. Reels are therefore recorded as `video` rather than
-# guessed at.
+# carries no "clips" marker, so a plain video post can't be told apart from a reel by
+# typename alone. When the collection path fetched an item through get_reels() it
+# already knows the origin, so that trusted context is used instead (see content_type_for).
 _TYPENAME_TO_CONTENT_TYPE = {
     "GraphImage": "image",
     "GraphVideo": "video",
@@ -28,7 +32,7 @@ _TYPENAME_TO_CONTENT_TYPE = {
 }
 UNKNOWN_CONTENT_TYPE = "unknown"
 
-PostFetcher = Callable[[str, int], Iterable[Any]]
+PostFetcher = Callable[[str, int], Iterable[tuple[str, Any]]]
 
 
 def build_raw_item_id(username: str, shortcode: str) -> str:
@@ -40,7 +44,9 @@ def build_content_url(shortcode: str) -> str:
     return f"https://www.instagram.com/p/{shortcode.strip()}/"
 
 
-def content_type_for(typename: str | None) -> str:
+def content_type_for(typename: str | None, *, origin: str = ORIGIN_POST) -> str:
+    if origin == ORIGIN_REEL:
+        return "reel"
     return _TYPENAME_TO_CONTENT_TYPE.get(typename or "", UNKNOWN_CONTENT_TYPE)
 
 
@@ -69,8 +75,11 @@ def _string_list(value: Any) -> list[str]:
     return [entry for entry in value if isinstance(entry, str) and entry.strip()]
 
 
-def map_post_to_raw_item(post: Any, source: Source, captured_at: datetime) -> RawItem:
-    """Convert one Instaloader post into the shared RawItem contract."""
+def map_post_to_raw_item(
+    post: Any, source: Source, captured_at: datetime, *, origin: str = ORIGIN_POST
+) -> RawItem:
+    """Convert one Instaloader post (from either posts or reels) into the shared
+    RawItem contract."""
     shortcode = _attribute(post, "shortcode")
     if not isinstance(shortcode, str) or not shortcode.strip():
         raise ValueError("post is missing a shortcode")
@@ -81,13 +90,19 @@ def map_post_to_raw_item(post: Any, source: Source, captured_at: datetime) -> Ra
         raise SourceConfigurationError(f"source {source.id} has no Instagram username")
 
     caption = _attribute(post, "caption", "")
+    raw_text = caption if isinstance(caption, str) else ""
     media_id = _attribute(post, "mediaid")
     typename = _attribute(post, "typename")
     typename = typename if isinstance(typename, str) else None
     is_video = _attribute(post, "is_video")
 
+    content_type = content_type_for(typename, origin=origin)
+    content_url = build_content_url(shortcode)
+    published_at = _to_utc(_attribute(post, "date_utc"))
+
     raw_metadata: dict[str, Any] = {
         "collector_version": COLLECTOR_VERSION,
+        "origin": origin,
         "typename": typename,
         "media_id": str(media_id) if media_id is not None else None,
         "is_video": bool(is_video) if isinstance(is_video, bool) else None,
@@ -102,19 +117,57 @@ def map_post_to_raw_item(post: Any, source: Source, captured_at: datetime) -> Ra
         source_id=source.id,
         source_type=SourceType.INSTAGRAM,
         external_id=shortcode,
-        content_type=content_type_for(typename),
-        content_url=build_content_url(shortcode),
-        raw_text=caption if isinstance(caption, str) else "",
+        content_type=content_type,
+        content_url=content_url,
+        raw_text=raw_text,
         captured_at=captured_at,
-        published_at=_to_utc(_attribute(post, "date_utc")),
+        published_at=published_at,
         author=_attribute(post, "owner_username", username) or username,
         image_url=image_url if isinstance(image_url, str) and image_url.strip() else None,
+        content_hash=compute_content_hash(
+            raw_text=raw_text,
+            published_at=published_at,
+            content_type=content_type,
+            content_url=content_url,
+        ),
         raw_metadata=raw_metadata,
     )
 
 
+def _recency_sort_key(entry: tuple[str, Any]) -> tuple[int, float]:
+    """Items with a reliable timestamp sort newest-first; items without one sort last,
+    keeping their original relative order."""
+    _, post = entry
+    published = _to_utc(_attribute(post, "date_utc"))
+    if published is None:
+        return (1, 0.0)
+    return (0, -published.timestamp())
+
+
+def _dedupe_and_bound(
+    candidates: Iterable[tuple[str, Any]], limit: int
+) -> list[tuple[str, Any]]:
+    """Keep the first (newest, once sorted) observation of each shortcode so the same
+    media collected through both posts and reels is not returned twice, bounded to
+    `limit` total items. A post missing a shortcode is never treated as a duplicate;
+    it passes through so the mapper can raise its own per-item failure."""
+    seen: set[str] = set()
+    bounded: list[tuple[str, Any]] = []
+    for origin, post in candidates:
+        if len(bounded) >= limit:
+            break
+        shortcode = _attribute(post, "shortcode")
+        if isinstance(shortcode, str) and shortcode.strip():
+            key = shortcode.strip()
+            if key in seen:
+                continue
+            seen.add(key)
+        bounded.append((origin, post))
+    return bounded
+
+
 class InstagramCollector:
-    """Collects a bounded number of recent public posts for one Instagram source."""
+    """Collects a bounded number of recent public posts and reels for one Instagram source."""
 
     def __init__(
         self,
@@ -134,9 +187,12 @@ class InstagramCollector:
 
         # Access errors raised by the fetcher propagate so a blocked run stops
         # cleanly. Only per-item mapping errors are isolated here.
-        for post in self._fetch_posts(source.username or "", limit):
+        candidates = sorted(
+            self._fetch_posts(source.username or "", limit), key=_recency_sort_key
+        )
+        for origin, post in _dedupe_and_bound(candidates, limit):
             try:
-                items.append(map_post_to_raw_item(post, source, captured_at))
+                items.append(map_post_to_raw_item(post, source, captured_at, origin=origin))
             except Exception as exc:
                 failures.append(
                     ItemFailure(
@@ -167,10 +223,12 @@ class InstagramCollector:
 
 
 class InstaloaderPostFetcher:
-    """Reads recent public posts through Instaloader without downloading media."""
+    """Reads recent public posts and reels through Instaloader without downloading media."""
 
-    def __init__(self, *, request_timeout: float = 30.0, max_connection_attempts: int = 2) -> None:
+    def __init__(self, *, request_timeout: float = 30.0, max_connection_attempts: int = 1) -> None:
         self._request_timeout = request_timeout
+        # A single attempt means a rejected request (e.g. HTTP 429) is reported
+        # immediately instead of triggering Instaloader's own long rate-limit backoff.
         self._max_connection_attempts = max_connection_attempts
 
     def _build_loader(self) -> Any:
@@ -191,7 +249,7 @@ class InstaloaderPostFetcher:
             request_timeout=self._request_timeout,
         )
 
-    def __call__(self, username: str, limit: int) -> Iterator[Any]:
+    def __call__(self, username: str, limit: int) -> Iterator[tuple[str, Any]]:
         import instaloader
         from instaloader import exceptions as instaloader_errors
 
@@ -203,12 +261,17 @@ class InstaloaderPostFetcher:
                     f"Instagram profile @{username} is private; "
                     "GatherRadar collects public content only"
                 )
-            for index, post in enumerate(profile.get_posts()):
-                if index >= limit:
-                    break
-                yield post
+            yield from _tagged(profile.get_posts(), ORIGIN_POST, limit)
+            yield from _tagged(profile.get_reels(), ORIGIN_REEL, limit)
         except instaloader_errors.InstaloaderException as exc:
             raise _translate_instaloader_error(username, exc) from exc
+
+
+def _tagged(posts: Iterable[Any], origin: str, limit: int) -> Iterator[tuple[str, Any]]:
+    for index, post in enumerate(posts):
+        if index >= limit:
+            break
+        yield origin, post
 
 
 def _looks_rate_limited(exc: Exception) -> bool:
@@ -230,8 +293,11 @@ def _translate_instaloader_error(username: str, exc: Exception) -> SourceUnavail
             f"Instagram profile @{username} is private; GatherRadar collects public content only"
         )
     if isinstance(exc, errors.TooManyRequestsException) or _looks_rate_limited(exc):
+        # Report only what is actually known: Instagram returned HTTP 429 for this
+        # request. That may reflect rate limiting or access policy; it does not by
+        # itself prove an IP-level block, so no root cause is inferred here.
         return SourceAccessRestrictedError(
-            f"Instagram rate-limited this run and refused the request; wait before retrying: {exc}"
+            f"Instagram refused the request with HTTP 429 (Too Many Requests): {exc}"
         )
     if isinstance(exc, (errors.LoginRequiredException, errors.QueryReturnedForbiddenException)):
         return SourceAccessRestrictedError(
