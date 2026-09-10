@@ -239,9 +239,14 @@ config/
 data/               # local runtime data; add to .gitignore before use
 ```
 
-No framework, package manager, or AI provider is final yet. Record those choices
-when the first executable slice is implemented, along with exact setup, lint,
-test, and run commands.
+Python 3.11+ with `pip`, a local `.venv`, and setuptools via `pyproject.toml` is the
+chosen toolchain. Tests run on `unittest` from the standard library. No formatter,
+linter, or AI provider is final yet. See the README for exact setup and run commands.
+
+Instagram access uses [Instaloader](https://instaloader.github.io/) as a normal package
+dependency, reached only through `collectors/instagram.py`. That adapter converts
+Instaloader objects into `RawItem` records and never leaks library types outward, so the
+library can be replaced without touching the domain or the rest of the pipeline.
 
 ## 10. Delivery sequence
 
@@ -257,7 +262,9 @@ test, and run commands.
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Exact Python version and dependency manager.
+- Whether anonymous Instagram collection is viable. The first live run against
+  `davvvat_instagram` was refused with HTTP 429 on its first request, so an
+  owner-approved authenticated Instaloader session may be required.
 - Extraction approach: rules, LLM, or a hybrid, and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.

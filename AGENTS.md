@@ -78,11 +78,17 @@ instruction source and avoids duplicated rules.
 
 ## Implementation standards
 
-- This repository is expected to use Python, but its version, dependency manager,
-  frameworks, and providers are not selected yet. Do not introduce them as a
-  side effect of an unrelated task.
-- When bootstrapping the first executable slice, document exact setup, format,
-  lint, test, and run commands in this file and the README where appropriate.
+- The project targets Python 3.11+ with `pip` and a local `.venv`, packaged by
+  setuptools through `pyproject.toml`. No formatter, linter, or AI provider is
+  selected yet. Do not introduce them as a side effect of an unrelated task.
+- Setup and run commands:
+
+  ```bash
+  python -m venv .venv
+  python -m pip install -e .
+  python -m unittest discover -s tests
+  python -m gatherradar collect instagram davvvat_instagram --limit 5
+  ```
 - Use type hints at public boundaries and small modules with one responsibility.
 - Validate untrusted network, extractor, configuration, and spreadsheet data at
   system boundaries.
@@ -95,8 +101,8 @@ instruction source and avoids duplicated rules.
 
 ## Testing and verification
 
-- No application toolchain exists yet. Do not invent commands or report tests as
-  passing. Update this section as soon as executable code is introduced.
+- Run the suite with `python -m unittest discover -s tests`. It is offline and must
+  stay that way; live collection happens only through an explicit CLI command.
 - Test deterministic normalization and validation with unit tests.
 - Test collectors and extractors against small, sanitized, versioned fixtures.
 - Include Persian digits, Jalali/Gregorian conversion, timezone, missing-field,

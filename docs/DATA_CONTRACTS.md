@@ -20,6 +20,24 @@ Key fields: source identity, source-native `external_id`, `content_type`, direct
 
 Raw items are intended for append-friendly JSONL storage during the MVP. They are evidence and debugging material, not the final event list.
 
+### Instagram raw items
+
+The Instagram collector writes to `data/raw/instagram/<username>.jsonl` and fills the contract as follows:
+
+| Field | Value |
+| --- | --- |
+| `id` | `instagram:<username>:<shortcode>` — stable across reruns, and the key used to skip already-stored items |
+| `external_id` | The Instagram shortcode |
+| `content_url` | `https://www.instagram.com/p/<shortcode>/`, valid for every post type |
+| `raw_text` | The caption exactly as published, never rewritten or summarized |
+| `published_at` | Post creation time, normalized to UTC and always timezone-aware |
+| `content_type` | `image`, `video`, `carousel`, or `unknown` |
+
+Reels are recorded as `video`. Instagram's anonymous web timeline exposes only the legacy
+`__typename`, which carries no clips marker, so the distinction is left unmade rather than
+guessed at. Adapter-specific values (`typename`, `media_id`, `is_video`, caption hashtags and
+mentions, and `collector_version`) stay inside `raw_metadata`.
+
 ## EventCandidate
 
 The result of event detection and extraction before deterministic normalization and final persistence. It may be incomplete or uncertain.

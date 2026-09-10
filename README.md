@@ -26,7 +26,8 @@ The repository now defines the initial source registry and the shared data contr
 Source → RawItem → EventCandidate → Event
 ```
 
-The first curated registry lives in `config/sources.yaml`. No live crawling is enabled yet.
+The first curated registry lives in `config/sources.yaml`. The Instagram collector is the
+only live path so far, and it runs only when invoked explicitly.
 
 ## Development
 
@@ -38,6 +39,37 @@ python -m pip install -e .
 python -m unittest discover -s tests
 ```
 
+On Windows, activate the environment with `.venv\Scripts\activate`; on macOS and Linux use
+`source .venv/bin/activate`.
+
+The test suite is offline. It never contacts Instagram, and no test needs credentials.
+
+## Collecting from Instagram
+
+Collection is always explicit — nothing runs on a schedule. Pass a source id from
+`config/sources.yaml`:
+
+```bash
+python -m gatherradar collect instagram davvvat_instagram --limit 5
+```
+
+This reads a bounded number of recent public posts anonymously, maps them onto the `RawItem`
+contract, and appends unseen items to `data/raw/instagram/<username>.jsonl`. Items are keyed
+by a stable id (`instagram:<username>:<shortcode>`), so rerunning the command updates nothing
+and appends nothing:
+
+```text
+Observed: 5
+New: 0
+Existing: 5
+```
+
+Useful flags: `--limit` (default 5), `--config` (default `config/sources.yaml`), and
+`--data-dir` (default `data`).
+
+Everything under `data/` is runtime output and stays out of Git. GatherRadar collects public
+content only; it does not log in, and it does not store cookies or sessions.
+
 ## Project docs
 
 - [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — product scope, data contract, and MVP architecture
@@ -46,7 +78,8 @@ python -m unittest discover -s tests
 
 ## Status
 
-Early MVP foundation. Next milestone: one real Instagram source through an isolated Instaloader adapter.
+Early MVP. Instagram collection into raw JSONL works through an isolated Instaloader adapter.
+Next milestone: event detection over collected raw items.
 
 ## License
 
