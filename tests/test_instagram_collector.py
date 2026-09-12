@@ -1,8 +1,10 @@
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest import mock
 
 from gatherradar.collectors.base import (
+    AuthenticationRequiredError,
     SourceAccessRestrictedError,
     SourceConfigurationError,
     SourceDisabledError,
@@ -14,10 +16,12 @@ from gatherradar.collectors.instagram import (
     ORIGIN_POST,
     ORIGIN_REEL,
     InstagramCollector,
+    InstaloaderPostFetcher,
     build_raw_item_id,
     content_type_for,
     map_post_to_raw_item,
 )
+from gatherradar.collectors.instagram_auth import SessionInvalidError, SessionNotFoundError
 from gatherradar.domain import Source, SourceType
 
 
@@ -420,10 +424,68 @@ class FetcherConfigurationTests(unittest.TestCase):
     """A blocked run should fail fast rather than trigger Instaloader's long backoff."""
 
     def test_default_max_connection_attempts_is_one(self) -> None:
-        from gatherradar.collectors.instagram import InstaloaderPostFetcher
-
         fetcher = InstaloaderPostFetcher()
         self.assertEqual(fetcher._max_connection_attempts, 1)
+
+
+class FetcherAuthenticationTests(unittest.TestCase):
+    """The real fetcher must use an authenticated session and never silently fall
+    back to anonymous requests, which are known to be blocked (HTTP 429)."""
+
+    def test_missing_session_reports_authentication_not_configured(self) -> None:
+        def load_session(username):
+            raise SessionNotFoundError("no session file")
+
+        fetcher = InstaloaderPostFetcher(load_session=load_session)
+
+        with self.assertRaises(AuthenticationRequiredError) as ctx:
+            list(fetcher("davvvat", 5))
+        self.assertIn("auth instagram davvvat", str(ctx.exception))
+
+    def test_invalid_session_reports_authentication_required_not_anonymous_fallback(
+        self,
+    ) -> None:
+        def load_session(username):
+            raise SessionInvalidError("session expired")
+
+        fetcher = InstaloaderPostFetcher(load_session=load_session)
+
+        with self.assertRaises(AuthenticationRequiredError) as ctx:
+            list(fetcher("davvvat", 5))
+        self.assertIn("no longer valid", str(ctx.exception))
+
+    def test_valid_injected_session_is_used_to_fetch_posts(self) -> None:
+        fake_loader = SimpleNamespace(context=SimpleNamespace())
+        fake_profile = SimpleNamespace(
+            is_private=False,
+            get_posts=lambda: iter([make_post(shortcode="A1")]),
+            get_reels=lambda: iter([]),
+        )
+
+        fetcher = InstaloaderPostFetcher(load_session=lambda username: fake_loader)
+
+        with mock.patch(
+            "instaloader.Profile.from_username", return_value=fake_profile
+        ) as from_username:
+            results = list(fetcher("davvvat", 5))
+
+        from_username.assert_called_once_with(fake_loader.context, "davvvat")
+        self.assertEqual([post.shortcode for _origin, post in results], ["A1"])
+
+
+class CollectorDataDirWiringTests(unittest.TestCase):
+    """InstagramCollector must pass its data_dir through to the default fetcher so
+    it looks for sessions under the same root the CLI's --data-dir points at."""
+
+    def test_default_fetcher_uses_the_requested_data_dir(self) -> None:
+        collector = InstagramCollector(data_dir="custom-data")
+        self.assertIsInstance(collector._fetch_posts, InstaloaderPostFetcher)
+        self.assertEqual(collector._fetch_posts._data_dir, "custom-data")
+
+    def test_injected_fetch_posts_bypasses_data_dir(self) -> None:
+        sentinel = lambda username, limit: []
+        collector = InstagramCollector(fetch_posts=sentinel, data_dir="custom-data")
+        self.assertIs(collector._fetch_posts, sentinel)
 
 
 if __name__ == "__main__":

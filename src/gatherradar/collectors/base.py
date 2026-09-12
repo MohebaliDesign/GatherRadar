@@ -34,6 +34,14 @@ class SourceAccessRestrictedError(SourceUnavailableError):
     """The platform refused access, required a login, or rate-limited the run."""
 
 
+class AuthenticationRequiredError(SourceAccessRestrictedError):
+    """Authenticated access is required but no valid local session is available.
+
+    Raised instead of attempting an anonymous request, since anonymous Instagram
+    access is known to be blocked (see PROJECT_CONTEXT.md open decisions).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ItemFailure:
     """One source item that could not be mapped onto the RawItem contract."""

@@ -46,7 +46,9 @@ def run_instagram_collection(
 ) -> RunSummary:
     """Collect one Instagram source into JSONL and summarize what changed."""
     source = find_source(source_id, config_path)
-    active_collector = collector if collector is not None else InstagramCollector()
+    active_collector = (
+        collector if collector is not None else InstagramCollector(data_dir=data_dir)
+    )
 
     result = active_collector.collect(source, limit=limit)
 

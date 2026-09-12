@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from .collectors.base import CollectorError
 from .collectors.instagram import DEFAULT_LIMIT
+from .collectors.instagram_auth import InstagramAuthError, create_session
 from .orchestration.collection_run import RunSummary, run_instagram_collection
 from .storage.jsonl import StorageError
 
@@ -34,6 +36,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the source registry (default: config/sources.yaml)",
     )
     instagram.add_argument(
+        "--data-dir",
+        default="data",
+        help="Root directory for local runtime data (default: data)",
+    )
+
+    auth = subcommands.add_parser(
+        "auth", help="Create and verify an authenticated session for a source type."
+    )
+    auth_kinds = auth.add_subparsers(dest="auth_type", required=True)
+
+    auth_instagram = auth_kinds.add_parser(
+        "instagram", help="Log in and save a reusable Instagram session."
+    )
+    auth_instagram.add_argument(
+        "username", help="Instagram username of the project owner's account"
+    )
+    auth_instagram.add_argument(
         "--data-dir",
         default="data",
         help="Root directory for local runtime data (default: data)",
@@ -69,8 +88,34 @@ def format_summary(summary: RunSummary) -> str:
     return "\n".join(lines)
 
 
+def format_auth_success(username: str, session_path: Path) -> str:
+    return "\n".join(
+        [
+            "GatherRadar Instagram authentication",
+            "",
+            f"Username: @{username}",
+            "Session verified and saved to:",
+            str(session_path),
+        ]
+    )
+
+
+def run_auth_instagram(username: str, *, data_dir: str) -> int:
+    try:
+        path = create_session(username, data_dir=data_dir)
+    except InstagramAuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(format_auth_success(username, path))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "auth":
+        return run_auth_instagram(args.username, data_dir=args.data_dir)
 
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)

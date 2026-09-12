@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ..domain import RawItem, Source, SourceType, compute_content_hash
 from .base import (
+    AuthenticationRequiredError,
     CollectionResult,
     ItemFailure,
     SourceAccessRestrictedError,
@@ -13,6 +15,11 @@ from .base import (
     SourceDisabledError,
     SourceTypeMismatchError,
     SourceUnavailableError,
+)
+from .instagram_auth import (
+    SessionInvalidError,
+    SessionNotFoundError,
+    load_authenticated_loader,
 )
 
 COLLECTOR_VERSION = "instagram-instaloader/2"
@@ -174,8 +181,13 @@ class InstagramCollector:
         *,
         fetch_posts: PostFetcher | None = None,
         now: Callable[[], datetime] | None = None,
+        data_dir: str | Path = "data",
     ) -> None:
-        self._fetch_posts = fetch_posts if fetch_posts is not None else InstaloaderPostFetcher()
+        self._fetch_posts = (
+            fetch_posts
+            if fetch_posts is not None
+            else InstaloaderPostFetcher(data_dir=data_dir)
+        )
         self._now = now if now is not None else (lambda: datetime.now(timezone.utc))
 
     def collect(self, source: Source, *, limit: int = DEFAULT_LIMIT) -> CollectionResult:
@@ -223,37 +235,52 @@ class InstagramCollector:
 
 
 class InstaloaderPostFetcher:
-    """Reads recent public posts and reels through Instaloader without downloading media."""
+    """Reads recent public posts and reels through an authenticated Instaloader
+    session, without downloading media.
 
-    def __init__(self, *, request_timeout: float = 30.0, max_connection_attempts: int = 1) -> None:
+    Anonymous access is not used: it is known to be blocked (HTTP 429) for this
+    project's sources, so a missing or invalid local session is reported clearly
+    instead of silently attempting repeated anonymous requests.
+    """
+
+    def __init__(
+        self,
+        *,
+        data_dir: str | Path = "data",
+        request_timeout: float = 30.0,
+        max_connection_attempts: int = 1,
+        load_session: Callable[[str], Any] | None = None,
+    ) -> None:
+        self._data_dir = data_dir
         self._request_timeout = request_timeout
         # A single attempt means a rejected request (e.g. HTTP 429) is reported
         # immediately instead of triggering Instaloader's own long rate-limit backoff.
         self._max_connection_attempts = max_connection_attempts
+        self._load_session = load_session if load_session is not None else self._load_session_default
 
-    def _build_loader(self) -> Any:
-        import instaloader
-
-        return instaloader.Instaloader(
-            quiet=True,
-            sleep=True,
-            download_pictures=False,
-            download_videos=False,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-            compress_json=False,
-            iphone_support=False,
-            max_connection_attempts=self._max_connection_attempts,
-            request_timeout=self._request_timeout,
-        )
+    def _load_session_default(self, username: str) -> Any:
+        return load_authenticated_loader(username, data_dir=self._data_dir)
 
     def __call__(self, username: str, limit: int) -> Iterator[tuple[str, Any]]:
         import instaloader
         from instaloader import exceptions as instaloader_errors
 
-        loader = self._build_loader()
+        try:
+            loader = self._load_session(username)
+        except SessionNotFoundError as exc:
+            raise AuthenticationRequiredError(
+                f"authenticated Instagram access is not configured for @{username}; "
+                f"run 'python -m gatherradar auth instagram {username}' first"
+            ) from exc
+        except SessionInvalidError as exc:
+            raise AuthenticationRequiredError(
+                f"the saved Instagram session for @{username} is no longer valid; "
+                f"run 'python -m gatherradar auth instagram {username}' again to refresh it"
+            ) from exc
+
+        loader.context.max_connection_attempts = self._max_connection_attempts
+        loader.context.request_timeout = self._request_timeout
+
         try:
             profile = instaloader.Profile.from_username(loader.context, username)
             if profile.is_private:
