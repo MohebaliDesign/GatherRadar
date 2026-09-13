@@ -12,6 +12,7 @@ from gatherradar.collectors.instagram import InstagramCollector, map_post_to_raw
 from gatherradar.collectors.instagram_browser import (
     AUTH_COMMAND,
     BROWSER_COLLECTOR_VERSION,
+    MAX_CANDIDATE_POOL,
     INSTAGRAM_HOME_URL,
     NOT_AUTHENTICATED_MESSAGE,
     BrowserClosedError,
@@ -27,6 +28,7 @@ from gatherradar.collectors.instagram_browser import (
     PlaywrightChromeLauncher,
     authenticate_browser_profile,
     browser_profile_path,
+    candidate_limit_for,
     classify_instagram_location,
     has_instagram_session_cookie,
 )
@@ -58,18 +60,42 @@ def profile_page(*hrefs: str) -> str:
 def media_page(
     shortcode: str,
     caption: str = "Event on Friday",
-    published: str = "2026-09-09T14:30:00.000Z",
+    published: str | None = "2026-09-09T14:30:00.000Z",
     segment: str = "p",
 ) -> str:
+    timestamp = (
+        f'<a href="/davvvat/{segment}/{shortcode}/"><time datetime="{published}"></time></a>'
+        if published
+        else ""
+    )
     return (
         "<html><head>"
         f'<meta property="og:url" content="https://www.instagram.com/davvvat/{segment}/{shortcode}/">'
         f'<meta property="og:image" content="https://cdn.example.test/{shortcode}.jpg">'
         "</head><body><main><article>"
-        f"<h1>{caption}</h1>"
-        f'<a href="/davvvat/{segment}/{shortcode}/"><time datetime="{published}"></time></a>'
+        f"<h1>{caption}</h1>{timestamp}"
         "</article></main></body></html>"
     )
+
+
+def dated_profile(entries, caption_for=None) -> dict:
+    """A profile grid in the given order; each entry is (shortcode, published or None)."""
+    routes = {PROFILE_URL: profile_page(*[f"/davvvat/p/{code}/" for code, _ in entries])}
+    for code, published in entries:
+        caption = caption_for(code) if caption_for else f"Caption {code}"
+        routes[media_url(code)] = media_page(code, caption, published=published)
+    return routes
+
+
+PINNED_GRID = [
+    ("PINA", "2026-06-12T10:00:00.000Z"),
+    ("PINB", "2026-08-10T10:00:00.000Z"),
+    ("C", "2026-09-13T10:00:00.000Z"),
+    ("D", "2026-09-12T10:00:00.000Z"),
+    ("E", "2026-09-11T10:00:00.000Z"),
+    ("F", "2026-09-10T10:00:00.000Z"),
+    ("G", "2026-09-09T10:00:00.000Z"),
+]
 
 
 def fixture_routes() -> dict:
@@ -512,7 +538,9 @@ class DiscoveryTests(BrowserTestCase):
         self.assertEqual(result.items[0].content_type, "reel")
         self.assertEqual(browser.page.visited, [PROFILE_URL, media_url("DUP", "reel")])
 
-    def test_only_limit_media_pages_are_opened(self) -> None:
+    def test_media_pages_opened_are_bounded_by_the_candidate_pool(self) -> None:
+        # Previously exactly `limit` pages (the first grid positions) were opened; a small
+        # recency buffer is now opened so pinned posts cannot take recent slots.
         codes = [f"S{index}" for index in range(1, 7)]
         routes = {PROFILE_URL: profile_page(*[f"/davvvat/p/{code}/" for code in codes])}
         routes.update({media_url(code): media_page(code) for code in codes})
@@ -521,7 +549,7 @@ class DiscoveryTests(BrowserTestCase):
         result = self.collect(browser, limit=2)
 
         self.assertEqual(result.observed, 2)
-        self.assertEqual(browser.page.visited, [PROFILE_URL, media_url("S1"), media_url("S2")])
+        self.assertEqual(browser.page.visited, [PROFILE_URL] + [media_url(code) for code in codes[:5]])
         self.assertEqual(browser.page.scrolls, 0)
 
 
@@ -545,7 +573,9 @@ class ScrollingTests(BrowserTestCase):
 
         result = self.collect(browser, limit=2)
 
-        self.assertEqual(browser.page.scrolls, 1)
+        # Scrolling now continues until the candidate pool (5 for limit 2) is visible,
+        # not just `limit` items: 1 -> 3 -> 6 visible links takes two scrolls.
+        self.assertEqual(browser.page.scrolls, 2)
         self.assertEqual(result.observed, 2)
 
     def test_scrolling_stops_when_a_scroll_reveals_nothing_new(self) -> None:
@@ -557,8 +587,10 @@ class ScrollingTests(BrowserTestCase):
         self.assertEqual(result.observed, 1)
 
     def test_no_scrolling_when_the_first_screen_is_enough(self) -> None:
+        # The fixture grid has 4 links: exactly the candidate pool for limit 1 (was limit 2
+        # when only `limit` links had to be visible).
         browser = self.browser_for(fixture_routes())
-        self.collect(browser, limit=2)
+        self.collect(browser, limit=1)
         self.assertEqual(browser.page.scrolls, 0)
 
 
@@ -729,6 +761,147 @@ class BrowserClosingTests(BrowserTestCase):
         media.close()
 
         self.assertEqual(browser.close_calls, 1)
+
+
+class CandidatePoolTests(BrowserTestCase):
+    def test_candidate_pool_adds_a_small_recency_buffer_with_a_hard_cap(self) -> None:
+        self.assertEqual(MAX_CANDIDATE_POOL, 12)
+        for limit, expected in {1: 4, 5: 8, 9: 12, 10: 12, 12: 12, 20: 20}.items():
+            with self.subTest(limit=limit):
+                self.assertEqual(candidate_limit_for(limit), expected)
+
+    def test_fetcher_opens_more_candidates_than_the_final_limit(self) -> None:
+        codes = [f"S{index}" for index in range(1, 11)]
+        browser = self.browser_for(dated_profile([(code, "2026-09-01T10:00:00.000Z") for code in codes]))
+        fetcher, _ = self.fetcher_for(browser)
+
+        media = list(fetcher("davvvat", 5))
+
+        self.assertEqual(len(media), 8)
+        self.assertEqual(browser.page.visited, [PROFILE_URL] + [media_url(code) for code in codes[:8]])
+
+    def test_candidate_pool_is_strictly_bounded(self) -> None:
+        codes = [f"S{index}" for index in range(1, 31)]
+        browser = self.browser_for(dated_profile([(code, "2026-09-01T10:00:00.000Z") for code in codes]))
+        fetcher, _ = self.fetcher_for(browser)
+
+        media = list(fetcher("davvvat", 10))
+
+        self.assertEqual(len(media), MAX_CANDIDATE_POOL)
+        self.assertEqual(len(browser.page.visited), 1 + MAX_CANDIDATE_POOL)
+
+    def test_scroll_hard_limit_still_applies_to_the_candidate_pool(self) -> None:
+        snapshots = [profile_page(*[f"/davvvat/p/S{index}/" for index in range(1, count + 1)]) for count in range(1, 11)]
+        routes = {PROFILE_URL: snapshots}
+        routes.update({media_url(f"S{index}"): media_page(f"S{index}") for index in range(1, 11)})
+        browser = self.browser_for(routes)
+
+        result = self.collect(browser, limit=5, max_scroll_attempts=2)
+
+        self.assertEqual(browser.page.scrolls, 2)
+        self.assertEqual(result.observed, 3)
+
+
+class RecencySelectionTests(BrowserTestCase):
+    def test_old_pinned_posts_do_not_displace_newer_media(self) -> None:
+        result = self.collect(self.browser_for(dated_profile(PINNED_GRID)), limit=5)
+        self.assertEqual([item.external_id for item in result.items], ["C", "D", "E", "F", "G"])
+
+    def test_final_items_are_sorted_newest_first(self) -> None:
+        result = self.collect(self.browser_for(dated_profile(PINNED_GRID)), limit=5)
+        published = [item.published_at for item in result.items]
+
+        self.assertEqual(published, sorted(published, reverse=True))
+        self.assertEqual(published[0], datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc))
+
+    def test_items_without_a_publish_date_sort_after_dated_items(self) -> None:
+        entries = [("NODATE", None), ("OLDER", "2026-09-01T10:00:00.000Z"), ("NEWER", "2026-09-05T10:00:00.000Z")]
+
+        result = self.collect(self.browser_for(dated_profile(entries)), limit=3)
+
+        self.assertEqual([item.external_id for item in result.items], ["NEWER", "OLDER", "NODATE"])
+        self.assertIsNone(result.items[-1].published_at)
+
+    def test_undated_items_are_dropped_first_when_bounding(self) -> None:
+        entries = [("NODATE", None), ("OLDER", "2026-09-01T10:00:00.000Z"), ("NEWER", "2026-09-05T10:00:00.000Z")]
+        result = self.collect(self.browser_for(dated_profile(entries)), limit=2)
+        self.assertEqual([item.external_id for item in result.items], ["NEWER", "OLDER"])
+
+    def test_equal_publish_dates_keep_grid_order(self) -> None:
+        same = "2026-09-01T10:00:00.000Z"
+        result = self.collect(self.browser_for(dated_profile([("FIRST", same), ("SECOND", same), ("THIRD", same)])), limit=3)
+        self.assertEqual([item.external_id for item in result.items], ["FIRST", "SECOND", "THIRD"])
+
+    def test_same_shortcode_is_still_collected_once_as_a_reel(self) -> None:
+        routes = {
+            PROFILE_URL: profile_page("/davvvat/p/DUP/", "/davvvat/p/OTHER/", "/davvvat/reel/DUP/"),
+            media_url("DUP", "reel"): media_page("DUP", segment="reel", published="2026-09-02T10:00:00.000Z"),
+            media_url("OTHER"): media_page("OTHER", published="2026-09-01T10:00:00.000Z"),
+        }
+        browser = self.browser_for(routes)
+
+        result = self.collect(browser, limit=5)
+
+        self.assertEqual([item.external_id for item in result.items], ["DUP", "OTHER"])
+        self.assertEqual(result.items[0].content_type, "reel")
+        self.assertEqual(browser.page.visited.count(media_url("DUP", "reel")), 1)
+        self.assertNotIn(media_url("DUP"), browser.page.visited)
+
+    def test_final_count_never_exceeds_the_requested_limit(self) -> None:
+        entries = [(f"S{index}", f"2026-09-{index:02d}T10:00:00.000Z") for index in range(1, 13)]
+        for limit in (1, 3, 5):
+            with self.subTest(limit=limit):
+                result = self.collect(self.browser_for(dated_profile(entries)), limit=limit)
+                self.assertEqual(len(result.items), limit)
+                self.assertLessEqual(result.observed, limit)
+
+
+class RecencyStorageTests(BrowserTestCase):
+    def run_once(self, caption_for):
+        fetcher, _ = self.fetcher_for(self.browser_for(dated_profile(PINNED_GRID, caption_for)))
+        return run_instagram_collection(
+            "davvvat_instagram",
+            config_path=CONFIG,
+            data_dir=self.data_dir,
+            limit=5,
+            collector=InstagramCollector(fetch_posts=fetcher, now=lambda: CAPTURED_AT),
+        )
+
+    def test_new_and_existing_behavior_is_unchanged_with_the_candidate_pool(self) -> None:
+        first = self.run_once(lambda code: f"Caption {code}")
+        self.assertEqual((first.observed, first.new, first.changed, first.already_existing), (5, 5, 0, 0))
+
+        second = self.run_once(lambda code: f"Caption {code}")
+        self.assertEqual((second.observed, second.new, second.changed, second.already_existing), (5, 0, 0, 5))
+
+    def test_captions_found_after_empty_observations_are_changed_then_existing(self) -> None:
+        first = self.run_once(lambda code: "")
+        self.assertEqual((first.new, first.changed, first.already_existing), (5, 0, 0))
+
+        second = self.run_once(lambda code: f"Caption {code}")
+        self.assertEqual((second.new, second.changed, second.already_existing), (0, 5, 0))
+
+        third = self.run_once(lambda code: f"Caption {code}")
+        self.assertEqual((third.new, third.changed, third.already_existing), (0, 0, 5))
+        self.assertEqual(len(third.output_path.read_text(encoding="utf-8").splitlines()), 10)
+
+
+class CaptionThroughCollectorTests(BrowserTestCase):
+    def test_author_caption_is_collected_without_comments(self) -> None:
+        routes = {
+            PROFILE_URL: profile_page("/davvvat/p/LIST1/"),
+            media_url("LIST1"): fixture("caption_author_list.html"),
+        }
+
+        item = self.collect(self.browser_for(routes), limit=1).items[0]
+
+        self.assertEqual(
+            item.raw_text, "جمعه ۲۱ شهریور دورهمی دعوت داریم 🎉\nبرای ثبت نام به @venue پیام بدید\n#رویداد #تهران"
+        )
+        self.assertEqual(item.raw_metadata["caption_source"], "main:author-block")
+        self.assertEqual(item.raw_metadata["hashtags"], ["رویداد", "تهران"])
+        self.assertEqual(item.raw_metadata["mentions"], ["venue"])
+        self.assertNotIn("commenter.one", item.raw_text)
 
 
 class NoInstaloaderFallbackTests(BrowserTestCase):

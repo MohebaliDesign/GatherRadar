@@ -118,12 +118,21 @@ profile, then:
 
 1. confirms the profile is still logged in to Instagram;
 2. opens the source profile, e.g. `https://www.instagram.com/davvvat/`;
-3. finds recent posts and reels from their `/p/` and `/reel/` links, scrolling a few times at
-   most and only if fewer than `--limit` are visible;
-4. opens each selected post or reel page to read its caption and publish time;
+3. finds posts and reels from their `/p/` and `/reel/` links, taking a small candidate pool
+   of up to three more than `--limit` (at most 12 in total unless `--limit` itself is
+   larger), scrolling a few times at most and only while fewer candidates are visible;
+4. opens each candidate page to read its caption and publish time, then keeps the `--limit`
+   newest by publish date, so older pinned posts at the top of the grid do not take recent
+   slots (items without a publish date sort last);
 5. maps them onto the `RawItem` contract and appends new or changed items to
    `data/raw/instagram/<username>.jsonl`;
 6. closes Chrome, including when the run fails.
+
+Captions are read from the rendered post — the caption heading, the author's first caption
+item, or the author's caption text — with Open Graph and page description metadata only as a
+fallback. Author usernames, comments, timestamps, like counts, and interface labels are left
+out, and a post without a caption keeps empty text. `raw_metadata.caption_source` records
+which source was used.
 
 Close any Chrome window that GatherRadar left open before collecting; a browser profile can be
 used by only one Chrome instance at a time.

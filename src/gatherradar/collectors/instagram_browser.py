@@ -40,6 +40,17 @@ MEDIA_LINK_SELECTOR = 'a[href*="/p/"], a[href*="/reel/"]'
 MEDIA_CONTENT_SELECTOR = "time[datetime]"
 _SCROLL_SCRIPT = "() => window.scrollBy(0, window.innerHeight * 2)"
 
+# Instagram lets a profile pin up to three posts to the top of its grid, so a few extra
+# candidates are opened and the collector keeps the newest by publish date.
+RECENCY_CANDIDATE_BUFFER = 3
+MAX_CANDIDATE_POOL = 12
+
+
+def candidate_limit_for(limit: int) -> int:
+    """How many media pages to open for a requested limit: a small recency buffer, capped
+    so a run never becomes bulk crawling (a limit above the cap gets no extra pages)."""
+    return max(limit, min(limit + RECENCY_CANDIDATE_BUFFER, MAX_CANDIDATE_POOL))
+
 NOT_AUTHENTICATED_MESSAGE = (
     f"Instagram browser session is not authenticated.\nRun:\n\n{AUTH_COMMAND}"
 )
@@ -334,10 +345,11 @@ class BrowserMediaFetcher:
     """Reads a bounded number of recent posts and reels from one approved public profile
     through the persistent GatherRadar Chrome profile.
 
-    Opens the profile page plus one page per selected media item, scrolls only while
-    fewer than `limit` unique items are visible and never more than
-    `max_scroll_attempts` times. Browser failures are raised, never retried through
-    another transport.
+    Opens the profile page plus one page per candidate: `candidate_limit_for(limit)`
+    items, slightly more than `limit`, so InstagramCollector can keep the newest by
+    publish date and pinned posts cannot displace recent media. Scrolls only while fewer
+    candidates are visible and never more than `max_scroll_attempts` times. Browser
+    failures are raised, never retried through another transport.
     """
 
     def __init__(
@@ -362,10 +374,12 @@ class BrowserMediaFetcher:
     def __call__(self, username: str, limit: int) -> Iterator[tuple[str, BrowserMedia]]:
         launcher = self.launcher or PlaywrightChromeLauncher(timeout_ms=self.navigation_timeout_ms)
         with open_authenticated_browser(self.profile_dir.resolve(), launcher) as browser:
-            for link in self._discover_links(browser, username, limit):
+            for link in self._discover_links(browser, username, candidate_limit_for(limit)):
                 yield self._read_media(browser.page, username, link)
 
-    def _discover_links(self, browser: BrowserHandle, username: str, limit: int) -> list[MediaLink]:
+    def _discover_links(
+        self, browser: BrowserHandle, username: str, candidate_limit: int
+    ) -> list[MediaLink]:
         page = browser.page
         response = _goto(page, f"https://www.instagram.com/{username}/", self.navigation_timeout_ms)
         _ensure_location_allowed(page.url)
@@ -381,7 +395,7 @@ class BrowserMediaFetcher:
 
         links = discover_media_links(html, username)
         scroll_attempts = 0
-        while len(links) < limit and scroll_attempts < self.max_scroll_attempts:
+        while len(links) < candidate_limit and scroll_attempts < self.max_scroll_attempts:
             page.evaluate(_SCROLL_SCRIPT)
             page.wait_for_timeout(self.scroll_pause_ms)
             scroll_attempts += 1
@@ -400,7 +414,7 @@ class BrowserMediaFetcher:
                 f"{scroll_attempts} scroll attempt(s). The profile may be empty, or "
                 "Instagram's page layout may have changed."
             )
-        return links[:limit]
+        return links[:candidate_limit]
 
     def _read_media(self, page: Any, username: str, link: MediaLink) -> tuple[str, BrowserMedia]:
         page.wait_for_timeout(self.page_pause_ms)
@@ -413,7 +427,7 @@ class BrowserMediaFetcher:
 
         final_url = page.url
         try:
-            data = parse_media_page(page.content(), link, final_url=final_url)
+            data = parse_media_page(page.content(), link, username=username, final_url=final_url)
         except MalformedMediaPageError as exc:
             return link.kind, BrowserMedia.failed(link, username, str(exc))
 
@@ -437,6 +451,9 @@ class BrowserMediaFetcher:
 
 __all__ = [
     "BROWSER_COLLECTOR_VERSION",
+    "MAX_CANDIDATE_POOL",
+    "RECENCY_CANDIDATE_BUFFER",
+    "candidate_limit_for",
     "NOT_AUTHENTICATED_MESSAGE",
     "SESSION_EXPIRED_MESSAGE",
     "CHECKPOINT_MESSAGE",

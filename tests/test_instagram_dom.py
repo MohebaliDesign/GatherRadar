@@ -108,7 +108,8 @@ class MediaPageTests(unittest.TestCase):
         data = parse_media_page(fixture("post_page.html"), POST1)
 
         self.assertEqual(data.caption, "کارگاه طراحی شهری\nجمعه ساعت ۱۷ #رویداد با @venue.tehran")
-        self.assertEqual(data.caption_source, "h1")
+        # Labels now name the scope and strategy ("article:h1"); previously just "h1".
+        self.assertEqual(data.caption_source, "article:h1")
 
     def test_published_at_comes_from_the_time_linking_to_the_media_not_a_comment(self) -> None:
         data = parse_media_page(fixture("post_page.html"), POST1)
@@ -183,6 +184,183 @@ class MediaPageTests(unittest.TestCase):
     def test_page_showing_different_media_is_malformed(self) -> None:
         with self.assertRaises(MalformedMediaPageError):
             parse_media_page(fixture("post_page.html"), REEL1)
+
+
+AUTHOR_LIST_CAPTION = "جمعه ۲۱ شهریور دورهمی دعوت داریم 🎉\nبرای ثبت نام به @venue پیام بدید\n#رویداد #تهران"
+DIR_AUTO_CAPTION = "دورهمی کتابخوانی 📚\nپنجشنبه ساعت ۱۸ در کافه @cafe.tehran"
+REEL_CAPTION = "Rooftop concert 🎶 Friday 19:00\nTickets: #concert @music.hall"
+
+LIST1 = MediaLink("LIST1", ORIGIN_POST, "https://www.instagram.com/p/LIST1/")
+ITEM1 = MediaLink("ITEM1", ORIGIN_POST, "https://www.instagram.com/p/ITEM1/")
+DIR1 = MediaLink("DIR1", ORIGIN_POST, "https://www.instagram.com/p/DIR1/")
+REELCAP1 = MediaLink("REELCAP1", ORIGIN_REEL, "https://www.instagram.com/reel/REELCAP1/")
+NOCAP1 = MediaLink("NOCAP1", ORIGIN_POST, "https://www.instagram.com/p/NOCAP1/")
+X1 = MediaLink("X1", ORIGIN_POST, "https://www.instagram.com/p/X1/")
+OG_URL_X1 = '<meta property="og:url" content="https://www.instagram.com/p/X1/">'
+
+RENDERED_CAPTION_FIXTURES = (
+    ("caption_author_list.html", LIST1),
+    ("caption_dir_auto.html", DIR1),
+    ("reel_caption.html", REELCAP1),
+    ("caption_list_item.html", ITEM1),
+)
+
+
+def page(head: str, body: str = "") -> str:
+    return f"<html><head>{head}</head><body>{body}</body></html>"
+
+
+class RenderedCaptionTests(unittest.TestCase):
+    def parse(self, name: str, link: MediaLink):
+        return parse_media_page(fixture(name), link, username="davvvat")
+
+    def test_caption_inside_article_h1(self) -> None:
+        data = self.parse("post_page.html", POST1)
+
+        self.assertTrue(data.caption.startswith("کارگاه طراحی شهری"))
+        self.assertEqual(data.caption_source, "article:h1")
+
+    def test_caption_inside_first_caption_list_item(self) -> None:
+        data = self.parse("caption_list_item.html", ITEM1)
+
+        self.assertEqual(data.caption, "Rooftop jazz night 🎷\nThursday 20:00 tickets.example.test/jazz")
+        self.assertEqual(data.caption_source, "article:caption-item")
+
+    def test_caption_inside_author_associated_block(self) -> None:
+        data = self.parse("caption_author_list.html", LIST1)
+
+        self.assertEqual(data.caption, AUTHOR_LIST_CAPTION)
+        self.assertEqual(data.caption_source, "main:author-block")
+
+    def test_caption_inside_span_dir_auto(self) -> None:
+        data = self.parse("caption_dir_auto.html", DIR1)
+
+        self.assertEqual(data.caption, DIR_AUTO_CAPTION)
+        self.assertEqual(data.caption_source, "article:dir-auto")
+
+    def test_reel_caption(self) -> None:
+        data = parse_media_page(
+            fixture("reel_caption.html"),
+            REELCAP1,
+            username="davvvat",
+            final_url="https://www.instagram.com/reel/REELCAP1/",
+        )
+
+        self.assertEqual(data.caption, REEL_CAPTION)
+        self.assertEqual(data.caption_source, "main:author-block")
+        self.assertEqual(data.kind, ORIGIN_REEL)
+
+    def test_persian_multiline_emoji_caption_is_preserved(self) -> None:
+        caption = self.parse("caption_author_list.html", LIST1).caption
+
+        self.assertIn("جمعه ۲۱ شهریور دورهمی دعوت داریم", caption)
+        self.assertIn("🎉", caption)
+        self.assertEqual(caption.count("\n"), 2)
+
+    def test_persian_hashtags_and_mentions_come_from_the_rendered_caption(self) -> None:
+        caption = self.parse("caption_author_list.html", LIST1).caption
+
+        self.assertEqual(caption_hashtags(caption), ("رویداد", "تهران"))
+        self.assertEqual(caption_mentions(caption), ("venue",))
+
+    def test_caption_excludes_the_source_username_prefix(self) -> None:
+        for name, link in RENDERED_CAPTION_FIXTURES:
+            with self.subTest(fixture=name):
+                self.assertFalse(self.parse(name, link).caption.startswith("davvvat"))
+
+    def test_caption_excludes_comments_and_comment_usernames(self) -> None:
+        for name, link, comment, commenter in (
+            ("caption_author_list.html", LIST1, "چه برنامه خوبی", "commenter.one"),
+            ("caption_list_item.html", ITEM1, "Count me in", "someone.else"),
+        ):
+            with self.subTest(fixture=name):
+                caption = self.parse(name, link).caption
+                self.assertNotIn(comment, caption)
+                self.assertNotIn(commenter, caption)
+
+    def test_caption_excludes_timestamps_like_counts_and_ui_labels(self) -> None:
+        noise = ("2d", "1w", "Edited", "Reply", "See translation", "likes", "Follow", "•", "September", "More posts", "Original audio")
+        for name, link in RENDERED_CAPTION_FIXTURES:
+            caption = self.parse(name, link).caption
+            for text in noise:
+                with self.subTest(fixture=name, text=text):
+                    self.assertNotIn(text, caption)
+
+    def test_rendered_caption_wins_over_truncated_metadata(self) -> None:
+        data = self.parse("caption_author_list.html", LIST1)
+        self.assertNotIn("truncated metadata caption", data.caption)
+
+    def test_dir_auto_text_attributed_to_another_account_is_not_a_caption(self) -> None:
+        html = page(OG_URL_X1, '<main><a href="/other.user/">other.user</a><span dir="auto">Not the caption</span></main>')
+        data = parse_media_page(html, X1, username="davvvat")
+
+        self.assertIsNone(data.caption)
+        self.assertEqual(data.caption_source, "none")
+
+    def test_legitimate_no_caption_media_stays_empty(self) -> None:
+        data = self.parse("caption_no_caption.html", NOCAP1)
+
+        self.assertIsNone(data.caption)
+        self.assertEqual(data.caption_source, "none")
+
+    def test_published_at_and_image_url_are_still_extracted(self) -> None:
+        expected = {
+            "caption_author_list.html": (LIST1, datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc), "list1"),
+            "caption_list_item.html": (ITEM1, datetime(2026, 9, 5, 18, 0, tzinfo=timezone.utc), "item1"),
+            "caption_dir_auto.html": (DIR1, datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc), "dir1"),
+            "reel_caption.html": (REELCAP1, datetime(2026, 9, 13, 8, 0, tzinfo=timezone.utc), "reelcap1"),
+            "caption_no_caption.html": (NOCAP1, datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc), "nocap1"),
+        }
+        for name, (link, published_at, image) in expected.items():
+            with self.subTest(fixture=name):
+                data = self.parse(name, link)
+                self.assertEqual(data.published_at, published_at)
+                self.assertEqual(data.published_at_source, "time[datetime]:media-link")
+                self.assertEqual(data.image_url, f"https://cdn.example.test/{image}-thumb.jpg")
+
+
+class MetadataCaptionFallbackTests(unittest.TestCase):
+    def parse(self, head: str):
+        return parse_media_page(page(OG_URL_X1 + head), X1, username="davvvat")
+
+    def test_open_graph_caption_decodes_html_entities(self) -> None:
+        data = self.parse(
+            '<meta property="og:description" content="12 likes, 3 comments - davvvat on September 10, 2026: &quot;Tom &amp; Jerry night&quot;. ">'
+        )
+        self.assertEqual(data.caption, "Tom & Jerry night")
+        self.assertEqual(data.caption_source, "og:description")
+
+    def test_truncated_open_graph_caption_without_closing_quote(self) -> None:
+        data = self.parse(
+            '<meta property="og:description" content="120 likes, 1 comments - davvvat on September 11, 2026: &quot;Long caption that was cut">'
+        )
+        self.assertEqual(data.caption, "Long caption that was cut")
+
+    def test_localized_metadata_with_guillemets(self) -> None:
+        data = self.parse('<meta property="og:description" content="۱۲۰ پسند، ۱ دیدگاه - davvvat در ۱۱ سپتامبر ۲۰۲۶: «دورهمی جمعه #رویداد»">')
+        self.assertEqual(data.caption, "دورهمی جمعه #رویداد")
+
+    def test_meta_name_description_fallback(self) -> None:
+        data = self.parse(
+            '<meta property="og:description" content="45 likes, 2 comments - davvvat on September 7, 2026">'
+            '<meta name="description" content="45 likes, 2 comments - davvvat on September 7, 2026: &quot;Book club night 📚 #کتاب&quot;. ">'
+        )
+        self.assertEqual(data.caption, "Book club night 📚 #کتاب")
+        self.assertEqual(data.caption_source, "meta:description")
+
+    def test_unquoted_open_graph_title_fallback(self) -> None:
+        data = self.parse('<meta property="og:title" content="davvvat on Instagram: Rooftop concert tonight">')
+        self.assertEqual(data.caption, "Rooftop concert tonight")
+        self.assertEqual(data.caption_source, "og:title")
+
+    def test_likes_and_comments_prefix_is_never_saved_as_a_caption(self) -> None:
+        data = self.parse('<meta property="og:description" content="12 likes, 3 comments - davvvat on September 9, 2026">')
+        self.assertIsNone(data.caption)
+        self.assertEqual(data.caption_source, "none")
+
+    def test_empty_quoted_caption_stays_null(self) -> None:
+        data = self.parse('<meta property="og:description" content="12 likes, 3 comments - davvvat on September 9, 2026: &quot;&quot;. ">')
+        self.assertIsNone(data.caption)
 
 
 class CaptionTokenTests(unittest.TestCase):

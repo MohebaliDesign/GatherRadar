@@ -57,12 +57,25 @@ mapping, so the same media keeps the same `id` whichever transport observed it.
 
 **Browser transport (default).** Playwright opens the source profile in the persistent
 GatherRadar Chrome profile, discovers media from `/p/<shortcode>/` and
-`/reel/<shortcode>/` link patterns, and opens each selected media page. Media reached
-through a `/reel/` URL is `reel`; other posts are `unknown`, because browser-visible pages
-do not reliably say whether a post is an image, video, or carousel. The caption comes from
-the post's caption heading, falling back to the quoted caption in Open Graph metadata. The
-publish time comes from the `time[datetime]` element that links to the post; comment
-timestamps are never used. `raw_metadata` records `transport` (`browser`), `media_url`,
+`/reel/<shortcode>/` link patterns, and opens a small candidate pool: up to three more media
+pages than the requested limit, at most 12 unless the limit itself is larger. The collector
+then keeps the requested number of newest items by `published_at` (items without one sort
+last, ties keep grid order), so older pinned posts at the top of the grid do not displace
+recent media. Media reached through a `/reel/` URL is `reel`; other posts are `unknown`,
+because browser-visible pages do not reliably say whether a post is an image, video, or
+carousel. The caption is read from the rendered page first — a caption `h1`, the author's
+first caption list item, a block attributed to the author's profile link, or the author's
+`dir="auto"` caption text — and only then from `og:description`, `description`, or
+`og:title` metadata. Author usernames, comments, comment authors, timestamps, like counts,
+and interface labels are excluded, and a post without a caption keeps an empty `raw_text`.
+`raw_metadata.caption_source` names the scope and strategy used, for example `article:h1`,
+`main:author-block`, `article:caption-item`, `article:dir-auto`, `og:description`,
+`meta:description`, or `none`. The publish time comes from the `time[datetime]` element that
+links to the post; comment timestamps are never used.
+
+Because raw observations are append-only, a caption first stored as empty and later
+extracted produces a new `Changed` observation for the same `id`; the earlier observation is
+kept. `raw_metadata` records `transport` (`browser`), `media_url`,
 `final_url`, `caption_source`, `published_at_source`, caption `hashtags` and `mentions`,
 `origin`, and `collector_version` (`instagram-browser/1`); `typename`, `media_id`, and
 `is_video` are null.
