@@ -94,6 +94,43 @@ The result of event detection and extraction before deterministic normalization 
 
 It preserves source wording such as `source_date_text` and `price_text`, plus extracted fields and `extraction_confidence`. A candidate can explicitly be `is_event = false`.
 
+### Extraction boundary
+
+```text
+RawItem → EventExtractionService → EventExtractionProvider → EventCandidate
+```
+
+Event detection and field extraction are separate responsibilities but one provider
+operation: `EventExtractionProvider.extract(ExtractionInput) -> ExtractedEventFacts` decides
+`is_event` — does this raw item describe or announce a concrete attendable event? — and
+returns the source-supported facts together. The interface is provider-neutral. No real AI
+provider is connected yet, so no AI call is made.
+
+`ExtractionInput` is the only evidence a provider sees: `raw_item_id`, `source_id`,
+`source_type`, `raw_text`, `content_url`, `content_type`, `published_at`, `author`, and, when
+source configuration is supplied, `locale`, `timezone`, and `city_hint`. Adapter
+`raw_metadata` is not passed.
+
+`ExtractedEventFacts` carries `is_event`, `title`, `summary`, `category`, `source_date_text`,
+`venue_name`, `address`, `city`, `event_format`, `price_text`, `registration_url`,
+`language`, and `extraction_confidence`. Unknown values are null, and a clear event may have
+no title.
+
+`EventExtractionService` owns the deterministic behavior:
+
+| Rule | Behavior |
+| --- | --- |
+| Empty or whitespace-only `raw_text` | Skipped without calling the provider; not classified as a non-event |
+| Provider output | Validated: `is_event` is a boolean; text fields are text or null, with blank text becoming null; `extraction_confidence` is a number from 0 to 1; `registration_url` is an http(s) URL; `event_format` is `in_person`, `online`, `hybrid`, or null. Other invalid output is rejected, not corrected |
+| Provenance | `raw_item_id` and `evidence_url` always come from the `RawItem`, never from the provider |
+| `candidate_id` | `candidate:` plus the SHA-256 of the raw item `id` and `content_hash`: the same observation always yields the same id, an edited observation a new id, and the provider or model never affects it |
+| Normalization-owned fields | `starts_at`, `ends_at`, `price_amount`, and `currency` stay null; source wording stays in `source_date_text` and `price_text`, and `city_hint` is never copied into `city` |
+| Failures | Provider errors and invalid output become per-item outcomes (`provider_failed`, `invalid_output`). Provider adapters translate library errors into `ProviderExtractionError` or `InvalidExtractionOutputError` |
+
+`orchestration.extraction_run.run_event_extraction` processes raw items independently and
+reports `observed`, `extracted`, `events`, `non_events`, `skipped`, and `failed`. Candidates
+are returned in memory and are not persisted. Normalization is a separate, later step.
+
 ## Event
 
 The normalized canonical record used for filtering, deduplication, review, and later Google Sheets export.

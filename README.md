@@ -29,6 +29,20 @@ Source → RawItem → EventCandidate → Event
 The first curated registry lives in `config/sources.yaml`. The Instagram collector is the
 only live path so far, and it runs only when invoked explicitly.
 
+The event extraction foundation sits after collection:
+
+```text
+RawItem → EventExtractionService → EventExtractionProvider → EventCandidate
+```
+
+A provider decides whether a raw item announces a concrete attendable event and extracts its
+source-supported facts in one operation. The service owns everything deterministic: skipping
+items without text, validating provider output, keeping provenance from the raw item, and
+assigning stable candidate ids. Extraction is provider-neutral and no real AI provider is
+connected yet, so there is no `extract` command and no AI call is made. Event candidates are
+transient (not persisted), and date, price, and category normalization is a separate, later
+step.
+
 ## Development
 
 Requires Python 3.11+ (developed on Python 3.13). Live Instagram collection also requires
@@ -182,7 +196,8 @@ validated live against `@davvvat` — authentication through the persistent Chro
 real Persian caption extraction, published timestamps and image URLs, recent-item selection
 that is not displaced by pinned posts, and New/Changed/Existing behavior across repeated
 runs all work as intended.
-Next milestone: event detection and structured extraction over collected raw items.
+Event extraction is in progress: the provider-neutral extraction foundation is implemented and
+tested offline, and connecting the first real AI extraction provider is the next step.
 
 ## License
 

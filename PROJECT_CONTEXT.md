@@ -258,6 +258,16 @@ fallback reference in `collectors/instagram_instaloader.py`, since its profile l
 refused with HTTP 429. It is used only when explicitly selected, never as an automatic
 fallback.
 
+Event extraction lives in `extraction/`. `EventExtractionProvider` is a provider-neutral
+protocol whose single `extract` call both detects whether a raw item is an event and
+returns source-supported facts (`ExtractedEventFacts`) from a deliberate `ExtractionInput`
+that excludes adapter `raw_metadata`. `EventExtractionService` validates that output, maps
+it onto the existing `EventCandidate`, sets provenance (`raw_item_id`, `evidence_url`) from
+the `RawItem` itself, and derives the candidate id from the raw item id and content hash so
+it never depends on the provider. `orchestration/extraction_run.py` extracts a batch item
+by item and keeps candidates in memory. Normalization-owned fields (`starts_at`, `ends_at`,
+`price_amount`, `currency`) stay null until the normalization step exists.
+
 ## 10. Delivery sequence
 
 The project intentionally became Instagram-first for initial source validation: an
@@ -272,8 +282,12 @@ depends on knowing.
    Persian caption extraction, published timestamps and image URLs, recency-based
    selection that pinned posts do not displace, and New/Changed/Existing behavior across
    repeated runs. This closes the Instagram Collector MVP milestone.
-4. Add event detection and structured extraction over collected raw items. **Next milestone.**
-5. Add deterministic normalization and validation.
+4. Add event detection and structured extraction over collected raw items. **In progress** —
+   the provider-neutral foundation is implemented (`RawItem` → `EventExtractionService` →
+   `EventExtractionProvider` → transient `EventCandidate`, tested offline with fake
+   providers). Integrating the first real AI provider is the next sub-step; no live AI
+   extraction exists yet.
+5. Add deterministic normalization and validation. **Later.**
 6. Add canonical local storage with deduplication and repeatable reruns.
 7. Export candidates to a test Google Sheet without overwriting review fields.
 8. Add website adapters and broader source coverage.
@@ -283,7 +297,8 @@ depends on knowing.
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Extraction approach: rules, LLM, or a hybrid, and its cost/privacy constraints.
+- Which extraction provider backs `EventExtractionProvider` (an LLM, rules, or a hybrid),
+  and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.
 - Category taxonomy and Persian/English display conventions.
