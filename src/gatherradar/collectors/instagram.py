@@ -1,38 +1,30 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ..domain import RawItem, Source, SourceType, compute_content_hash
 from .base import (
-    AuthenticationRequiredError,
     CollectionResult,
     ItemFailure,
-    SourceAccessRestrictedError,
     SourceConfigurationError,
     SourceDisabledError,
     SourceTypeMismatchError,
-    SourceUnavailableError,
 )
-from .instagram_auth import (
-    NO_ACTIVE_SESSION_MESSAGE,
-    SessionInvalidError,
-    SessionNotFoundError,
-    load_active_authenticated_loader,
-)
+from .instagram_browser import BrowserMediaFetcher
+from .instagram_dom import ORIGIN_POST, ORIGIN_REEL, MediaExtractionError
 
+# collector_version for items whose transport does not declare its own (the legacy
+# Instaloader transport); browser items carry instagram_browser.BROWSER_COLLECTOR_VERSION.
 COLLECTOR_VERSION = "instagram-instaloader/2"
 DEFAULT_LIMIT = 5
 
-ORIGIN_POST = "post"
-ORIGIN_REEL = "reel"
-
 # Instagram's anonymous web timeline exposes only the legacy `__typename`, which
 # carries no "clips" marker, so a plain video post can't be told apart from a reel by
-# typename alone. When the collection path fetched an item through get_reels() it
-# already knows the origin, so that trusted context is used instead (see content_type_for).
+# typename alone. When the collection path reached an item as a reel (get_reels() or a
+# /reel/ URL) it already knows the origin, so that trusted context is used instead.
 _TYPENAME_TO_CONTENT_TYPE = {
     "GraphImage": "image",
     "GraphVideo": "video",
@@ -86,12 +78,17 @@ def _string_list(value: Any) -> list[str]:
 def map_post_to_raw_item(
     post: Any, source: Source, captured_at: datetime, *, origin: str = ORIGIN_POST
 ) -> RawItem:
-    """Convert one Instaloader post (from either posts or reels) into the shared
-    RawItem contract."""
+    """Convert one fetched media item into the shared RawItem contract. Instaloader Posts
+    and browser-read BrowserMedia expose the same attribute names, so both transports
+    share this mapping."""
     shortcode = _attribute(post, "shortcode")
     if not isinstance(shortcode, str) or not shortcode.strip():
         raise ValueError("post is missing a shortcode")
     shortcode = shortcode.strip()
+
+    extraction_error = _attribute(post, "extraction_error")
+    if isinstance(extraction_error, str) and extraction_error:
+        raise MediaExtractionError(extraction_error)
 
     username = (source.username or "").strip()
     if not username:
@@ -109,7 +106,7 @@ def map_post_to_raw_item(
     published_at = _to_utc(_attribute(post, "date_utc"))
 
     raw_metadata: dict[str, Any] = {
-        "collector_version": COLLECTOR_VERSION,
+        "collector_version": _attribute(post, "collector_version", COLLECTOR_VERSION),
         "origin": origin,
         "typename": typename,
         "media_id": str(media_id) if media_id is not None else None,
@@ -117,6 +114,10 @@ def map_post_to_raw_item(
         "hashtags": _string_list(_attribute(post, "caption_hashtags", [])),
         "mentions": _string_list(_attribute(post, "caption_mentions", [])),
     }
+    extra_metadata = _attribute(post, "extra_metadata")
+    if isinstance(extra_metadata, dict):
+        for key, value in extra_metadata.items():
+            raw_metadata.setdefault(key, value)
 
     image_url = _attribute(post, "url")
 
@@ -183,7 +184,11 @@ def _dedupe_and_bound(
 
 
 class InstagramCollector:
-    """Collects a bounded number of recent public posts and reels for one Instagram source."""
+    """Collects a bounded number of recent public posts and reels for one Instagram source.
+
+    The default transport is the persistent-Chrome-profile BrowserMediaFetcher; pass
+    `fetch_posts` to use another transport explicitly.
+    """
 
     def __init__(
         self,
@@ -195,7 +200,7 @@ class InstagramCollector:
         self._fetch_posts = (
             fetch_posts
             if fetch_posts is not None
-            else InstaloaderPostFetcher(data_dir=data_dir)
+            else BrowserMediaFetcher(data_dir=data_dir)
         )
         self._now = now if now is not None else (lambda: datetime.now(timezone.utc))
 
@@ -241,105 +246,3 @@ class InstagramCollector:
             raise SourceConfigurationError(f"source {source.id} has no Instagram username")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive integer")
-
-
-class InstaloaderPostFetcher:
-    """Reads recent public posts and reels through the active authenticated
-    Instaloader session, without downloading media.
-
-    The active session belongs to whichever Instagram account the owner
-    authenticated as (see `python -m gatherradar auth instagram`); it is loaded
-    independently of `username`, the public source profile being crawled, so one
-    login account can be reused across every approved source. Anonymous access is
-    not used: it is known to be blocked (HTTP 429) for this project's sources, so a
-    missing or invalid local session is reported clearly instead of silently
-    attempting repeated anonymous requests.
-    """
-
-    def __init__(
-        self,
-        *,
-        data_dir: str | Path = "data",
-        request_timeout: float = 30.0,
-        max_connection_attempts: int = 1,
-        load_session: Callable[[], Any] | None = None,
-    ) -> None:
-        self._data_dir = data_dir
-        self._request_timeout = request_timeout
-        # A single attempt means a rejected request (e.g. HTTP 429) is reported
-        # immediately instead of triggering Instaloader's own long rate-limit backoff.
-        self._max_connection_attempts = max_connection_attempts
-        self._load_session = load_session if load_session is not None else self._load_session_default
-
-    def _load_session_default(self) -> Any:
-        return load_active_authenticated_loader(data_dir=self._data_dir)
-
-    def __call__(self, username: str, limit: int) -> Iterator[tuple[str, Any]]:
-        import instaloader
-        from instaloader import exceptions as instaloader_errors
-
-        try:
-            loader = self._load_session()
-        except SessionNotFoundError as exc:
-            raise AuthenticationRequiredError(NO_ACTIVE_SESSION_MESSAGE) from exc
-        except SessionInvalidError as exc:
-            raise AuthenticationRequiredError(
-                f"the active Instagram session is no longer valid ({exc}); "
-                "run 'python -m gatherradar auth instagram' again to refresh it"
-            ) from exc
-
-        loader.context.max_connection_attempts = self._max_connection_attempts
-        loader.context.request_timeout = self._request_timeout
-
-        try:
-            profile = instaloader.Profile.from_username(loader.context, username)
-            if profile.is_private:
-                raise SourceAccessRestrictedError(
-                    f"Instagram profile @{username} is private; "
-                    "GatherRadar collects public content only"
-                )
-            yield from _tagged(profile.get_posts(), ORIGIN_POST, limit)
-            yield from _tagged(profile.get_reels(), ORIGIN_REEL, limit)
-        except instaloader_errors.InstaloaderException as exc:
-            raise _translate_instaloader_error(username, exc) from exc
-
-
-def _tagged(posts: Iterable[Any], origin: str, limit: int) -> Iterator[tuple[str, Any]]:
-    for index, post in enumerate(posts):
-        if index >= limit:
-            break
-        yield origin, post
-
-
-def _looks_rate_limited(exc: Exception) -> bool:
-    # Once Instaloader exhausts its retries it re-raises a plain ConnectionException
-    # that still carries the original 429 text, so the status has to be read back out.
-    text = str(exc).lower()
-    return "429" in text or "too many requests" in text
-
-
-def _translate_instaloader_error(username: str, exc: Exception) -> SourceUnavailableError:
-    from instaloader import exceptions as errors
-
-    if isinstance(exc, errors.ProfileNotExistsException):
-        return SourceUnavailableError(
-            f"Instagram profile @{username} was not found or is unavailable"
-        )
-    if isinstance(exc, errors.PrivateProfileNotFollowedException):
-        return SourceAccessRestrictedError(
-            f"Instagram profile @{username} is private; GatherRadar collects public content only"
-        )
-    if isinstance(exc, errors.TooManyRequestsException) or _looks_rate_limited(exc):
-        # Report only what is actually known: Instagram returned HTTP 429 for this
-        # request. That may reflect rate limiting or access policy; it does not by
-        # itself prove an IP-level block, so no root cause is inferred here.
-        return SourceAccessRestrictedError(
-            f"Instagram refused the request with HTTP 429 (Too Many Requests): {exc}"
-        )
-    if isinstance(exc, (errors.LoginRequiredException, errors.QueryReturnedForbiddenException)):
-        return SourceAccessRestrictedError(
-            "Instagram refused anonymous access and asked for a logged-in session"
-        )
-    if isinstance(exc, errors.ConnectionException):
-        return SourceUnavailableError(f"Could not reach Instagram: {exc}")
-    return SourceUnavailableError(f"Instagram collection failed: {type(exc).__name__}: {exc}")

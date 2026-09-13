@@ -19,11 +19,12 @@ from gatherradar.collectors.instagram import (
     ORIGIN_POST,
     ORIGIN_REEL,
     InstagramCollector,
-    InstaloaderPostFetcher,
     build_raw_item_id,
     content_type_for,
     map_post_to_raw_item,
 )
+from gatherradar.collectors.instagram_browser import BrowserMediaFetcher
+from gatherradar.collectors.instagram_instaloader import InstaloaderPostFetcher
 from gatherradar.collectors.instagram_auth import (
     SessionInvalidError,
     SessionNotFoundError,
@@ -431,7 +432,7 @@ class ErrorTranslationTests(unittest.TestCase):
         self.errors = exceptions
 
     def translate(self, exc):
-        from gatherradar.collectors.instagram import _translate_instaloader_error
+        from gatherradar.collectors.instagram_instaloader import _translate_instaloader_error
 
         return _translate_instaloader_error("davvvat", exc)
 
@@ -553,13 +554,21 @@ class FetcherAuthenticationTests(unittest.TestCase):
 
 
 class CollectorDataDirWiringTests(unittest.TestCase):
-    """InstagramCollector must pass its data_dir through to the default fetcher so
-    it looks for sessions under the same root the CLI's --data-dir points at."""
+    """InstagramCollector must pass its data_dir through to the default fetcher so it
+    uses the browser profile under the same root the CLI's --data-dir points at."""
 
     def test_default_fetcher_uses_the_requested_data_dir(self) -> None:
+        # The default transport is now the browser; previously this asserted the
+        # Instaloader fetcher, whose data_dir wiring is still covered below.
         collector = InstagramCollector(data_dir="custom-data")
-        self.assertIsInstance(collector._fetch_posts, InstaloaderPostFetcher)
-        self.assertEqual(collector._fetch_posts._data_dir, "custom-data")
+        self.assertIsInstance(collector._fetch_posts, BrowserMediaFetcher)
+        self.assertEqual(
+            collector._fetch_posts.profile_dir, Path("custom-data") / "browser" / "instagram-profile"
+        )
+
+    def test_legacy_instaloader_fetcher_uses_the_requested_data_dir(self) -> None:
+        fetcher = InstaloaderPostFetcher(data_dir="custom-data")
+        self.assertEqual(fetcher._data_dir, "custom-data")
 
     def test_injected_fetch_posts_bypasses_data_dir(self) -> None:
         sentinel = lambda username, limit: []

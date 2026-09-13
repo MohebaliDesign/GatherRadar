@@ -10,9 +10,12 @@ from .base import (
     SourceTypeMismatchError,
     SourceUnavailableError,
 )
-from .instagram import InstagramCollector, InstaloaderPostFetcher
+from .instagram import InstagramCollector
+from .instagram_browser import BrowserMediaFetcher
+from .instagram_instaloader import InstaloaderPostFetcher
 
 __all__ = [
+    "BrowserMediaFetcher",
     "CollectionResult",
     "Collector",
     "CollectorError",

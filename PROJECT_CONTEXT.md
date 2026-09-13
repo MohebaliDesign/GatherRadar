@@ -243,10 +243,19 @@ Python 3.11+ with `pip`, a local `.venv`, and setuptools via `pyproject.toml` is
 chosen toolchain. Tests run on `unittest` from the standard library. No formatter,
 linter, or AI provider is final yet. See the README for exact setup and run commands.
 
-Instagram access uses [Instaloader](https://instaloader.github.io/) as a normal package
-dependency, reached only through `collectors/instagram.py`. That adapter converts
-Instaloader objects into `RawItem` records and never leaks library types outward, so the
-library can be replaced without touching the domain or the rest of the pipeline.
+Instagram access runs through [Playwright](https://playwright.dev/python/) driving the
+installed Google Chrome with a dedicated, persistent GatherRadar profile under
+`data/browser/instagram-profile/`. The owner logs in manually once in that profile; it is
+the persisted session. Responsibilities stay separate: `collectors/instagram_browser.py`
+owns the profile, launch, and login checks and navigates pages;
+`collectors/instagram_dom.py` extracts media links, captions, and timestamps from page
+HTML using URL patterns and semantic elements; `collectors/instagram.py` maps the result
+into `RawItem`; storage is unchanged. The browser runs visibly and unmodified — no stealth,
+fingerprint changes, proxies, or checkpoint bypasses.
+
+The earlier [Instaloader](https://instaloader.github.io/) transport remains temporarily in
+`collectors/instagram_instaloader.py` while the browser transport is validated. It is used
+only when explicitly selected, never as an automatic fallback.
 
 ## 10. Delivery sequence
 
@@ -269,11 +278,12 @@ depends on knowing.
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Whether anonymous Instagram collection is viable. Live runs against
-  `davvvat_instagram` have been refused with HTTP 429 on the first request (most
-  recently on 2026-09-10, after hardening the collector to fail fast instead of
-  retrying), so an owner-approved authenticated Instaloader session is the next
-  candidate experiment.
+- Whether browser-profile Instagram collection is reliable. Anonymous Instaloader runs
+  were refused with HTTP 429 (2026-09-10), and so were authenticated Instaloader runs:
+  `Profile.from_username()` hits `/api/v1/users/web_profile_info/` even with a valid
+  session, while the same account browses `davvvat` normally in Chrome. The
+  Playwright + persistent Chrome profile transport is now the default and awaits
+  live validation.
 - Extraction approach: rules, LLM, or a hybrid, and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.

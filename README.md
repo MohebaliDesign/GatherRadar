@@ -31,7 +31,8 @@ only live path so far, and it runs only when invoked explicitly.
 
 ## Development
 
-Requires Python 3.11+.
+Requires Python 3.11+ (developed on Python 3.13). Live Instagram collection also requires
+Google Chrome installed on the machine.
 
 ```bash
 python -m venv .venv
@@ -42,49 +43,66 @@ python -m unittest discover -s tests
 On Windows, activate the environment with `.venv\Scripts\activate`; on macOS and Linux use
 `source .venv/bin/activate`.
 
-The test suite is offline. It never contacts Instagram, and no test needs credentials.
+`pip install -e .` installs the Playwright Python package. GatherRadar drives your installed
+Google Chrome through Playwright (`channel="chrome"`), so Playwright's bundled browsers are not
+needed and `playwright install` is not required. If Google Chrome is not installed, install it
+normally, or run `python -m playwright install chrome`.
 
-## Authenticating with Instagram
+The test suite is offline. It never launches Chrome, never contacts Instagram, and no test needs
+credentials.
 
-Anonymous Instagram access is blocked (HTTP 429) for this project's sources, so collection
-requires one authenticated local session. Authentication is a separate concept from the
-public sources being collected: you log in once as your own Instagram account (for example
-`instaloader.crawler`), and that single session is reused to crawl every approved public
-source (`davvvat`, `vadoostan`, `jabama.events`, ...). The collector never needs to know the
-login account's username in advance, and the login account is never treated as a source to
-crawl.
+## Instagram browser profile
+
+Instagram collection runs in a real, visible Chrome window that uses a dedicated GatherRadar
+browser profile:
+
+```text
+data/browser/instagram-profile/
+```
+
+This profile is separate from your normal Chrome profile, so your personal browser is never
+touched or locked. The profile itself holds the Instagram login; GatherRadar does not store
+passwords or cookies anywhere else.
+
+### Log in once
 
 ```bash
 python -m gatherradar auth instagram
 ```
 
-This does not take a username or password argument. It interactively prompts for an
-Instagram `Cookie` request-header string, copied from an already logged-in browser session
-(e.g. from your browser's devtools on instagram.com), and reads it with `getpass` so it is
-never echoed to the terminal:
+This opens Chrome on Instagram with the GatherRadar profile. Log in manually in that window if
+needed — GatherRadar never asks for your password — then return to the terminal:
 
 ```text
 GatherRadar Instagram authentication
-Paste Instagram Cookie header: [hidden]
+
+Opening Chrome with the GatherRadar browser profile:
+data/browser/instagram-profile
+
+Log in to Instagram in the opened Chrome window.
+When the Instagram home page is visible, return here and press Enter.
 
 Verifying session...
 
-Authenticated as @instaloader.crawler
-Session saved successfully.
+Instagram browser session verified.
+Persistent profile saved.
 ```
 
-The pasted cookie is parsed, handed to Instaloader (`update_cookies` + `test_login`), and
-never printed, logged, or stored — only the resulting Instaloader session is saved locally
-under `data/sessions/`, alongside non-secret metadata recording which account is active:
+GatherRadar checks that the window has left Instagram's login flow and that the profile holds
+an Instagram login (it never prints cookie values), then closes Chrome.
+
+The login usually persists between runs. If Instagram expires it, collection stops with:
 
 ```text
-data/sessions/instagram-active.json
-data/sessions/instagram-instaloader.crawler.session
+Instagram browser session is not authenticated.
+Run:
+
+python -m gatherradar auth instagram
 ```
 
-Session files remain purely local and are Git-ignored; no passwords or cookies are ever
-committed. If no session has been configured yet, collection fails with an actionable error
-telling you to run `auth instagram` first.
+Rerun `python -m gatherradar auth instagram` to log in again. If Instagram shows a
+verification or checkpoint page, complete it manually in that Chrome window; GatherRadar does
+not bypass it.
 
 ## Collecting from Instagram
 
@@ -95,12 +113,24 @@ Collection is always explicit — nothing runs on a schedule. Pass a source id f
 python -m gatherradar collect instagram davvvat_instagram --limit 5
 ```
 
-This loads the active authenticated session, then reads a bounded number of recent public
-posts and Reels from the target source, maps them onto the `RawItem` contract, and appends
-new or changed items to `data/raw/instagram/<username>.jsonl`. Items are keyed by a stable id
-(`instagram:<username>:<shortcode>`); rerunning the command with unchanged content appends
-nothing, and an edited caption is recorded as a new, auditable observation rather than
-silently ignored:
+Chrome does not need to be open. GatherRadar launches its own Chrome window on the GatherRadar
+profile, then:
+
+1. confirms the profile is still logged in to Instagram;
+2. opens the source profile, e.g. `https://www.instagram.com/davvvat/`;
+3. finds recent posts and reels from their `/p/` and `/reel/` links, scrolling a few times at
+   most and only if fewer than `--limit` are visible;
+4. opens each selected post or reel page to read its caption and publish time;
+5. maps them onto the `RawItem` contract and appends new or changed items to
+   `data/raw/instagram/<username>.jsonl`;
+6. closes Chrome, including when the run fails.
+
+Close any Chrome window that GatherRadar left open before collecting; a browser profile can be
+used by only one Chrome instance at a time.
+
+Items are keyed by a stable id (`instagram:<username>:<shortcode>`); rerunning the command with
+unchanged content appends nothing, and an edited caption is recorded as a new, auditable
+observation rather than silently ignored:
 
 ```text
 Observed: 5
@@ -109,11 +139,26 @@ Changed: 0
 Existing: 5
 ```
 
-Useful flags: `--limit` (default 5), `--config` (default `config/sources.yaml`), and
-`--data-dir` (default `data`).
+Useful flags: `--limit` (default 5), `--config` (default `config/sources.yaml`),
+`--data-dir` (default `data`), and `--transport` (default `browser`).
 
-Everything under `data/` is runtime output and stays out of Git. GatherRadar collects public
-content only, targeted at accounts the owner has explicitly approved in `config/sources.yaml`.
+### Legacy Instaloader transport
+
+The earlier Instaloader transport is kept temporarily, while the browser transport is being
+validated, because Instaloader's profile lookup is refused with HTTP 429. It is never the
+default and GatherRadar never falls back to it automatically. It runs only when requested
+explicitly:
+
+```bash
+python -m gatherradar auth instagram --legacy-cookie
+python -m gatherradar collect instagram davvvat_instagram --transport instaloader
+```
+
+### Local data and privacy
+
+Everything under `data/` — the browser profile, raw captures, and legacy session files — is
+local runtime data and is ignored by Git. Passwords, cookies, and browser profile files are
+never committed. GatherRadar collects only public profiles listed in `config/sources.yaml`.
 
 ## Project docs
 
@@ -123,8 +168,8 @@ content only, targeted at accounts the owner has explicitly approved in `config/
 
 ## Status
 
-Early MVP. The Instagram collection pipeline is implemented and verified with offline tests.
-Live Instagram access is currently being validated.
+Early MVP. The browser-backed Instagram collection pipeline is implemented and verified with
+offline tests. Live Instagram collection through the browser profile is being validated.
 Next milestone: event detection over collected raw items.
 
 ## License

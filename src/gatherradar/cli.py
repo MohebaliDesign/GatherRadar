@@ -6,10 +6,15 @@ import sys
 from collections.abc import Callable, Sequence
 
 from .collectors.base import CollectorError
-from .collectors.instagram import DEFAULT_LIMIT
+from .collectors.instagram import DEFAULT_LIMIT, InstagramCollector
 from .collectors.instagram_auth import InstagramAuthError, create_session_from_cookie
+from .collectors.instagram_browser import authenticate_browser_profile, browser_profile_path
+from .collectors.instagram_instaloader import InstaloaderPostFetcher
 from .orchestration.collection_run import RunSummary, run_instagram_collection
 from .storage.jsonl import StorageError
+
+TRANSPORT_BROWSER = "browser"
+TRANSPORT_INSTALOADER = "instaloader"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +45,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="data",
         help="Root directory for local runtime data (default: data)",
     )
+    instagram.add_argument(
+        "--transport",
+        choices=(TRANSPORT_BROWSER, TRANSPORT_INSTALOADER),
+        default=TRANSPORT_BROWSER,
+        help="Collection transport (default: browser). 'instaloader' is the legacy "
+        "transport, kept only while the browser transport is validated.",
+    )
 
     auth = subcommands.add_parser(
         "auth", help="Create and verify an authenticated session for a source type."
@@ -48,13 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     auth_instagram = auth_kinds.add_parser(
         "instagram",
-        help="Import a Cookie header from an already logged-in browser session "
-        "and save it as the active, reusable Instagram session.",
+        help="Open Chrome with the GatherRadar browser profile and log in to Instagram manually.",
     )
     auth_instagram.add_argument(
         "--data-dir",
         default="data",
         help="Root directory for local runtime data (default: data)",
+    )
+    auth_instagram.add_argument(
+        "--legacy-cookie",
+        action="store_true",
+        help="Use the legacy Instaloader Cookie-header import instead of the browser profile.",
     )
 
     return parser
@@ -96,17 +112,57 @@ def format_auth_success(username: str) -> str:
     )
 
 
+def format_browser_auth_success() -> str:
+    return "\n".join(
+        [
+            "Instagram browser session verified.",
+            "Persistent profile saved.",
+        ]
+    )
+
+
+def _wait_for_browser_login() -> None:
+    print()
+    print("Log in to Instagram in the opened Chrome window.")
+    print("When the Instagram home page is visible, return here and press Enter.")
+    input()
+    print("Verifying session...")
+
+
+def run_auth_instagram_browser(
+    *, data_dir: str, wait_for_user: Callable[[], None] | None = None
+) -> int:
+    wait = wait_for_user if wait_for_user is not None else _wait_for_browser_login
+    print("GatherRadar Instagram authentication")
+    print()
+    print("Opening Chrome with the GatherRadar browser profile:")
+    print(browser_profile_path(data_dir))
+
+    try:
+        authenticate_browser_profile(data_dir=data_dir, wait_for_user=wait)
+    except CollectorError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("error: Instagram authentication was cancelled.", file=sys.stderr)
+        return 1
+
+    print()
+    print(format_browser_auth_success())
+    return 0
+
+
 def _prompt_for_cookie() -> str:
     # getpass keeps the pasted Cookie header out of the terminal echo and, unlike a
     # CLI argument, out of shell history.
     return getpass.getpass("Paste Instagram Cookie header: ")
 
 
-def run_auth_instagram(
+def run_auth_instagram_cookie(
     *, data_dir: str, cookie_prompt: Callable[[], str] | None = None
 ) -> int:
     prompt = cookie_prompt if cookie_prompt is not None else _prompt_for_cookie
-    print("GatherRadar Instagram authentication")
+    print("GatherRadar Instagram authentication (legacy cookie import)")
     cookie_header = prompt()
 
     print()
@@ -123,16 +179,25 @@ def run_auth_instagram(
 
 
 def main(
-    argv: Sequence[str] | None = None, *, _cookie_prompt: Callable[[], str] | None = None
+    argv: Sequence[str] | None = None,
+    *,
+    _cookie_prompt: Callable[[], str] | None = None,
+    _wait_for_user: Callable[[], None] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "auth":
-        return run_auth_instagram(data_dir=args.data_dir, cookie_prompt=_cookie_prompt)
+        if args.legacy_cookie:
+            return run_auth_instagram_cookie(data_dir=args.data_dir, cookie_prompt=_cookie_prompt)
+        return run_auth_instagram_browser(data_dir=args.data_dir, wait_for_user=_wait_for_user)
 
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)
         return 2
+
+    collector = None
+    if args.transport == TRANSPORT_INSTALOADER:
+        collector = InstagramCollector(fetch_posts=InstaloaderPostFetcher(data_dir=args.data_dir))
 
     try:
         summary = run_instagram_collection(
@@ -140,6 +205,7 @@ def main(
             config_path=args.config,
             data_dir=args.data_dir,
             limit=args.limit,
+            collector=collector,
         )
     except (CollectorError, StorageError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

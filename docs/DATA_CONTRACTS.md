@@ -42,22 +42,38 @@ The Instagram collector writes to `data/raw/instagram/<username>.jsonl` and fill
 
 | Field | Value |
 | --- | --- |
-| `id` | `instagram:<username>:<shortcode>` — stable across reruns, and the key used to detect an existing vs. changed observation |
+| `id` | `instagram:<username>:<shortcode>` — `<username>` is always the configured source account, never the logged-in account; stable across reruns, and the key used to detect an existing vs. changed observation |
 | `external_id` | The Instagram shortcode |
-| `content_url` | `https://www.instagram.com/p/<shortcode>/`, valid for every post type |
-| `raw_text` | The caption exactly as published, never rewritten or summarized |
-| `published_at` | Post creation time, normalized to UTC and always timezone-aware |
-| `content_type` | `image`, `video`, `carousel`, `reel`, or `unknown` |
+| `content_url` | `https://www.instagram.com/p/<shortcode>/`, valid for posts and reels alike, so the content hash does not depend on which URL form the media was discovered through |
+| `raw_text` | The caption exactly as published, never rewritten or summarized; empty when none was found |
+| `published_at` | Post creation time, normalized to UTC and always timezone-aware; null when no timezone-aware timestamp is available |
+| `author` | The configured source username |
+| `image_url` | A thumbnail URL when available; media files are never downloaded |
+| `content_type` | `reel`, `image`, `video`, `carousel`, or `unknown` (see below) |
 
-The collector reads both a profile's regular posts (`get_posts()`) and its Reels
-(`get_reels()`), merges them into one recency-ordered, deduplicated sequence bounded by
-the requested limit, and never returns the same shortcode twice even when Instagram
-exposes it through both feeds. An item fetched through the Reels feed is labeled
-`reel` on trusted collection-path context, since the anonymous web timeline's legacy
-`__typename` alone carries no clips marker and can't be used to guess it. A plain video
-post fetched through the regular posts feed still maps `GraphVideo` to `video`.
-Adapter-specific values (`typename`, `media_id`, `is_video`, caption hashtags and
-mentions, `origin` — `post` or `reel` — and `collector_version`) stay inside `raw_metadata`.
+Every collected shortcode appears at most once per run, preferring its reel form when
+Instagram exposes the same media as both a post and a reel. Both transports share one
+mapping, so the same media keeps the same `id` whichever transport observed it.
+
+**Browser transport (default).** Playwright opens the source profile in the persistent
+GatherRadar Chrome profile, discovers media from `/p/<shortcode>/` and
+`/reel/<shortcode>/` link patterns, and opens each selected media page. Media reached
+through a `/reel/` URL is `reel`; other posts are `unknown`, because browser-visible pages
+do not reliably say whether a post is an image, video, or carousel. The caption comes from
+the post's caption heading, falling back to the quoted caption in Open Graph metadata. The
+publish time comes from the `time[datetime]` element that links to the post; comment
+timestamps are never used. `raw_metadata` records `transport` (`browser`), `media_url`,
+`final_url`, `caption_source`, `published_at_source`, caption `hashtags` and `mentions`,
+`origin`, and `collector_version` (`instagram-browser/1`); `typename`, `media_id`, and
+`is_video` are null.
+
+**Legacy Instaloader transport** (`--transport instaloader`, kept only while the browser
+transport is validated). It reads `get_posts()` and `get_reels()` and merges them into one
+recency-ordered sequence. Items from the Reels feed are labeled `reel`, since the legacy
+`__typename` carries no clips marker; `GraphImage`, `GraphVideo`, and `GraphSidecar` map to
+`image`, `video`, and `carousel`. Its `raw_metadata` carries `typename`, `media_id`,
+`is_video`, `hashtags`, `mentions`, `origin`, and `collector_version`
+(`instagram-instaloader/2`).
 
 ## EventCandidate
 
