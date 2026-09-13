@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# GatherRadar runtime data (raw captures, local databases, exports)
+data/
+
+# Instagram / Instaloader session and credential artifacts
+session-*
+*.session
+.instaloader-session*

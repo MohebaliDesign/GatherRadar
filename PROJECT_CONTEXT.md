@@ -239,25 +239,50 @@ config/
 data/               # local runtime data; add to .gitignore before use
 ```
 
-No framework, package manager, or AI provider is final yet. Record those choices
-when the first executable slice is implemented, along with exact setup, lint,
-test, and run commands.
+Python 3.11+ with `pip`, a local `.venv`, and setuptools via `pyproject.toml` is the
+chosen toolchain. Tests run on `unittest` from the standard library. No formatter,
+linter, or AI provider is final yet. See the README for exact setup and run commands.
+
+Instagram access runs through [Playwright](https://playwright.dev/python/) driving the
+installed Google Chrome with a dedicated, persistent GatherRadar profile under
+`data/browser/instagram-profile/`. The owner logs in manually once in that profile; it is
+the persisted session. Responsibilities stay separate: `collectors/instagram_browser.py`
+owns the profile, launch, and login checks and navigates pages;
+`collectors/instagram_dom.py` extracts media links, captions, and timestamps from page
+HTML using URL patterns and semantic elements; `collectors/instagram.py` maps the result
+into `RawItem`; storage is unchanged. The browser runs visibly and unmodified — no stealth,
+fingerprint changes, proxies, or checkpoint bypasses.
+
+The earlier [Instaloader](https://instaloader.github.io/) transport remains as a legacy
+fallback reference in `collectors/instagram_instaloader.py`, since its profile lookup is
+refused with HTTP 429. It is used only when explicitly selected, never as an automatic
+fallback.
 
 ## 10. Delivery sequence
 
-1. Define schemas, source registry format, and one sanitized fixture.
-2. Implement one website adapter end to end into local storage.
-3. Add deterministic normalization, validation, and repeatable reruns.
-4. Export candidates to a test Google Sheet without overwriting review fields.
-5. Add deduplication and run summaries.
-6. Add a permitted Instagram path after validating access constraints.
-7. Pilot with a small curated source set and refine from measured errors.
-8. Evaluate Telegram and recommendations only after the discovery loop works.
+The project intentionally became Instagram-first for initial source validation: an
+Instagram collector was easier to stand up before a website adapter and gives an early
+read on whether anonymous access is viable at all, which the rest of the pipeline
+depends on knowing.
+
+1. Define schemas, source registry format, and one sanitized fixture. **Done.**
+2. Implement the Instagram collector end to end into local raw JSONL storage. **Done.**
+3. Complete live Instagram validation. **Done** — the browser-backed collector has been
+   validated live against `@davvvat`: authentication, profile and media discovery, real
+   Persian caption extraction, published timestamps and image URLs, recency-based
+   selection that pinned posts do not displace, and New/Changed/Existing behavior across
+   repeated runs. This closes the Instagram Collector MVP milestone.
+4. Add event detection and structured extraction over collected raw items. **Next milestone.**
+5. Add deterministic normalization and validation.
+6. Add canonical local storage with deduplication and repeatable reruns.
+7. Export candidates to a test Google Sheet without overwriting review fields.
+8. Add website adapters and broader source coverage.
+9. Pilot with a small curated source set and refine from measured errors.
+10. Evaluate Telegram and recommendations only after the discovery loop works.
 
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Exact Python version and dependency manager.
 - Extraction approach: rules, LLM, or a hybrid, and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.
