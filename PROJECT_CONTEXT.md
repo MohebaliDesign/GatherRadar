@@ -253,9 +253,10 @@ HTML using URL patterns and semantic elements; `collectors/instagram.py` maps th
 into `RawItem`; storage is unchanged. The browser runs visibly and unmodified — no stealth,
 fingerprint changes, proxies, or checkpoint bypasses.
 
-The earlier [Instaloader](https://instaloader.github.io/) transport remains temporarily in
-`collectors/instagram_instaloader.py` while the browser transport is validated. It is used
-only when explicitly selected, never as an automatic fallback.
+The earlier [Instaloader](https://instaloader.github.io/) transport remains as a legacy
+fallback reference in `collectors/instagram_instaloader.py`, since its profile lookup is
+refused with HTTP 429. It is used only when explicitly selected, never as an automatic
+fallback.
 
 ## 10. Delivery sequence
 
@@ -264,10 +265,14 @@ Instagram collector was easier to stand up before a website adapter and gives an
 read on whether anonymous access is viable at all, which the rest of the pipeline
 depends on knowing.
 
-1. Define schemas, source registry format, and one sanitized fixture.
-2. Implement the Instagram collector end to end into local raw JSONL storage.
-3. Complete live Instagram validation (see the open decision below).
-4. Add event detection and structured extraction over collected raw items.
+1. Define schemas, source registry format, and one sanitized fixture. **Done.**
+2. Implement the Instagram collector end to end into local raw JSONL storage. **Done.**
+3. Complete live Instagram validation. **Done** — the browser-backed collector has been
+   validated live against `@davvvat`: authentication, profile and media discovery, real
+   Persian caption extraction, published timestamps and image URLs, recency-based
+   selection that pinned posts do not displace, and New/Changed/Existing behavior across
+   repeated runs. This closes the Instagram Collector MVP milestone.
+4. Add event detection and structured extraction over collected raw items. **Next milestone.**
 5. Add deterministic normalization and validation.
 6. Add canonical local storage with deduplication and repeatable reruns.
 7. Export candidates to a test Google Sheet without overwriting review fields.
@@ -278,12 +283,6 @@ depends on knowing.
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Whether browser-profile Instagram collection is reliable. Anonymous Instaloader runs
-  were refused with HTTP 429 (2026-09-10), and so were authenticated Instaloader runs:
-  `Profile.from_username()` hits `/api/v1/users/web_profile_info/` even with a valid
-  session, while the same account browses `davvvat` normally in Chrome. The
-  Playwright + persistent Chrome profile transport is now the default and awaits
-  live validation.
 - Extraction approach: rules, LLM, or a hybrid, and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.

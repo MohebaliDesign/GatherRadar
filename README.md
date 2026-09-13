@@ -153,9 +153,9 @@ Useful flags: `--limit` (default 5), `--config` (default `config/sources.yaml`),
 
 ### Legacy Instaloader transport
 
-The earlier Instaloader transport is kept temporarily, while the browser transport is being
-validated, because Instaloader's profile lookup is refused with HTTP 429. It is never the
-default and GatherRadar never falls back to it automatically. It runs only when requested
+The earlier Instaloader transport is kept only as a fallback reference, since its profile
+lookup is refused with HTTP 429. The browser transport above is the validated default, and
+GatherRadar never falls back to Instaloader automatically. It runs only when requested
 explicitly:
 
 ```bash
@@ -177,9 +177,12 @@ never committed. GatherRadar collects only public profiles listed in `config/sou
 
 ## Status
 
-Early MVP. The browser-backed Instagram collection pipeline is implemented and verified with
-offline tests. Live Instagram collection through the browser profile is being validated.
-Next milestone: event detection over collected raw items.
+Early MVP. The Instagram Collector milestone is complete: browser-backed collection has been
+validated live against `@davvvat` — authentication through the persistent Chrome profile,
+real Persian caption extraction, published timestamps and image URLs, recent-item selection
+that is not displaced by pinned posts, and New/Changed/Existing behavior across repeated
+runs all work as intended.
+Next milestone: event detection and structured extraction over collected raw items.
 
 ## License
 
