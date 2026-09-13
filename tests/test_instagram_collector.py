@@ -1,5 +1,8 @@
+import json
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,7 +24,12 @@ from gatherradar.collectors.instagram import (
     content_type_for,
     map_post_to_raw_item,
 )
-from gatherradar.collectors.instagram_auth import SessionInvalidError, SessionNotFoundError
+from gatherradar.collectors.instagram_auth import (
+    SessionInvalidError,
+    SessionNotFoundError,
+    active_session_metadata_path,
+    session_path,
+)
 from gatherradar.domain import Source, SourceType
 
 
@@ -210,6 +218,20 @@ class ContentHashTests(unittest.TestCase):
         self.assertEqual(len(item.content_hash), 64)
         int(item.content_hash, 16)  # raises ValueError if not hex
 
+    def test_reclassifying_post_as_reel_does_not_change_the_hash(self) -> None:
+        # Fetching the same media through get_reels() instead of get_posts() changes
+        # its recorded content_type from "video" to "reel", but that is GatherRadar's
+        # own classification, not a change to the source content, so it must not
+        # mark an otherwise-unchanged item as Changed.
+        as_post = map_post_to_raw_item(
+            make_post(typename="GraphVideo"), make_source(), CAPTURED_AT, origin=ORIGIN_POST
+        )
+        as_reel = map_post_to_raw_item(
+            make_post(typename="GraphVideo"), make_source(), CAPTURED_AT, origin=ORIGIN_REEL
+        )
+        self.assertNotEqual(as_post.content_type, as_reel.content_type)
+        self.assertEqual(as_post.content_hash, as_reel.content_hash)
+
 
 class CollectorTests(unittest.TestCase):
     def test_collects_and_maps_posts(self) -> None:
@@ -327,6 +349,35 @@ class PostsAndReelsTests(unittest.TestCase):
         self.assertEqual(len(result.items), 1)
         self.assertEqual(result.observed, 1)
 
+    def test_duplicate_shortcode_prefers_reel_origin_when_post_comes_first(self) -> None:
+        candidates = [
+            (ORIGIN_POST, make_post(shortcode="DUP", typename="GraphVideo")),
+            (ORIGIN_REEL, make_post(shortcode="DUP", typename="GraphVideo")),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=5)
+
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(result.items[0].content_type, "reel")
+        self.assertEqual(result.items[0].raw_metadata["origin"], ORIGIN_REEL)
+
+    def test_duplicate_shortcode_prefers_reel_origin_when_reel_comes_first(self) -> None:
+        candidates = [
+            (ORIGIN_REEL, make_post(shortcode="DUP", typename="GraphVideo")),
+            (ORIGIN_POST, make_post(shortcode="DUP", typename="GraphVideo")),
+        ]
+        collector = InstagramCollector(
+            fetch_posts=lambda u, l: candidates, now=lambda: CAPTURED_AT
+        )
+
+        result = collector.collect(make_source(), limit=5)
+
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(result.items[0].content_type, "reel")
+
     def test_combined_result_is_bounded_by_limit(self) -> None:
         candidates = [
             (ORIGIN_POST, make_post(shortcode="P1")),
@@ -429,23 +480,24 @@ class FetcherConfigurationTests(unittest.TestCase):
 
 
 class FetcherAuthenticationTests(unittest.TestCase):
-    """The real fetcher must use an authenticated session and never silently fall
-    back to anonymous requests, which are known to be blocked (HTTP 429)."""
+    """The real fetcher must use the active authenticated session and never silently
+    fall back to anonymous requests, which are known to be blocked (HTTP 429)."""
 
     def test_missing_session_reports_authentication_not_configured(self) -> None:
-        def load_session(username):
+        def load_session():
             raise SessionNotFoundError("no session file")
 
         fetcher = InstaloaderPostFetcher(load_session=load_session)
 
         with self.assertRaises(AuthenticationRequiredError) as ctx:
             list(fetcher("davvvat", 5))
-        self.assertIn("auth instagram davvvat", str(ctx.exception))
+        self.assertIn("auth instagram", str(ctx.exception))
+        self.assertNotIn("davvvat", str(ctx.exception))
 
     def test_invalid_session_reports_authentication_required_not_anonymous_fallback(
         self,
     ) -> None:
-        def load_session(username):
+        def load_session():
             raise SessionInvalidError("session expired")
 
         fetcher = InstaloaderPostFetcher(load_session=load_session)
@@ -462,13 +514,40 @@ class FetcherAuthenticationTests(unittest.TestCase):
             get_reels=lambda: iter([]),
         )
 
-        fetcher = InstaloaderPostFetcher(load_session=lambda username: fake_loader)
+        fetcher = InstaloaderPostFetcher(load_session=lambda: fake_loader)
 
         with mock.patch(
             "instaloader.Profile.from_username", return_value=fake_profile
         ) as from_username:
             results = list(fetcher("davvvat", 5))
 
+        from_username.assert_called_once_with(fake_loader.context, "davvvat")
+        self.assertEqual([post.shortcode for _origin, post in results], ["A1"])
+
+    def test_authenticated_login_account_differs_from_target_source_username(self) -> None:
+        # authenticated account = instaloader.crawler, target source = davvvat: the
+        # fetcher must load the active session (independent of the target username)
+        # and then open the target source's profile with it.
+        fake_loader = SimpleNamespace(context=SimpleNamespace())
+        fake_profile = SimpleNamespace(
+            is_private=False,
+            get_posts=lambda: iter([make_post(shortcode="A1")]),
+            get_reels=lambda: iter([]),
+        )
+        load_session_calls = []
+
+        def load_session():
+            load_session_calls.append("instaloader.crawler")
+            return fake_loader
+
+        fetcher = InstaloaderPostFetcher(load_session=load_session)
+
+        with mock.patch(
+            "instaloader.Profile.from_username", return_value=fake_profile
+        ) as from_username:
+            results = list(fetcher("davvvat", 5))
+
+        self.assertEqual(load_session_calls, ["instaloader.crawler"])
         from_username.assert_called_once_with(fake_loader.context, "davvvat")
         self.assertEqual([post.shortcode for _origin, post in results], ["A1"])
 
@@ -486,6 +565,74 @@ class CollectorDataDirWiringTests(unittest.TestCase):
         sentinel = lambda username, limit: []
         collector = InstagramCollector(fetch_posts=sentinel, data_dir="custom-data")
         self.assertIs(collector._fetch_posts, sentinel)
+
+
+class FakeInstaloaderForActiveSession:
+    """Stand-in for instaloader.Instaloader used only to prove the *real*
+    load_active_authenticated_loader() path (not an injected `load_session`
+    callable) resolves the LOGIN account's session, never the target source's."""
+
+    def __init__(self) -> None:
+        self.context = SimpleNamespace()
+        self.loaded_from: tuple[str, str] | None = None
+
+    def load_session_from_file(self, username: str, filename: str) -> None:
+        self.loaded_from = (username, filename)
+
+    def test_login(self) -> str:
+        return "instaloader.crawler"
+
+
+class AuthenticatedAccountDiffersFromTargetSourceEndToEndTests(unittest.TestCase):
+    """Mandatory regression coverage for the architecture bug this change fixes:
+    the authenticated LOGIN account (instaloader.crawler) must never be confused
+    with the public SOURCE being crawled (davvvat), all the way from the on-disk
+    active-session metadata through to the profile request the collector makes."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data_dir = Path(self._tmp.name)
+
+        login_username = "instaloader.crawler"
+        session_file = session_path(login_username, self.data_dir)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("fake-session", encoding="utf-8")
+        active_session_metadata_path(self.data_dir).write_text(
+            json.dumps({"username": login_username, "session_file": session_file.name}),
+            encoding="utf-8",
+        )
+
+    def test_collector_uses_the_login_accounts_session_to_request_the_target_source(
+        self,
+    ) -> None:
+        fake_loader = FakeInstaloaderForActiveSession()
+        fake_profile = SimpleNamespace(
+            is_private=False,
+            get_posts=lambda: iter([make_post(shortcode="A1")]),
+            get_reels=lambda: iter([]),
+        )
+
+        with mock.patch(
+            "gatherradar.collectors.instagram_auth._default_loader_factory",
+            return_value=fake_loader,
+        ):
+            fetcher = InstaloaderPostFetcher(data_dir=self.data_dir)
+
+            with mock.patch(
+                "instaloader.Profile.from_username", return_value=fake_profile
+            ) as from_username:
+                results = list(fetcher("davvvat", 5))
+
+        # The session loaded from disk belongs to the LOGIN account...
+        self.assertEqual(
+            fake_loader.loaded_from,
+            ("instaloader.crawler", str(session_path("instaloader.crawler", self.data_dir))),
+        )
+        # ...while the profile actually requested is the TARGET SOURCE, using that
+        # same authenticated session's context.
+        from_username.assert_called_once_with(fake_loader.context, "davvvat")
+        self.assertEqual([post.shortcode for _origin, post in results], ["A1"])
 
 
 if __name__ == "__main__":

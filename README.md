@@ -44,6 +44,48 @@ On Windows, activate the environment with `.venv\Scripts\activate`; on macOS and
 
 The test suite is offline. It never contacts Instagram, and no test needs credentials.
 
+## Authenticating with Instagram
+
+Anonymous Instagram access is blocked (HTTP 429) for this project's sources, so collection
+requires one authenticated local session. Authentication is a separate concept from the
+public sources being collected: you log in once as your own Instagram account (for example
+`instaloader.crawler`), and that single session is reused to crawl every approved public
+source (`davvvat`, `vadoostan`, `jabama.events`, ...). The collector never needs to know the
+login account's username in advance, and the login account is never treated as a source to
+crawl.
+
+```bash
+python -m gatherradar auth instagram
+```
+
+This does not take a username or password argument. It interactively prompts for an
+Instagram `Cookie` request-header string, copied from an already logged-in browser session
+(e.g. from your browser's devtools on instagram.com), and reads it with `getpass` so it is
+never echoed to the terminal:
+
+```text
+GatherRadar Instagram authentication
+Paste Instagram Cookie header: [hidden]
+
+Verifying session...
+
+Authenticated as @instaloader.crawler
+Session saved successfully.
+```
+
+The pasted cookie is parsed, handed to Instaloader (`update_cookies` + `test_login`), and
+never printed, logged, or stored — only the resulting Instaloader session is saved locally
+under `data/sessions/`, alongside non-secret metadata recording which account is active:
+
+```text
+data/sessions/instagram-active.json
+data/sessions/instagram-instaloader.crawler.session
+```
+
+Session files remain purely local and are Git-ignored; no passwords or cookies are ever
+committed. If no session has been configured yet, collection fails with an actionable error
+telling you to run `auth instagram` first.
+
 ## Collecting from Instagram
 
 Collection is always explicit — nothing runs on a schedule. Pass a source id from
@@ -53,11 +95,12 @@ Collection is always explicit — nothing runs on a schedule. Pass a source id f
 python -m gatherradar collect instagram davvvat_instagram --limit 5
 ```
 
-This reads a bounded number of recent public posts and Reels anonymously, maps them onto the
-`RawItem` contract, and appends new or changed items to `data/raw/instagram/<username>.jsonl`.
-Items are keyed by a stable id (`instagram:<username>:<shortcode>`); rerunning the command with
-unchanged content appends nothing, and an edited caption is recorded as a new, auditable
-observation rather than silently ignored:
+This loads the active authenticated session, then reads a bounded number of recent public
+posts and Reels from the target source, maps them onto the `RawItem` contract, and appends
+new or changed items to `data/raw/instagram/<username>.jsonl`. Items are keyed by a stable id
+(`instagram:<username>:<shortcode>`); rerunning the command with unchanged content appends
+nothing, and an edited caption is recorded as a new, auditable observation rather than
+silently ignored:
 
 ```text
 Observed: 5
@@ -70,7 +113,7 @@ Useful flags: `--limit` (default 5), `--config` (default `config/sources.yaml`),
 `--data-dir` (default `data`).
 
 Everything under `data/` is runtime output and stays out of Git. GatherRadar collects public
-content only; it does not log in, and it does not store cookies or sessions.
+content only, targeted at accounts the owner has explicitly approved in `config/sources.yaml`.
 
 ## Project docs
 

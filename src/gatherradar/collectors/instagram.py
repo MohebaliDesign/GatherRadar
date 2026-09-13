@@ -17,9 +17,10 @@ from .base import (
     SourceUnavailableError,
 )
 from .instagram_auth import (
+    NO_ACTIVE_SESSION_MESSAGE,
     SessionInvalidError,
     SessionNotFoundError,
-    load_authenticated_loader,
+    load_active_authenticated_loader,
 )
 
 COLLECTOR_VERSION = "instagram-instaloader/2"
@@ -134,7 +135,6 @@ def map_post_to_raw_item(
         content_hash=compute_content_hash(
             raw_text=raw_text,
             published_at=published_at,
-            content_type=content_type,
             content_url=content_url,
         ),
         raw_metadata=raw_metadata,
@@ -154,22 +154,31 @@ def _recency_sort_key(entry: tuple[str, Any]) -> tuple[int, float]:
 def _dedupe_and_bound(
     candidates: Iterable[tuple[str, Any]], limit: int
 ) -> list[tuple[str, Any]]:
-    """Keep the first (newest, once sorted) observation of each shortcode so the same
-    media collected through both posts and reels is not returned twice, bounded to
-    `limit` total items. A post missing a shortcode is never treated as a duplicate;
-    it passes through so the mapper can raise its own per-item failure."""
-    seen: set[str] = set()
-    bounded: list[tuple[str, Any]] = []
+    """Collapse the same media collected through both posts and reels into one
+    observation, preferring the Reel origin whichever order it was seen in so it is
+    classified as `reel`, not `video`; bounded to `limit` total items in the order
+    the candidates were sorted (newest first). A post missing a shortcode is never
+    treated as a duplicate; it passes through so the mapper can raise its own
+    per-item failure."""
+    chosen: dict[str, tuple[str, Any]] = {}
+    order: list[str | tuple[str, Any]] = []
     for origin, post in candidates:
-        if len(bounded) >= limit:
-            break
         shortcode = _attribute(post, "shortcode")
         if isinstance(shortcode, str) and shortcode.strip():
             key = shortcode.strip()
-            if key in seen:
-                continue
-            seen.add(key)
-        bounded.append((origin, post))
+            if key not in chosen:
+                chosen[key] = (origin, post)
+                order.append(key)
+            elif origin == ORIGIN_REEL and chosen[key][0] != ORIGIN_REEL:
+                chosen[key] = (origin, post)
+        else:
+            order.append((origin, post))
+
+    bounded: list[tuple[str, Any]] = []
+    for entry in order:
+        if len(bounded) >= limit:
+            break
+        bounded.append(chosen[entry] if isinstance(entry, str) else entry)
     return bounded
 
 
@@ -235,12 +244,16 @@ class InstagramCollector:
 
 
 class InstaloaderPostFetcher:
-    """Reads recent public posts and reels through an authenticated Instaloader
-    session, without downloading media.
+    """Reads recent public posts and reels through the active authenticated
+    Instaloader session, without downloading media.
 
-    Anonymous access is not used: it is known to be blocked (HTTP 429) for this
-    project's sources, so a missing or invalid local session is reported clearly
-    instead of silently attempting repeated anonymous requests.
+    The active session belongs to whichever Instagram account the owner
+    authenticated as (see `python -m gatherradar auth instagram`); it is loaded
+    independently of `username`, the public source profile being crawled, so one
+    login account can be reused across every approved source. Anonymous access is
+    not used: it is known to be blocked (HTTP 429) for this project's sources, so a
+    missing or invalid local session is reported clearly instead of silently
+    attempting repeated anonymous requests.
     """
 
     def __init__(
@@ -249,7 +262,7 @@ class InstaloaderPostFetcher:
         data_dir: str | Path = "data",
         request_timeout: float = 30.0,
         max_connection_attempts: int = 1,
-        load_session: Callable[[str], Any] | None = None,
+        load_session: Callable[[], Any] | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._request_timeout = request_timeout
@@ -258,24 +271,21 @@ class InstaloaderPostFetcher:
         self._max_connection_attempts = max_connection_attempts
         self._load_session = load_session if load_session is not None else self._load_session_default
 
-    def _load_session_default(self, username: str) -> Any:
-        return load_authenticated_loader(username, data_dir=self._data_dir)
+    def _load_session_default(self) -> Any:
+        return load_active_authenticated_loader(data_dir=self._data_dir)
 
     def __call__(self, username: str, limit: int) -> Iterator[tuple[str, Any]]:
         import instaloader
         from instaloader import exceptions as instaloader_errors
 
         try:
-            loader = self._load_session(username)
+            loader = self._load_session()
         except SessionNotFoundError as exc:
-            raise AuthenticationRequiredError(
-                f"authenticated Instagram access is not configured for @{username}; "
-                f"run 'python -m gatherradar auth instagram {username}' first"
-            ) from exc
+            raise AuthenticationRequiredError(NO_ACTIVE_SESSION_MESSAGE) from exc
         except SessionInvalidError as exc:
             raise AuthenticationRequiredError(
-                f"the saved Instagram session for @{username} is no longer valid; "
-                f"run 'python -m gatherradar auth instagram {username}' again to refresh it"
+                f"the active Instagram session is no longer valid ({exc}); "
+                "run 'python -m gatherradar auth instagram' again to refresh it"
             ) from exc
 
         loader.context.max_connection_attempts = self._max_connection_attempts

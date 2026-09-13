@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
-from collections.abc import Sequence
-from pathlib import Path
+from collections.abc import Callable, Sequence
 
 from .collectors.base import CollectorError
 from .collectors.instagram import DEFAULT_LIMIT
-from .collectors.instagram_auth import InstagramAuthError, create_session
+from .collectors.instagram_auth import InstagramAuthError, create_session_from_cookie
 from .orchestration.collection_run import RunSummary, run_instagram_collection
 from .storage.jsonl import StorageError
 
@@ -47,10 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     auth_kinds = auth.add_subparsers(dest="auth_type", required=True)
 
     auth_instagram = auth_kinds.add_parser(
-        "instagram", help="Log in and save a reusable Instagram session."
-    )
-    auth_instagram.add_argument(
-        "username", help="Instagram username of the project owner's account"
+        "instagram",
+        help="Import a Cookie header from an already logged-in browser session "
+        "and save it as the active, reusable Instagram session.",
     )
     auth_instagram.add_argument(
         "--data-dir",
@@ -88,34 +87,48 @@ def format_summary(summary: RunSummary) -> str:
     return "\n".join(lines)
 
 
-def format_auth_success(username: str, session_path: Path) -> str:
+def format_auth_success(username: str) -> str:
     return "\n".join(
         [
-            "GatherRadar Instagram authentication",
-            "",
-            f"Username: @{username}",
-            "Session verified and saved to:",
-            str(session_path),
+            f"Authenticated as @{username}",
+            "Session saved successfully.",
         ]
     )
 
 
-def run_auth_instagram(username: str, *, data_dir: str) -> int:
+def _prompt_for_cookie() -> str:
+    # getpass keeps the pasted Cookie header out of the terminal echo and, unlike a
+    # CLI argument, out of shell history.
+    return getpass.getpass("Paste Instagram Cookie header: ")
+
+
+def run_auth_instagram(
+    *, data_dir: str, cookie_prompt: Callable[[], str] | None = None
+) -> int:
+    prompt = cookie_prompt if cookie_prompt is not None else _prompt_for_cookie
+    print("GatherRadar Instagram authentication")
+    cookie_header = prompt()
+
+    print()
+    print("Verifying session...")
     try:
-        path = create_session(username, data_dir=data_dir)
+        username, _session_path = create_session_from_cookie(cookie_header, data_dir=data_dir)
     except InstagramAuthError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(format_auth_success(username, path))
+    print()
+    print(format_auth_success(username))
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None, *, _cookie_prompt: Callable[[], str] | None = None
+) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "auth":
-        return run_auth_instagram(args.username, data_dir=args.data_dir)
+        return run_auth_instagram(data_dir=args.data_dir, cookie_prompt=_cookie_prompt)
 
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)

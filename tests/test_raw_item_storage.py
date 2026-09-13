@@ -22,7 +22,6 @@ def make_item(shortcode: str = "ABC123", raw_text: str = "کارگاه طراح�
         compute_content_hash(
             raw_text=raw_text,
             published_at=published_at,
-            content_type=content_type,
             content_url=content_url,
         ),
     )
@@ -74,7 +73,6 @@ class ContentHashHelperTests(unittest.TestCase):
         kwargs = dict(
             raw_text="hello",
             published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            content_type="image",
             content_url="https://example.com/p/1/",
         )
         self.assertEqual(compute_content_hash(**kwargs), compute_content_hash(**kwargs))
@@ -87,6 +85,15 @@ class ContentHashHelperTests(unittest.TestCase):
         from gatherradar.domain.raw_item import compute_content_hash as fn
 
         self.assertNotIn("captured_at", inspect.signature(fn).parameters)
+
+    def test_content_type_is_not_a_hash_input(self) -> None:
+        # An internal reclassification (e.g. "video" -> "reel") must not change the
+        # fingerprint of otherwise-unchanged source content.
+        import inspect
+
+        from gatherradar.domain.raw_item import compute_content_hash as fn
+
+        self.assertNotIn("content_type", inspect.signature(fn).parameters)
 
 
 class JsonlStoreTests(unittest.TestCase):

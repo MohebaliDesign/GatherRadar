@@ -23,10 +23,13 @@ Raw items are intended for append-friendly JSONL storage during the MVP. They ar
 ### `content_hash`
 
 A deterministic SHA-256 fingerprint over the source-supported fields that matter to
-event interpretation: `raw_text`, `published_at`, `content_type`, and `content_url`.
-It deliberately excludes `captured_at`, which changes on every run. Any collector can
-compute one with `gatherradar.domain.compute_content_hash`; the field and its meaning
-are source-neutral, not Instagram-specific.
+event interpretation: `raw_text`, `published_at`, and `content_url`. It deliberately
+excludes `captured_at`, which changes on every run, and `content_type`, which is
+GatherRadar's own classification of the content rather than a property of the
+content itself — so a later fix to that classification cannot make unchanged source
+content look edited. Any collector can compute one with
+`gatherradar.domain.compute_content_hash`; the field and its meaning are
+source-neutral, not Instagram-specific.
 
 The content hash lets a rerun tell an unchanged observation (same `id`, same hash) apart
 from an edited one (same `id`, different hash) even though the source-native identity
