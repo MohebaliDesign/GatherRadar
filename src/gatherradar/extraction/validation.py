@@ -4,29 +4,38 @@ import math
 from dataclasses import fields, replace
 from urllib.parse import urlparse
 
+from ..domain import DiscoveryType
 from .base import InvalidExtractionOutputError
-from .models import EVENT_FORMATS, ExtractedEventFacts
+from .models import EVENT_FORMATS, DiscoveryEvidence, DiscoveryFacts
 
 _TEXT_FIELDS = tuple(
     field.name
-    for field in fields(ExtractedEventFacts)
-    if field.name not in ("is_event", "extraction_confidence")
+    for field in fields(DiscoveryFacts)
+    if field.name not in ("discovery_type", "extraction_confidence", "evidence")
 )
 
+# Fields that only make sense for one kind of result. A place has no occurrence and
+# no registration; an event has no opening hours. Mixing them would let a provider
+# smuggle invented facts into the wrong record.
+_EVENT_ONLY_FIELDS = ("source_date_text", "event_format", "registration_url")
+_PLACE_ONLY_FIELDS = ("opening_hours_text",)
 
-def validate_extracted_facts(facts: object) -> ExtractedEventFacts:
+
+def validate_discovery_facts(facts: object) -> DiscoveryFacts:
     """Check provider output against the contract.
 
-    Blank or whitespace-only text becomes None; non-blank text is kept exactly as given.
-    Anything else that is materially invalid raises InvalidExtractionOutputError rather
-    than being corrected.
+    Blank or whitespace-only text becomes None; non-blank text is kept exactly as
+    given. Anything else that is materially invalid raises
+    InvalidExtractionOutputError rather than being corrected.
     """
-    if not isinstance(facts, ExtractedEventFacts):
+    if not isinstance(facts, DiscoveryFacts):
         raise InvalidExtractionOutputError(
-            f"provider returned {type(facts).__name__}, expected ExtractedEventFacts"
+            f"provider returned {type(facts).__name__}, expected DiscoveryFacts"
         )
-    if not isinstance(facts.is_event, bool):
-        raise InvalidExtractionOutputError("is_event must be a boolean")
+    if not isinstance(facts.discovery_type, DiscoveryType):
+        raise InvalidExtractionOutputError("discovery_type must be a DiscoveryType")
+    if facts.evidence is not None and not isinstance(facts.evidence, DiscoveryEvidence):
+        raise InvalidExtractionOutputError("evidence must be DiscoveryEvidence or null")
 
     cleaned: dict[str, object] = {}
     for name in _TEXT_FIELDS:
@@ -56,4 +65,25 @@ def validate_extracted_facts(facts: object) -> ExtractedEventFacts:
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise InvalidExtractionOutputError("registration_url must be an http or https URL")
 
+    _reject_mismatched_fields(facts.discovery_type, cleaned)
     return replace(facts, **cleaned)
+
+
+def _reject_mismatched_fields(discovery_type: DiscoveryType, cleaned: dict[str, object]) -> None:
+    if discovery_type is DiscoveryType.OTHER:
+        supplied = [name for name in _TEXT_FIELDS if cleaned[name] is not None]
+        if supplied:
+            raise InvalidExtractionOutputError(
+                f"{discovery_type.value} carries no facts, but {', '.join(sorted(supplied))} was supplied"
+            )
+        return
+
+    forbidden = _PLACE_ONLY_FIELDS if discovery_type is DiscoveryType.EVENT else _EVENT_ONLY_FIELDS
+    supplied = [name for name in forbidden if cleaned[name] is not None]
+    if supplied:
+        raise InvalidExtractionOutputError(
+            f"{', '.join(sorted(supplied))} is not a {discovery_type.value} field"
+        )
+
+
+__all__ = ["validate_discovery_facts"]

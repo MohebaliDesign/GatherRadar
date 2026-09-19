@@ -1,31 +1,46 @@
 from .base import (
-    EventExtractionProvider,
+    DiscoveryProvider,
     ExtractionError,
     InvalidExtractionOutputError,
     ProviderExtractionError,
 )
-from .models import EVENT_FORMATS, ExtractedEventFacts, ExtractionInput
+from .models import EVENT_FORMATS, DiscoveryEvidence, DiscoveryFacts, ExtractionInput
+from .rule_based import PROVIDER_NAME, RuleBasedDiscoveryProvider, classify, score
 from .service import (
-    EventExtractionService,
-    ExtractionOutcome,
-    ExtractionStatus,
+    SKIP_EMPTY_TEXT,
+    SKIP_INSUFFICIENT_TEXT,
+    DiscoveryOutcome,
+    DiscoveryService,
+    DiscoveryStatus,
     build_candidate_id,
     build_extraction_input,
 )
-from .validation import validate_extracted_facts
+from .signals import Signal, SignalSet, analyze, has_meaningful_content
+from .validation import validate_discovery_facts
 
 __all__ = [
     "EVENT_FORMATS",
-    "EventExtractionProvider",
-    "EventExtractionService",
-    "ExtractedEventFacts",
+    "PROVIDER_NAME",
+    "SKIP_EMPTY_TEXT",
+    "SKIP_INSUFFICIENT_TEXT",
+    "DiscoveryEvidence",
+    "DiscoveryFacts",
+    "DiscoveryOutcome",
+    "DiscoveryProvider",
+    "DiscoveryService",
+    "DiscoveryStatus",
     "ExtractionError",
     "ExtractionInput",
-    "ExtractionOutcome",
-    "ExtractionStatus",
     "InvalidExtractionOutputError",
     "ProviderExtractionError",
+    "RuleBasedDiscoveryProvider",
+    "Signal",
+    "SignalSet",
+    "analyze",
     "build_candidate_id",
     "build_extraction_input",
-    "validate_extracted_facts",
+    "classify",
+    "has_meaningful_content",
+    "score",
+    "validate_discovery_facts",
 ]

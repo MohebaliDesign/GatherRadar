@@ -1,11 +1,18 @@
 from .collection_run import RunSummary, find_source, instagram_output_path, run_instagram_collection
-from .extraction_run import ExtractionRunSummary, run_event_extraction
+from .discovery_run import (
+    DiscoveryRunSummary,
+    run_discovery,
+    run_instagram_discovery,
+    select_latest,
+)
 
 __all__ = [
-    "ExtractionRunSummary",
+    "DiscoveryRunSummary",
     "RunSummary",
     "find_source",
     "instagram_output_path",
-    "run_event_extraction",
+    "run_discovery",
     "run_instagram_collection",
+    "run_instagram_discovery",
+    "select_latest",
 ]

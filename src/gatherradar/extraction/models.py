@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..domain import DiscoveryType
+
 EVENT_FORMATS = frozenset({"in_person", "online", "hybrid"})
 
 
@@ -29,15 +31,38 @@ class ExtractionInput:
 
 
 @dataclass(frozen=True, slots=True)
-class ExtractedEventFacts:
-    """Provider output for one RawItem: whether it announces a concrete attendable event,
-    plus source-supported facts before deterministic validation and normalization.
+class DiscoveryEvidence:
+    """Why a provider decided what it decided, for the run report only.
+
+    This is debugging and review material, not a fact about the world: it never
+    reaches EventCandidate or PlaceCandidate and is never persisted. A rule engine
+    fills in its scores and matched signals; a provider that cannot explain itself
+    may leave it out entirely.
+    """
+
+    event_score: float = 0.0
+    place_score: float = 0.0
+    negative_score: float = 0.0
+    matched_signals: tuple[str, ...] = ()
+    negative_signals: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryFacts:
+    """Provider output for one RawItem: what the content is, plus source-supported
+    facts about it, before deterministic validation and normalization.
+
+    `discovery_type` answers one question — does this announce a concrete attendable
+    event, describe a place worth visiting, or neither? Event-only fields stay None on
+    a place and place-only fields stay None on an event, because a gallery has no
+    occurrence and an event has no opening hours.
 
     Every value must be traceable to the source text or supplied source context.
     Unknown values stay None; an event may legitimately have no title.
     """
 
-    is_event: bool
+    discovery_type: DiscoveryType
     title: str | None = None
     summary: str | None = None
     category: str | None = None
@@ -47,6 +72,11 @@ class ExtractedEventFacts:
     city: str | None = None
     event_format: str | None = None
     price_text: str | None = None
+    opening_hours_text: str | None = None
     registration_url: str | None = None
     language: str | None = None
     extraction_confidence: float | None = None
+    evidence: DiscoveryEvidence | None = None
+
+
+__all__ = ["EVENT_FORMATS", "DiscoveryEvidence", "DiscoveryFacts", "ExtractionInput"]

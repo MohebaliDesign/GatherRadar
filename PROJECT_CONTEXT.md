@@ -31,7 +31,9 @@ candidates that the owner can filter, verify, compare, and shortlist.
 - A manually curated registry of public event sources.
 - Website and Instagram source adapters where access is permitted and reliable.
 - Raw source capture with timestamps and provenance.
-- Event detection and structured field extraction.
+- Deterministic, free discovery: classifying source content as an event, a place,
+  or neither, and extracting structured fields from it. No paid AI or API key is
+  required to run the core MVP.
 - Persian and English text handling.
 - Date, time, timezone, location, category, and price normalization.
 - Duplicate detection without destructive deletion.
@@ -70,7 +72,7 @@ Source adapters (website / Instagram)
       ↓
 Raw capture store
       ↓
-Event detection and extraction
+Discovery (event / place / other) and extraction
       ↓
 Normalization and validation
       ↓
@@ -89,8 +91,10 @@ Google Sheets review view
   isolated behind a shared interface.
 - **Raw capture store:** Retains enough source material, hashes, and timestamps
   to reproduce or audit an extraction.
-- **Extraction:** Converts source content into candidate event facts. AI-assisted
-  extraction must sit behind a provider-neutral interface.
+- **Discovery:** Classifies source content as an event, a place, or neither, and
+  converts it into candidate facts. The default engine is deterministic, rule-based,
+  and free; any other implementation must sit behind the same provider-neutral
+  interface.
 - **Normalization and validation:** Applies deterministic conversions and flags
   incomplete or contradictory data.
 - **Deduplication:** Groups probable matches using source identifiers first, then
@@ -109,6 +113,12 @@ output destination should not require rewriting the rest of the system.
 Use two related records: an immutable-enough source observation and a canonical
 event candidate. Exact implementation types may change, but the separation and
 meaning of the fields should remain stable.
+
+Discovery also recognizes a third outcome. Content that describes a venue worth
+visiting rather than an occurrence becomes a **place candidate** — name, summary,
+category, address, city, opening-hours text, price text, language, and evidence URL —
+kept separate so place content is never forced into an event record. Content that is
+neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full shape.
 
 ### Source observation
 
@@ -224,10 +234,10 @@ Create this structure incrementally as implementation begins:
 src/gatherradar/
   domain/           # records, enums, and validation contracts
   collectors/       # source adapter interface and implementations
-  extraction/       # event detection and structured extraction
+  extraction/       # discovery: classification, rule engine, and field extraction
   normalization/    # dates, text, locations, categories, and prices
   deduplication/    # exact and fuzzy grouping
-  storage/          # SQLite repositories and migrations
+  storage/          # JSONL raw store now; SQLite repositories and migrations later
   exports/          # Google Sheets integration
   orchestration/    # run coordination and summaries
 tests/
@@ -240,8 +250,10 @@ data/               # local runtime data; add to .gitignore before use
 ```
 
 Python 3.11+ with `pip`, a local `.venv`, and setuptools via `pyproject.toml` is the
-chosen toolchain. Tests run on `unittest` from the standard library. No formatter,
-linter, or AI provider is final yet. See the README for exact setup and run commands.
+chosen toolchain. Tests run on `unittest` from the standard library. No formatter or
+linter is final yet. Discovery uses the standard library only and adds no AI dependency;
+`openai`, `anthropic`, LangChain, and any other paid or cloud AI service are deliberately
+out of the core MVP. See the README for exact setup and run commands.
 
 Instagram access runs through [Playwright](https://playwright.dev/python/) driving the
 installed Google Chrome with a dedicated, persistent GatherRadar profile under
@@ -258,15 +270,32 @@ fallback reference in `collectors/instagram_instaloader.py`, since its profile l
 refused with HTTP 429. It is used only when explicitly selected, never as an automatic
 fallback.
 
-Event extraction lives in `extraction/`. `EventExtractionProvider` is a provider-neutral
-protocol whose single `extract` call both detects whether a raw item is an event and
-returns source-supported facts (`ExtractedEventFacts`) from a deliberate `ExtractionInput`
-that excludes adapter `raw_metadata`. `EventExtractionService` validates that output, maps
-it onto the existing `EventCandidate`, sets provenance (`raw_item_id`, `evidence_url`) from
-the `RawItem` itself, and derives the candidate id from the raw item id and content hash so
-it never depends on the provider. `orchestration/extraction_run.py` extracts a batch item
-by item and keeps candidates in memory. Normalization-owned fields (`starts_at`, `ends_at`,
+Discovery lives in `extraction/`. `DiscoveryProvider` is a provider-neutral protocol whose
+single `discover` call both classifies a raw item and returns source-supported facts
+(`DiscoveryFacts`) from a deliberate `ExtractionInput` that excludes adapter `raw_metadata`.
+The classification is a typed `DiscoveryType` — `EVENT`, `PLACE`, or `OTHER` — never a free
+string. `DiscoveryService` validates that output, maps it onto `EventCandidate`,
+`PlaceCandidate`, or no candidate at all, sets provenance (`raw_item_id`, `evidence_url`) from
+the `RawItem` itself, and derives the candidate id from the raw item id and content hash so it
+never depends on the provider. `orchestration/discovery_run.py` analyzes a batch item by item
+and keeps candidates in memory. Normalization-owned fields (`starts_at`, `ends_at`,
 `price_amount`, `currency`) stay null until the normalization step exists.
+
+**GatherRadar's core MVP runs completely free.** The default and only implementation of that
+protocol is `RuleBasedDiscoveryProvider` (`rule-based/1`): deterministic rules with no model,
+no API key, no paid service, and no network access. The engine is split so its judgement is
+reviewable — `text.py` (length-preserving folding and whole-token matching), `rules.py` (all
+vocabulary, weights, and thresholds in one place), `signals.py` (explainable signal detection),
+`fields.py` (source-supported field reading), `rule_based.py` (scoring and the decision). It is
+source-neutral: it reads `ExtractionInput`, so website observations and later source families
+use the same engine unchanged. Every decision carries `DiscoveryEvidence` — scores, matched
+signals, negative signals, and a reason — which belongs to the run outcome and is never
+persisted.
+
+`storage/jsonl.py` gained a read-only side, `read_latest_items()`, which returns the most
+recently stored observation of each id and isolates malformed lines instead of raising.
+`python -m gatherradar extract instagram <source_id> --limit 5` runs discovery over stored
+items only: it never collects, never opens a browser, and persists nothing.
 
 ## 10. Delivery sequence
 
@@ -282,27 +311,33 @@ depends on knowing.
    Persian caption extraction, published timestamps and image URLs, recency-based
    selection that pinned posts do not displace, and New/Changed/Existing behavior across
    repeated runs. This closes the Instagram Collector MVP milestone.
-4. Add event detection and structured extraction over collected raw items. **In progress** —
-   the provider-neutral foundation is implemented (`RawItem` → `EventExtractionService` →
-   `EventExtractionProvider` → transient `EventCandidate`, tested offline with fake
-   providers). Integrating the first real AI provider is the next sub-step; no live AI
-   extraction exists yet.
-5. Add deterministic normalization and validation. **Later.**
+4. Add detection and structured extraction over collected raw items. **Done** — the
+   provider-neutral boundary (`RawItem` → `DiscoveryService` → `DiscoveryProvider` →
+   transient `EventCandidate` | `PlaceCandidate` | none) plus a deterministic, free rule
+   engine behind it, reachable through `python -m gatherradar extract`. Tested offline with
+   fake providers for the architecture and synthetic Persian and English captions for the
+   rules. No AI is used and none is required.
+5. Add deterministic normalization and validation. **Next milestone** — Jalali-to-Gregorian
+   conversion, normalized timestamps, and numeric prices.
 6. Add canonical local storage with deduplication and repeatable reruns.
 7. Export candidates to a test Google Sheet without overwriting review fields.
-8. Add website adapters and broader source coverage.
+8. Add website adapters and broader source coverage. **The next major source family**, now
+   that the rule engine is source-neutral and validated on Instagram items.
 9. Pilot with a small curated source set and refine from measured errors.
 10. Evaluate Telegram and recommendations only after the discovery loop works.
 
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Which extraction provider backs `EventExtractionProvider` (an LLM, rules, or a hybrid),
-  and its cost/privacy constraints.
 - Google authentication and ownership model for the review sheet.
 - Raw capture retention period.
-- Category taxonomy and Persian/English display conventions.
+- Category taxonomy and Persian/English display conventions. The rule engine ships a small
+  provisional vocabulary in `rules.py`; the final taxonomy is still open.
 - Scheduling mechanism for local runs.
+- Whether anything beyond the rule engine is ever needed. **Resolved for now:** discovery is
+  deterministic and free, and no paid AI or API key is part of the core MVP. `DiscoveryProvider`
+  stays provider-neutral so that decision remains reversible, and measured rule-engine error
+  rates from the pilot are what should reopen it.
 
 Resolve these through small end-to-end experiments. Update this document when a
 decision changes the product boundary, data contract, or architecture.

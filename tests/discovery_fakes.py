@@ -1,16 +1,17 @@
-"""Synthetic raw items and scripted providers for the extraction tests.
+"""Synthetic raw items and scripted providers for the discovery tests.
 
 Test-only: production code has no fake provider. The scripted providers decide the
-semantic output, so these tests exercise architecture, not AI quality.
+classification, so these tests exercise architecture rather than rule quality — the
+rule engine's own judgement is tested in test_discovery_rules.py.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from gatherradar.domain import RawItem, Source, SourceType, compute_content_hash
+from gatherradar.domain import DiscoveryType, RawItem, Source, SourceType, compute_content_hash
 from gatherradar.extraction import (
-    ExtractedEventFacts,
+    DiscoveryFacts,
     ExtractionInput,
     ProviderExtractionError,
 )
@@ -24,15 +25,20 @@ PERSIAN_EVENT_TEXT = (
     "ورودی ۳۵۰ هزار تومان\n"
     "نیاوران، سه راه یاسر، بن‌بست بهار"
 )
-PERSIAN_NON_EVENT_TEXT = "امروز چند عکس از هفته گذشته را با شما به اشتراک گذاشتیم."
+PERSIAN_OTHER_TEXT = "امروز چند عکس از هفته گذشته را با شما به اشتراک گذاشتیم."
+PERSIAN_PLACE_TEXT = (
+    "گالری نگاه، فضایی برای هنر معاصر\n"
+    "ساعات بازدید: هر روز از ۱۱ تا ۲۰\n"
+    "آدرس: تهران، خیابان کریمخان"
+)
 ENGLISH_EVENT_TEXT = (
     "Join us Friday at 7 PM for a design meetup at Studio North ✨ "
     "Register at https://tickets.example.test/design-meetup"
 )
-ENGLISH_NON_EVENT_TEXT = "Our new autumn collection is now available."
+ENGLISH_OTHER_TEXT = "Our new autumn collection is now available."
 
-PERSIAN_EVENT_FACTS = ExtractedEventFacts(
-    is_event=True,
+PERSIAN_EVENT_FACTS = DiscoveryFacts(
+    discovery_type=DiscoveryType.EVENT,
     title="دورهمی طراحی",
     summary="دورهمی طراحی در خانه هنرمندان 🎨",
     category="workshop",
@@ -44,8 +50,8 @@ PERSIAN_EVENT_FACTS = ExtractedEventFacts(
     language="fa",
     extraction_confidence=0.82,
 )
-ENGLISH_EVENT_FACTS = ExtractedEventFacts(
-    is_event=True,
+ENGLISH_EVENT_FACTS = DiscoveryFacts(
+    discovery_type=DiscoveryType.EVENT,
     title="Design meetup",
     summary="A design meetup at Studio North on Friday at 7 PM ✨",
     source_date_text="Friday at 7 PM",
@@ -54,6 +60,17 @@ ENGLISH_EVENT_FACTS = ExtractedEventFacts(
     language="en",
     extraction_confidence=0.9,
 )
+PERSIAN_PLACE_FACTS = DiscoveryFacts(
+    discovery_type=DiscoveryType.PLACE,
+    title="گالری نگاه",
+    summary="گالری نگاه، فضایی برای هنر معاصر",
+    category="gallery",
+    address="تهران، خیابان کریمخان",
+    city="تهران",
+    opening_hours_text="ساعات بازدید: هر روز از ۱۱ تا ۲۰",
+    language="fa",
+)
+OTHER_FACTS = DiscoveryFacts(discovery_type=DiscoveryType.OTHER)
 
 
 def make_source(**overrides) -> Source:
@@ -76,6 +93,7 @@ def make_raw_item(
     shortcode: str = "EVT1",
     source_id: str = "davvvat_instagram",
     content_hash: str | None = None,
+    published_at: datetime | None = PUBLISHED_AT,
 ) -> RawItem:
     content_url = f"https://www.instagram.com/p/{shortcode}/"
     return RawItem(
@@ -87,13 +105,13 @@ def make_raw_item(
         content_url=content_url,
         raw_text=raw_text,
         captured_at=CAPTURED_AT,
-        published_at=PUBLISHED_AT,
+        published_at=published_at,
         author="davvvat",
         image_url="https://cdn.example.test/thumb.jpg",
         content_hash=(
             content_hash
             if content_hash is not None
-            else compute_content_hash(raw_text=raw_text, published_at=PUBLISHED_AT, content_url=content_url)
+            else compute_content_hash(raw_text=raw_text, published_at=published_at, content_url=content_url)
         ),
         raw_metadata={"transport": "browser", "caption_source": "main:author-block"},
     )
@@ -107,36 +125,36 @@ class RecordingProvider:
     def __init__(self) -> None:
         self.calls: list[ExtractionInput] = []
 
-    def extract(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
+    def discover(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         self.calls.append(extraction_input)
         return self.respond(extraction_input)
 
-    def respond(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
+    def respond(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         raise NotImplementedError
 
 
-class AlwaysEventProvider(RecordingProvider):
-    name = "always-event-test-provider"
+class FixedProvider(RecordingProvider):
+    name = "fixed-test-provider"
 
-    def __init__(self, facts: ExtractedEventFacts | None = None) -> None:
+    def __init__(self, facts: DiscoveryFacts | None = None) -> None:
         super().__init__()
-        self.facts = facts if facts is not None else ExtractedEventFacts(is_event=True)
+        self.facts = facts if facts is not None else DiscoveryFacts(discovery_type=DiscoveryType.EVENT)
 
-    def respond(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
+    def respond(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         return self.facts
 
 
-class NonEventProvider(RecordingProvider):
-    name = "non-event-test-provider"
+class OtherProvider(RecordingProvider):
+    name = "other-test-provider"
 
-    def respond(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
-        return ExtractedEventFacts(is_event=False)
+    def respond(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
+        return OTHER_FACTS
 
 
 class FailingProvider(RecordingProvider):
     name = "failing-test-provider"
 
-    def respond(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
+    def respond(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         raise ProviderExtractionError("test provider is unavailable")
 
 
@@ -147,7 +165,7 @@ class InvalidOutputProvider(RecordingProvider):
         super().__init__()
         self.output = output
 
-    def respond(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
+    def respond(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         return self.output  # type: ignore[return-value]
 
 
@@ -160,7 +178,7 @@ class ScriptedProvider(RecordingProvider):
         super().__init__()
         self.responses = responses
 
-    def respond(self, extraction_input: ExtractionInput) -> ExtractedEventFacts:
+    def respond(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         if extraction_input.raw_item_id not in self.responses:
             raise AssertionError(f"unexpected provider call for {extraction_input.raw_item_id}")
         response = self.responses[extraction_input.raw_item_id]

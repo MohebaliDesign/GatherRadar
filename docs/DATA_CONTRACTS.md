@@ -1,9 +1,9 @@
 # GatherRadar Data Contracts
 
-This document defines the four records used by the MVP pipeline. Collectors may change, but these boundaries should remain stable unless the product contract changes.
+This document defines the records used by the MVP pipeline. Collectors may change, but these boundaries should remain stable unless the product contract changes.
 
 ```text
-Source → RawItem → EventCandidate → Event
+Source → RawItem → EventCandidate | PlaceCandidate → Event
 ```
 
 ## Source
@@ -88,48 +88,115 @@ recency-ordered sequence. Items from the Reels feed are labeled `reel`, since th
 `is_video`, `hashtags`, `mentions`, `origin`, and `collector_version`
 (`instagram-instaloader/2`).
 
-## EventCandidate
+## EventCandidate and PlaceCandidate
 
-The result of event detection and extraction before deterministic normalization and final persistence. It may be incomplete or uncertain.
+The result of discovery before deterministic normalization and final persistence. Either may be incomplete or uncertain.
 
-It preserves source wording such as `source_date_text` and `price_text`, plus extracted fields and `extraction_confidence`. A candidate can explicitly be `is_event = false`.
+`EventCandidate` preserves source wording such as `source_date_text` and `price_text`, plus extracted fields and `extraction_confidence`.
 
-### Extraction boundary
+`PlaceCandidate` is the separate record for a venue worth visiting: `candidate_id`, `raw_item_id`, `title`, `summary`, `category`, `address`, `city`, `opening_hours_text`, `price_text`, `language`, and `evidence_url`. It exists so place content is never forced into an event record — a gallery that exists has no date, occurrence, or registration, and inventing those is exactly what GatherRadar must not do.
+
+### Discovery boundary
 
 ```text
-RawItem → EventExtractionService → EventExtractionProvider → EventCandidate
+RawItem → DiscoveryService → DiscoveryProvider → DiscoveryFacts → EventCandidate | PlaceCandidate | Other
 ```
 
-Event detection and field extraction are separate responsibilities but one provider
-operation: `EventExtractionProvider.extract(ExtractionInput) -> ExtractedEventFacts` decides
-`is_event` — does this raw item describe or announce a concrete attendable event? — and
-returns the source-supported facts together. The interface is provider-neutral. No real AI
-provider is connected yet, so no AI call is made.
+Classification and field extraction are separate responsibilities but one provider
+operation: `DiscoveryProvider.discover(ExtractionInput) -> DiscoveryFacts` decides
+`discovery_type` — does this raw item announce a concrete attendable event, describe a place
+worth visiting, or neither? — and returns the source-supported facts together.
+
+`DiscoveryType` is a typed enum with exactly three values: `event`, `place`, `other`.
+`other` means meaningful content was analyzed and found unrelated; content that was never
+analyzed is a skipped outcome, not an `other`.
+
+The interface is provider-neutral, and the shipped implementation is
+`RuleBasedDiscoveryProvider` (`rule-based/1`): deterministic rules only — no model, no API
+key, no network access, no cost. See "Rule-based discovery" below.
 
 `ExtractionInput` is the only evidence a provider sees: `raw_item_id`, `source_id`,
 `source_type`, `raw_text`, `content_url`, `content_type`, `published_at`, `author`, and, when
 source configuration is supplied, `locale`, `timezone`, and `city_hint`. Adapter
 `raw_metadata` is not passed.
 
-`ExtractedEventFacts` carries `is_event`, `title`, `summary`, `category`, `source_date_text`,
-`venue_name`, `address`, `city`, `event_format`, `price_text`, `registration_url`,
-`language`, and `extraction_confidence`. Unknown values are null, and a clear event may have
-no title.
+`DiscoveryFacts` carries `discovery_type`, `title`, `summary`, `category`, `source_date_text`,
+`venue_name`, `address`, `city`, `event_format`, `price_text`, `opening_hours_text`,
+`registration_url`, `language`, `extraction_confidence`, and optional `evidence`. Unknown
+values are null, and a clear event may have no title.
 
-`EventExtractionService` owns the deterministic behavior:
+`DiscoveryEvidence` is debugging and review material, never a fact: `event_score`,
+`place_score`, `negative_score`, `matched_signals`, `negative_signals`, and `reason`. It
+belongs to the run outcome, never to a candidate, and is never persisted.
+
+`DiscoveryService` owns the deterministic behavior:
 
 | Rule | Behavior |
 | --- | --- |
-| Empty or whitespace-only `raw_text` | Skipped without calling the provider; not classified as a non-event |
-| Provider output | Validated: `is_event` is a boolean; text fields are text or null, with blank text becoming null; `extraction_confidence` is a number from 0 to 1; `registration_url` is an http(s) URL; `event_format` is `in_person`, `online`, `hybrid`, or null. Other invalid output is rejected, not corrected |
+| Empty or whitespace-only `raw_text` | Skipped without calling the provider (`empty_text`); not classified as `other` |
+| Text with no content words, e.g. `"and"` | Skipped without calling the provider (`insufficient_text`). The guard is token-based, not a character count, so a short real title such as `کنسرت` is still analyzed |
+| Provider output | Validated: `discovery_type` is a `DiscoveryType`; text fields are text or null, with blank text becoming null; `extraction_confidence` is a number from 0 to 1; `registration_url` is an http(s) URL; `event_format` is `in_person`, `online`, `hybrid`, or null; `other` carries no facts; an event carries no `opening_hours_text` and a place carries no `source_date_text`, `event_format`, or `registration_url`. Other invalid output is rejected, not corrected |
+| Result mapping | `event` becomes an `EventCandidate`, `place` a `PlaceCandidate`, `other` no candidate at all |
 | Provenance | `raw_item_id` and `evidence_url` always come from the `RawItem`, never from the provider |
-| `candidate_id` | `candidate:` plus the SHA-256 of the raw item `id` and `content_hash`: the same observation always yields the same id, an edited observation a new id, and the provider or model never affects it |
+| `candidate_id` | `candidate:` plus the SHA-256 of the raw item `id` and `content_hash`: the same observation always yields the same id, an edited observation a new id, and the provider never affects it |
 | Normalization-owned fields | `starts_at`, `ends_at`, `price_amount`, and `currency` stay null; source wording stays in `source_date_text` and `price_text`, and `city_hint` is never copied into `city` |
 | Failures | Provider errors and invalid output become per-item outcomes (`provider_failed`, `invalid_output`). Provider adapters translate library errors into `ProviderExtractionError` or `InvalidExtractionOutputError` |
 
-`orchestration.extraction_run.run_event_extraction` processes raw items independently and
-reports `observed`, `extracted`, `events`, `non_events`, `skipped`, and `failed`. Candidates
-are returned in memory and are not persisted. Normalization is a separate, later step.
+`orchestration.discovery_run.run_discovery` processes raw items independently and reports
+`observed`, `discovered`, `events`, `places`, `other`, `skipped`, and `failed`. Candidates are
+returned in memory and are not persisted. Normalization is a separate, later step.
+
+### Rule-based discovery
+
+The default provider lives in `extraction/` and is deliberately split so the vocabulary can
+be reviewed without reading the logic:
+
+| Module | Responsibility |
+| --- | --- |
+| `text.py` | Text mechanics only. `normalize` is length preserving, so an offset in the folded form is the same offset in the original — that is how extracted values stay the operator's exact wording, نیم‌فاصله and Persian digits included |
+| `rules.py` | All vocabulary and every weight and threshold. No keyword list lives anywhere else |
+| `signals.py` | Recognizes signals as whole-token phrase matches, so `رویدادهای` is not `رویداد` and `کلاسیک` is not `کلاس` |
+| `fields.py` | Reads source-supported field values, never rewriting or normalizing them |
+| `rule_based.py` | Scores the signals and decides event / place / other, then reports why |
+
+**Classification.** No single keyword decides anything. An event needs a path through the
+evidence:
+
+* **Path A** — event terminology together with date, time, or registration evidence.
+* **Path B** — strong event terminology, or a validated named event, together with an
+  invitation to attend, plus venue or location context when the terminology alone is not
+  specific enough.
+
+Path B exists because requiring a date made the first version of this engine too strict for a
+real and common shape: a post that says where to come and that they are waiting for you,
+without ever printing a date. An attendance invitation alone still never creates an event,
+and neither does a date alone, an address alone, or an event word alone.
+
+A place needs place vocabulary plus descriptive or visit context, and is only considered
+after no event path was satisfied — so a gallery announcing an opening on a date is an event,
+while a gallery introducing itself is a place.
+
+Retrospective wording (`برگزار شد`, `هفته گذشته`, `گزارش تصویری`, `behind the scenes`) is a
+penalty, never a veto: a post that recaps the last occurrence and announces the next can
+still be an event.
+
+**Named events and titles are conservative.** A title comes only from a validated
+`<head term> <name>` construction or an explicitly quoted name — otherwise it stays null,
+because an unknown title is better than an invented one. A construction is valid only when
+the head term is that exact word, opens its line, and is followed by words that are not
+grammatical continuations (a centralized stopword list), dates, or numbers. So
+`رویداد سرام` and `نمایشگاه «نام نمایشگاه»` are names, while `رویداد میتونید`,
+`رویداد جزو`, `رویدادهای تهران`, and `اینجا فقط ایونت نیست` are not. A rejected construction
+adds nothing to the event score.
+
+**Temporal wording is detected, never converted.** Persian weekdays and months, relative
+dates, Persian and Latin digits, times, and time ranges are recognized as signals and kept
+verbatim in `source_date_text`. Jalali-to-Gregorian conversion is a later step.
+
+**Everything else stays explicit.** `city` is only read when the text names a city — a
+neighborhood never implies one. `event_format` is only set on explicit wording; an address is
+never taken as proof that an event is in person. `price_text` keeps the source wording and no
+numeric amount is produced.
 
 ## Event
 
@@ -140,10 +207,10 @@ It stores normalized event facts, review/status fields, provenance (`canonical_s
 ## Storage boundary
 
 ```text
-RawItem        → JSONL (planned)
-EventCandidate → transient / processing boundary
-Event          → SQLite (planned)
-Google Sheets  → review/output surface, not source of truth
+RawItem                         → JSONL
+EventCandidate / PlaceCandidate → transient / processing boundary
+Event                           → SQLite (planned)
+Google Sheets                   → review/output surface, not source of truth
 ```
 
 The JSONL store is append-only and never overwrites or deletes a stored observation.
@@ -158,5 +225,23 @@ the same `id`:
 
 This keeps the raw capture history auditable: both the original and the edited wording
 of an Instagram post remain on record, in the order they were observed.
+
+### Reading the raw store
+
+`JsonlRawItemStore.read_latest_items()` is the read-only side of that boundary. Because the
+file is append-only, an edited caption is on record more than once; analysis must look at
+what the source says now, so only the **most recently stored observation of each `id`** is
+returned. Nothing is rewritten, reordered, or deleted, and items come back in the order their
+ids first appeared.
+
+A line that is not valid JSON, is not an object, or does not satisfy the `RawItem` contract is
+isolated and reported in `malformed` rather than raised, so one corrupt observation does not
+cost the caller every valid one. Reported reasons name the line number only, never its
+content.
+
+Choosing which of those observations to work on belongs to orchestration, not storage.
+`select_latest` takes the newest by `published_at`, puts undated items after dated ones, and
+breaks every tie with storage order, so the same file and the same `--limit` always select the
+same items.
 
 Unknown values remain null. GatherRadar must not invent missing dates, venues, prices, or registration details. Every material event fact must remain traceable to source evidence.

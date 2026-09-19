@@ -5,22 +5,49 @@ import getpass
 import sys
 from collections.abc import Callable, Sequence
 
-from .collectors.base import CollectorError
+from .collectors.base import CollectorError, SourceNotFoundError
 from .collectors.instagram import DEFAULT_LIMIT, InstagramCollector
 from .collectors.instagram_auth import InstagramAuthError, create_session_from_cookie
 from .collectors.instagram_browser import authenticate_browser_profile, browser_profile_path
 from .collectors.instagram_instaloader import InstaloaderPostFetcher
+from .domain import DiscoveryType
+from .extraction import DiscoveryStatus
 from .orchestration.collection_run import RunSummary, run_instagram_collection
+from .orchestration.discovery_run import DiscoveryRunSummary, run_instagram_discovery
 from .storage.jsonl import StorageError
 
 TRANSPORT_BROWSER = "browser"
 TRANSPORT_INSTALOADER = "instaloader"
 
+_RESULT_LABELS = {
+    DiscoveryType.EVENT: "Event",
+    DiscoveryType.PLACE: "Place",
+    DiscoveryType.OTHER: "Other",
+}
+
+
+def _use_utf8_output() -> None:
+    """Let the terminal print Persian source wording instead of failing on it.
+
+    A Windows console still defaults to a legacy code page, which cannot encode the
+    captions this tool reports. Replacing unencodable characters is better than
+    losing a run to an encoding error, and a redirected stream is left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gatherradar",
-        description="Collect public event content from approved GatherRadar sources.",
+        description="Collect public event content from approved GatherRadar sources, "
+        "and classify what was collected.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
@@ -51,6 +78,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=TRANSPORT_BROWSER,
         help="Collection transport (default: browser). 'instaloader' is the legacy "
         "transport, kept only while the browser transport is validated.",
+    )
+
+    extract = subcommands.add_parser(
+        "extract",
+        help="Classify already-collected items for one source. Reads local storage only.",
+        description="Classify already-collected raw items as events, places, or neither. "
+        "This reads only what collection already stored: it opens no browser, contacts "
+        "no source, needs no API key, and writes nothing.",
+    )
+    extract_kinds = extract.add_subparsers(dest="source_type", required=True)
+
+    extract_instagram = extract_kinds.add_parser(
+        "instagram",
+        help="Classify stored Instagram items for one source.",
+        description="Classify the most recently stored Instagram observations for one "
+        "source. Nothing is collected and nothing is persisted.",
+    )
+    extract_instagram.add_argument("source_id", help="Source id from config/sources.yaml")
+    extract_instagram.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help=f"Maximum stored items to analyze, newest first (default: {DEFAULT_LIMIT})",
+    )
+    extract_instagram.add_argument(
+        "--config",
+        default="config/sources.yaml",
+        help="Path to the source registry (default: config/sources.yaml)",
+    )
+    extract_instagram.add_argument(
+        "--data-dir",
+        default="data",
+        help="Root directory for local runtime data (default: data)",
     )
 
     auth = subcommands.add_parser(
@@ -101,6 +161,116 @@ def format_summary(summary: RunSummary) -> str:
     lines.append("Saved:")
     lines.append(str(summary.output_path))
     return "\n".join(lines)
+
+
+EXTRACT_FIELDS = (
+    ("title", "title"),
+    ("category", "category"),
+    ("source_date_text", "source_date_text"),
+    ("venue_name", "venue_name"),
+    ("address", "address"),
+    ("city", "city"),
+    ("event_format", "event_format"),
+    ("price_text", "price_text"),
+    ("opening_hours_text", "opening_hours_text"),
+    ("registration_url", "registration_url"),
+    ("summary", "summary"),
+    ("language", "language"),
+)
+
+
+def _format_outcome(position: int, outcome) -> list[str]:
+    lines = [f"[{position}] {outcome.raw_item_id}"]
+
+    if outcome.status is DiscoveryStatus.SKIPPED:
+        lines.append(f"    Result: Skipped ({outcome.reason})")
+        return lines
+    if outcome.status is not DiscoveryStatus.DISCOVERED:
+        lines.append(f"    Result: Failed ({outcome.status.value}) — {outcome.reason}")
+        return lines
+
+    evidence = outcome.evidence
+    lines.append(f"    Result: {_RESULT_LABELS[outcome.discovery_type]}")
+    if evidence is not None:
+        lines.append(
+            f"    Scores: event {evidence.event_score} / place {evidence.place_score} "
+            f"/ negative {evidence.negative_score}"
+        )
+        lines.append(f"    Reason: {evidence.reason}")
+        lines.append(f"    Signals: {', '.join(evidence.matched_signals) or '-'}")
+        lines.append(f"    Negative: {', '.join(evidence.negative_signals) or '-'}")
+
+    candidate = outcome.candidate
+    if candidate is not None:
+        lines.append("    Fields:")
+        for name, label in EXTRACT_FIELDS:
+            value = getattr(candidate, name, None)
+            if value is not None:
+                lines.append(f"      {label}: {value}")
+        lines.append(f"      evidence_url: {candidate.evidence_url}")
+    return lines
+
+
+def format_discovery_summary(summary: DiscoveryRunSummary) -> str:
+    """The run report: what each item was, why, and what was read from it."""
+    source = summary.source
+    lines = [
+        "GatherRadar discovery run",
+        "",
+        f"Run id: {summary.run_id}",
+        f"Source: {source.name if source else '-'}",
+        f"Provider: {summary.provider_name} (deterministic rules, no AI and no network access)",
+        f"Read: {summary.input_path}",
+    ]
+
+    if not summary.outcomes:
+        lines.append("")
+        lines.append("No stored items to analyze. Collect first with:")
+        lines.append(f"  python -m gatherradar collect instagram {source.id if source else '<source_id>'}")
+
+    for position, outcome in enumerate(summary.outcomes, start=1):
+        lines.append("")
+        lines.extend(_format_outcome(position, outcome))
+
+    if summary.malformed:
+        lines.append("")
+        lines.append("Unreadable stored lines:")
+        lines.extend(f"  - {reason}" for reason in summary.malformed)
+
+    lines.extend(
+        [
+            "",
+            f"Observed: {summary.observed}",
+            f"Events: {summary.events}",
+            f"Places: {summary.places}",
+            f"Other: {summary.other}",
+            f"Skipped: {summary.skipped}",
+            f"Failed: {summary.failed}",
+            "",
+            "Nothing was persisted: candidates are a transient boundary, and "
+            "normalization is a separate step.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def run_extract_instagram(args: argparse.Namespace) -> int:
+    try:
+        summary = run_instagram_discovery(
+            args.source_id,
+            config_path=args.config,
+            data_dir=args.data_dir,
+            limit=args.limit,
+        )
+    except (SourceNotFoundError, StorageError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as exc:
+        print(f"error: source registry not found: {exc}", file=sys.stderr)
+        return 1
+
+    print(format_discovery_summary(summary))
+    return 0
 
 
 def format_auth_success(username: str) -> str:
@@ -184,6 +354,7 @@ def main(
     _cookie_prompt: Callable[[], str] | None = None,
     _wait_for_user: Callable[[], None] | None = None,
 ) -> int:
+    _use_utf8_output()
     args = build_parser().parse_args(argv)
 
     if args.command == "auth":
@@ -194,6 +365,9 @@ def main(
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)
         return 2
+
+    if args.command == "extract":
+        return run_extract_instagram(args)
 
     collector = None
     if args.transport == TRANSPORT_INSTALOADER:
