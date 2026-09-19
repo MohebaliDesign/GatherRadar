@@ -123,6 +123,26 @@ class ObservedShapeTests(unittest.TestCase):
         self.assertIs(facts.discovery_type, DiscoveryType.EVENT)
         self.assertEqual(facts.evidence.reason, REASON_EVENT_PATH_A)
 
+    def test_place_introductions_need_no_hours_date_or_address(self) -> None:
+        cases = (
+            "معرفی گالری نگاه؛ فضایی برای هنر معاصر",
+            "آشنایی با موزه هنرهای معاصر",
+            "Introducing North Gallery, an art space worth visiting",
+            "Discover a museum in Shiraz worth visiting",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIs(kind(text), DiscoveryType.PLACE)
+
+    def test_introduction_wording_without_a_place_term_is_other(self) -> None:
+        self.assertIs(kind("معرفی محصول جدید ما"), DiscoveryType.OTHER)
+
+    def test_concrete_event_evidence_takes_precedence_over_place(self) -> None:
+        facts = discover("افتتاحیه نمایشگاه در گالری نگاه، جمعه ساعت ۱۸")
+
+        self.assertIs(facts.discovery_type, DiscoveryType.EVENT)
+        self.assertEqual(facts.evidence.reason, REASON_EVENT_PATH_A)
+
     def test_a_retrospective_recap_is_other(self) -> None:
         self.assertIs(kind(RETROSPECTIVE_RECAP), DiscoveryType.OTHER)
 

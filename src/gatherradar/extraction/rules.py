@@ -258,6 +258,14 @@ PLACE_TERMS: tuple[str, ...] = (
 # Descriptive / visit context: how a place talks about itself when it is not
 # announcing a dated occurrence.
 PLACE_CONTEXT_TERMS: tuple[str, ...] = (
+    "معرفی گالری",
+    "معرفی موزه",
+    "معرفی",
+    "آشنایی با",
+    "پیشنهاد برای بازدید",
+    "فضایی برای",
+    "یکی از گالری‌های",
+    "یکی از موزه‌های",
     "ساعات کاری",
     "ساعت کاری",
     "ساعات بازدید",
@@ -275,6 +283,23 @@ PLACE_CONTEXT_TERMS: tuple[str, ...] = (
     "located in",
     "located at",
     "visiting hours",
+    "introducing",
+    "discover",
+    "meet the gallery",
+    "a gallery in",
+    "a museum in",
+    "worth visiting",
+)
+
+# A place head may follow one of these phrases at the start of its line and still
+# form a defensible name: "معرفی گالری نگاه" names "گالری نگاه". Classification
+# separately requires a recognized place term, so "معرفی محصول جدید" remains other.
+PLACE_NAME_PREFIX_TERMS: tuple[str, ...] = (
+    "معرفی",
+    "آشنایی با",
+    "introducing",
+    "discover",
+    "meet the",
 )
 
 OPENING_HOURS_TERMS: tuple[str, ...] = (
@@ -362,10 +387,13 @@ REGISTRATION_TERMS: tuple[str, ...] = (
     "رزرو",
     "خرید بلیت",
     "خرید بلیط",
+    "تهیه بلیت",
+    "تهیه بلیط",
     "بلیت",
     "بلیط",
     "register",
     "registration",
+    "booking",
     "rsvp",
     "book your spot",
     "tickets",

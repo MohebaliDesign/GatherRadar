@@ -148,8 +148,16 @@ def price_text(found: SignalSet) -> str | None:
 
 
 def registration_url(found: SignalSet) -> str | None:
-    signal = _first(found.urls)
-    return signal.text if signal is not None else None
+    """A URL explicitly associated with registration wording on its source line."""
+    candidates: list[tuple[int, int, str]] = []
+    for url in found.urls:
+        url_line = line_bounds(found.text, url.start)
+        for context in found.registration:
+            if line_bounds(found.text, context.start) != url_line:
+                continue
+            distance = max(context.start - url.end, url.start - context.end, 0)
+            candidates.append((distance, url.start, url.text))
+    return min(candidates)[2] if candidates else None
 
 
 def opening_hours_text(found: SignalSet) -> str | None:

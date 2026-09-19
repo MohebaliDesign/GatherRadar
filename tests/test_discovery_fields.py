@@ -138,6 +138,31 @@ class RegistrationTests(unittest.TestCase):
 
         self.assertIsNone(facts.registration_url)
 
+    def test_an_unrelated_url_is_not_registration(self) -> None:
+        for text in (
+            "ورکشاپ طراحی جمعه ۲۱ شهریور\nسایت ما: https://example.test/register",
+            "ورکشاپ طراحی جمعه ۲۱ شهریور\nاینستاگرام ما https://instagram.com/example",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(discover(text).registration_url)
+
+    def test_the_url_associated_with_registration_is_preferred(self) -> None:
+        facts = discover(
+            "ورکشاپ طراحی جمعه ۲۱ شهریور\n"
+            "سایت ما: https://example.test\n"
+            "ثبت‌نام: https://example.test/register"
+        )
+
+        self.assertEqual(facts.registration_url, "https://example.test/register")
+
+    def test_ticket_wording_associates_its_url(self) -> None:
+        facts = discover(
+            "کنسرت موسیقی جمعه ۲۱ شهریور\n"
+            "برای تهیه بلیت به https://example.test/tickets مراجعه کنید"
+        )
+
+        self.assertEqual(facts.registration_url, "https://example.test/tickets")
+
 
 class EventFormatTests(unittest.TestCase):
     def test_explicit_online_wording(self) -> None:
@@ -190,6 +215,15 @@ class PlaceFieldTests(unittest.TestCase):
 
     def test_a_place_name_is_read(self) -> None:
         self.assertEqual(self.facts.title, "گالری نگاه")
+
+    def test_a_place_name_is_read_after_introduction_wording(self) -> None:
+        cases = {
+            "معرفی گالری نگاه": "گالری نگاه",
+            "آشنایی با موزه هنرهای معاصر": "موزه هنرهای معاصر",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(discover(text).title, expected)
 
     def test_a_place_summary_quotes_the_source_line(self) -> None:
         self.assertEqual(self.facts.summary, "گالری نگاه، فضایی برای هنر معاصر")

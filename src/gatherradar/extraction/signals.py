@@ -229,7 +229,12 @@ def analyze(text: str) -> SignalSet:
     event_weak = _signals(
         "event_weak", text, tokens, rules.EVENT_TERMS_WEAK, blocked=claimed | _token_span(event_strong)
     )
-    registration = _signals("registration", text, tokens, rules.REGISTRATION_TERMS, blocked=claimed)
+    urls = _url_signals(text)
+    registration = tuple(
+        signal
+        for signal in _signals("registration", text, tokens, rules.REGISTRATION_TERMS, blocked=claimed)
+        if not any(url.start <= signal.start and signal.end <= url.end for url in urls)
+    )
     prices = _signals("price", text, tokens, rules.PRICE_TERMS, blocked=claimed)
 
     temporal_blocked = claimed | _token_span(place_context)
@@ -269,9 +274,16 @@ def analyze(text: str) -> SignalSet:
         registration=registration,
         prices=prices,
         locations=locations,
-        urls=_url_signals(text),
+        urls=urls,
         named_event=find_named(text, tokens, rules.NAMED_EVENT_HEAD_TERMS, kind="named_event", blocked=busy),
-        named_place=find_named(text, tokens, rules.NAMED_PLACE_HEAD_TERMS, kind="named_place", blocked=busy),
+        named_place=find_named(
+            text,
+            tokens,
+            rules.NAMED_PLACE_HEAD_TERMS,
+            kind="named_place",
+            blocked=busy,
+            line_prefix_terms=rules.PLACE_NAME_PREFIX_TERMS,
+        ),
         labels=labels,
     )
 
@@ -329,6 +341,7 @@ def find_named(
     *,
     kind: str,
     blocked: frozenset[int] = frozenset(),
+    line_prefix_terms: tuple[str, ...] = (),
 ) -> Signal | None:
     """The first defensible "<head term> <name>" construction, or None.
 
@@ -357,7 +370,9 @@ def find_named(
                 last_token=match.last_token,
             )
 
-        if not _is_line_initial(text, tokens, match.first_token):
+        if not _is_line_initial(text, tokens, match.first_token) and not _has_allowed_line_prefix(
+            text, tokens, match.first_token, line_prefix_terms
+        ):
             continue
 
         name_end: int | None = None
@@ -379,6 +394,17 @@ def find_named(
                 last_token=match.last_token,
             )
     return None
+
+
+def _has_allowed_line_prefix(
+    text: str, tokens: Sequence[Token], index: int, prefix_terms: tuple[str, ...]
+) -> bool:
+    """Whether a recognized introduction is the whole prefix before a name head."""
+    if not prefix_terms:
+        return False
+    line_start, _ = line_bounds(text, tokens[index].start)
+    prefix = normalize(text[line_start : tokens[index].start]).strip(" \t‌:：–—-؛،,;")
+    return prefix in {normalize(term) for term in prefix_terms}
 
 
 def _crosses_a_boundary(text: str, previous_end: int, next_start: int) -> bool:
