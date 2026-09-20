@@ -9,6 +9,7 @@ import unittest
 
 from gatherradar.domain import DiscoveryType
 from gatherradar.extraction import ExtractionInput, RuleBasedDiscoveryProvider
+from gatherradar.extraction.signals import analyze
 
 
 def discover(text: str):
@@ -44,6 +45,30 @@ class DateTextTests(unittest.TestCase):
         facts = discover("دورهمی عکاسان آخر هفته\nآدرس: تهران، خیابان کریمخان")
 
         self.assertEqual(facts.source_date_text, "آخر هفته")
+
+    def test_relative_date_text_does_not_expand_to_conversational_prose(self) -> None:
+        cases = {
+            "نشست هفتگی\nاین هفته کلی اتفاق جذاب داریم\nآدرس: تهران": "این هفته",
+            "دورهمی دوستان\nآخر هفته‌ها چیکار کنیم؟ در امروز\nآدرس: تهران": "آخر هفته",
+        }
+        for text, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(discover(text).source_date_text, expected)
+
+    def test_adjacent_persian_date_and_time_lines_are_kept_together(self) -> None:
+        facts = discover("کارگاه سفالگری\n۲ مهر\nساعت ۲۰:۳۰\nآدرس: تهران")
+
+        self.assertEqual(facts.source_date_text, "۲ مهر\nساعت ۲۰:۳۰")
+
+    def test_adjacent_calendar_and_clock_label_lines_are_kept_together(self) -> None:
+        facts = discover("نشست هنری\n🗓 ۱ و ۲ مهر ماه\n⏰ ساعت ۲۰:۳۰\n📍 تهران، خیابان نمونه")
+
+        self.assertEqual(facts.source_date_text, "۱ و ۲ مهر ماه\nساعت ۲۰:۳۰")
+
+    def test_adjacent_visual_date_is_kept_when_clock_line_also_names_weekdays(self) -> None:
+        facts = discover("نمایشگاه عکس\n🗓 تا ۷ مهر\n🕰 جمعه‌ها ۱۶ تا ۲۰\n📍 تهران، خیابان نمونه")
+
+        self.assertEqual(facts.source_date_text, "تا ۷ مهر\nجمعه‌ها ۱۶ تا ۲۰")
 
     def test_no_date_wording_means_none(self) -> None:
         facts = discover("رویداد سرام\nمنتظرتونن\nحتما سر بزنید")
@@ -97,6 +122,22 @@ class AddressAndCityTests(unittest.TestCase):
 
         self.assertIsNone(facts.address)
 
+    def test_a_map_pin_is_an_explicit_location_label(self) -> None:
+        facts = discover(
+            "کارگاه سفالگری با حضور هنرمندان تهران\n"
+            "🕒 جمعه ساعت ۱۸\n"
+            "📍 کاشان، شهرک صنعتی نمونه، خیابان هنر"
+        )
+
+        self.assertEqual(facts.source_date_text, "جمعه ساعت ۱۸")
+        self.assertEqual(facts.address, "کاشان، شهرک صنعتی نمونه، خیابان هنر")
+        self.assertEqual(facts.city, "کاشان")
+
+    def test_a_map_pin_heading_is_not_mistaken_for_an_address(self) -> None:
+        facts = discover("نمایشگاه گروهی جمعه ساعت ۱۸\n📍 رویداد تهران با ما")
+
+        self.assertIsNone(facts.address)
+
 
 class PriceTests(unittest.TestCase):
     def test_price_wording_is_preserved(self) -> None:
@@ -120,6 +161,29 @@ class PriceTests(unittest.TestCase):
         facts = discover("کارگاه سفالگری جمعه ۲۱ شهریور\nآدرس: تهران")
 
         self.assertIsNone(facts.price_text)
+
+    def test_price_related_prose_without_a_value_is_not_price_text(self) -> None:
+        facts = discover(
+            "نشست گفتگو این هفته\n"
+            "برای اطلاعات تاریخ، آدرس و هزینه به کانال ما مراجعه کنید"
+        )
+
+        self.assertIsNone(facts.price_text)
+
+    def test_explicit_price_shapes_are_kept(self) -> None:
+        cases = {
+            "رایگان": "رایگان",
+            "ورودی رایگان": "ورودی رایگان",
+            "۳۵۰ هزار تومان": "۳۵۰ هزار تومان",
+            "هزینه: ۴۵۰ هزار تومان": "۴۵۰ هزار تومان",
+            "قیمت بلیت: ۵۰۰٬۰۰۰ تومان": "۵۰۰٬۰۰۰ تومان",
+            "free": "free",
+            "price: $20": "$20",
+        }
+        for price_line, expected in cases.items():
+            with self.subTest(price_line=price_line):
+                facts = discover(f"کارگاه طراحی\nجمعه ساعت ۱۸\n{price_line}")
+                self.assertEqual(facts.price_text, expected)
 
 
 class RegistrationTests(unittest.TestCase):
@@ -230,6 +294,16 @@ class PlaceFieldTests(unittest.TestCase):
 
     def test_opening_hours_keep_their_wording(self) -> None:
         self.assertEqual(self.facts.opening_hours_text, "ساعات بازدید: هر روز از ۱۱ تا ۲۰")
+
+    def test_generic_daily_prose_is_not_place_or_opening_hours_context(self) -> None:
+        found = analyze("آدم‌ها و برندهایی که هر روز چیزی تازه یاد می‌گیرند")
+
+        self.assertEqual(found.place_context, ())
+
+    def test_daily_wording_with_schedule_evidence_is_opening_hours_context(self) -> None:
+        found = analyze("ساعات بازدید هر روز از ۱۱ تا ۲۰")
+
+        self.assertIn("هر روز", {signal.term for signal in found.place_context})
 
     def test_place_address_and_city_are_read(self) -> None:
         self.assertEqual(self.facts.address, "تهران، خیابان کریمخان، پلاک ۸")

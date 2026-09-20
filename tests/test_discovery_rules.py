@@ -175,6 +175,11 @@ class SingleSignalTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNot(kind(text), DiscoveryType.EVENT)
 
+    def test_registration_alone_is_not_an_event(self) -> None:
+        for text in ("برای ثبت نام پیام دهید", "registration is now open"):
+            with self.subTest(text=text):
+                self.assertIs(kind(text), DiscoveryType.OTHER)
+
     def test_a_place_word_alone_is_not_a_place(self) -> None:
         self.assertIsNot(kind("عکس امروز از گالری"), DiscoveryType.PLACE)
 
@@ -297,6 +302,24 @@ class TitleTests(unittest.TestCase):
 
     def test_a_validated_named_event_becomes_the_title(self) -> None:
         self.assertEqual(discover(NAMED_EVENT_WITH_ATTENDANCE).title, "رویداد سرام")
+
+    def test_a_repeated_quoted_name_supports_a_full_heading_with_a_connector(self) -> None:
+        facts = discover(
+            "رویداد شهر با تو زیباتره\n"
+            "«شهر با تو زیباتره» فرصتی برای دیدار سازندگان محلی است\n"
+            "جمعه ساعت ۱۸"
+        )
+
+        self.assertEqual(facts.title, "رویداد شهر با تو زیباتره")
+
+    def test_title_expansion_does_not_weaken_false_positive_guards(self) -> None:
+        for text in (
+            "رویداد میتونید در صفحه ما ببینید",
+            "رویداد جزو برنامه‌های ما بود",
+            "اینجا فقط ایونت نیست",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(analyze(text).named_event)
 
     def test_a_first_line_is_not_a_title_just_because_it_says_event(self) -> None:
         facts = discover("امروز کلی ایونت داریم\nپنجشنبه ۲۸ شهریور ساعت ۱۷\nآدرس: تهران")

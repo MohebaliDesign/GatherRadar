@@ -36,6 +36,10 @@ _URL_TRAILING = ".,;:!?)]}،؛؟»”\"'"
 
 _TIME_RES = tuple(re.compile(pattern) for pattern in rules.TIME_PATTERNS)
 _DATE_RES = tuple(re.compile(pattern) for pattern in rules.DATE_PATTERNS)
+_CLOCK_RANGE_RE = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:تا|to|[-–—])\s*\d{1,2}(?::\d{2})?\b")
+_VISUAL_LOCATION_RE = re.compile(r"(?m)^[ \t\u200c\u200e\u200f\u2066-\u2069\ufeff]*[📍🗺]\ufe0f?\s*")
+_VISUAL_CALENDAR_RE = re.compile(r"(?m)^[ \t\u200c\u200e\u200f\u2066-\u2069\ufeff]*[🗓📅📆]\ufe0f?\s*")
+_VISUAL_CLOCK_RE = re.compile(r"(?m)^[ \t\u200c\u200e\u200f\u2066-\u2069\ufeff]*[⏱🕒🕰⏰]\ufe0f?\s*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +190,88 @@ def _url_signals(text: str) -> tuple[Signal, ...]:
     return tuple(found)
 
 
-def _label_positions(normalized: str) -> dict[str, tuple[int, int]]:
+def _line_value_bounds(text: str, value_start: int) -> tuple[int, int] | None:
+    _, line_end = line_bounds(text, value_start)
+    while value_start < line_end and text[value_start].isspace():
+        value_start += 1
+    while line_end > value_start and text[line_end - 1].isspace():
+        line_end -= 1
+    return (value_start, line_end) if value_start < line_end else None
+
+
+def _same_line(text: str, first: Signal, second: Signal) -> bool:
+    return line_bounds(text, first.start) == line_bounds(text, second.start)
+
+
+def _place_context_signals(
+    text: str, normalized: str, signals: tuple[Signal, ...]
+) -> tuple[Signal, ...]:
+    """Keep generic daily wording only when its line actually states a schedule."""
+    kept: list[Signal] = []
+    for signal in signals:
+        if signal.term not in rules.DAILY_SCHEDULE_TERMS:
+            kept.append(signal)
+            continue
+        line_start, line_end = line_bounds(text, signal.start)
+        line = normalized[line_start:line_end]
+        has_opening_word = any(
+            other is not signal
+            and other.term in rules.OPENING_HOURS_TERMS
+            and other.term not in rules.DAILY_SCHEDULE_TERMS
+            and _same_line(text, signal, other)
+            for other in signals
+        )
+        has_clock = any(pattern.search(line) for pattern in _TIME_RES) or bool(
+            _CLOCK_RANGE_RE.search(line)
+        )
+        if has_opening_word or has_clock:
+            kept.append(signal)
+    return tuple(kept)
+
+
+def _visual_temporal_signals(
+    text: str,
+    normalized: str,
+    dates: tuple[Signal, ...],
+    times: tuple[Signal, ...],
+) -> tuple[tuple[Signal, ...], tuple[Signal, ...]]:
+    """Read defensible calendar/clock-prefixed lines as structured time evidence."""
+    date_list = list(dates)
+    time_list = list(times)
+
+    for prefix in _VISUAL_CALENDAR_RE.finditer(text):
+        bounds = _line_value_bounds(text, prefix.end())
+        if bounds is None:
+            continue
+        start, end = bounds
+        if any(start <= signal.start < end for signal in dates):
+            date_list.append(Signal("date", "visual_calendar", text[start:end], start, end))
+
+    for prefix in _VISUAL_CLOCK_RE.finditer(text):
+        bounds = _line_value_bounds(text, prefix.end())
+        if bounds is None:
+            continue
+        start, end = bounds
+        line = normalized[start:end]
+        has_temporal_signal = any(start <= signal.start < end for signal in dates + times)
+        if has_temporal_signal or _CLOCK_RANGE_RE.search(line):
+            time_list.append(Signal("time", "visual_clock", text[start:end], start, end))
+
+    return (
+        tuple(sorted(date_list, key=lambda signal: (signal.start, signal.end))),
+        tuple(sorted(time_list, key=lambda signal: (signal.start, signal.end))),
+    )
+
+
+def _defensible_visual_location(value: str) -> bool:
+    tokens = tokenize(normalize(value))
+    city_tokens = {normalize(city) for city in rules.KNOWN_CITIES}
+    if tokens and tokens[0].text in city_tokens:
+        return True
+    return bool(find_phrases(tokens, _vocabulary(rules.LOCATION_DETAIL_TERMS)))
+
+
+def _label_positions(text: str, normalized: str) -> dict[str, tuple[int, int]]:
     """Where each labelled field starts and ends, e.g. "آدرس:" -> value offsets.
 
     The first occurrence of a label wins, and a label only counts when the operator
@@ -209,6 +294,19 @@ def _label_positions(normalized: str) -> dict[str, tuple[int, int]]:
         match = pattern.search(normalized)
         if match:
             positions[name] = (match.start(), match.end())
+
+    # Unlike arbitrary emoji, map-pin prefixes are intentional visual labels. A
+    # pin is still ignored when its line is a heading or prose rather than a
+    # defensible written location.
+    if "address" not in positions:
+        for match in _VISUAL_LOCATION_RE.finditer(text):
+            bounds = _line_value_bounds(text, match.end())
+            if bounds is None:
+                continue
+            value_start, value_end = bounds
+            if _defensible_visual_location(text[value_start:value_end]):
+                positions["address"] = (match.start(), value_start)
+                break
     return positions
 
 
@@ -223,7 +321,11 @@ def analyze(text: str) -> SignalSet:
     attendance = _signals("attendance", text, tokens, rules.ATTENDANCE_TERMS, blocked=claimed)
     claimed |= _token_span(attendance)
 
-    place_context = _signals("place_context", text, tokens, rules.PLACE_CONTEXT_TERMS, blocked=claimed)
+    place_context = _place_context_signals(
+        text,
+        normalized,
+        _signals("place_context", text, tokens, rules.PLACE_CONTEXT_TERMS, blocked=claimed),
+    )
     place_terms = _signals("place_term", text, tokens, rules.PLACE_TERMS, blocked=claimed)
     event_strong = _signals("event_strong", text, tokens, rules.EVENT_TERMS_STRONG, blocked=claimed)
     event_weak = _signals(
@@ -240,6 +342,7 @@ def analyze(text: str) -> SignalSet:
     temporal_blocked = claimed | _token_span(place_context)
     dates = _date_signals(text, normalized, tokens, temporal_blocked)
     times = _time_signals(text, normalized, tokens, temporal_blocked)
+    dates, times = _visual_temporal_signals(text, normalized, dates, times)
 
     # Words already doing another job in the sentence cannot also be part of a name.
     busy = (
@@ -251,7 +354,7 @@ def analyze(text: str) -> SignalSet:
         | _token_span(registration)
     )
 
-    labels = _label_positions(normalized)
+    labels = _label_positions(text, normalized)
     locations = tuple(
         Signal(kind="location", term=name, text=text[start:end], start=start, end=end)
         for name, (start, end) in sorted(labels.items(), key=lambda item: item[1][0])
@@ -334,6 +437,44 @@ def _is_line_initial(text: str, tokens: Sequence[Token], index: int) -> bool:
     return index == 0 or tokens[index - 1].end <= line_start
 
 
+def _repeated_quoted_line_name(
+    text: str, tokens: Sequence[Token], match: PhraseMatch
+) -> int | None:
+    """End of a short heading whose full name is repeated in quotes later.
+
+    This is deliberately narrower than relaxing grammatical stopwords globally:
+    connectors such as ``با`` may occur inside the heading only when the source
+    independently repeats the same wording as a quoted title.
+    """
+    _, line_end = line_bounds(text, match.start)
+    following = [
+        token
+        for token in tokens[match.last_token + 1 :]
+        if token.start < line_end
+    ]
+    if not 2 <= len(following) <= 8:
+        return None
+    if not _is_name_token(following[0]):
+        return None
+    if following[-1].text in _NAME_STOPWORDS or following[-1].text in _DATE_TOKENS:
+        return None
+
+    wanted = tuple(token.text for token in following)
+    for opening, closing in rules.QUOTE_PAIRS:
+        cursor = line_end
+        while True:
+            start = text.find(opening, cursor)
+            if start == -1:
+                break
+            end = text.find(closing, start + len(opening))
+            if end == -1:
+                break
+            if phrase_tokens(text[start + len(opening) : end]) == wanted:
+                return following[-1].end
+            cursor = end + len(closing)
+    return None
+
+
 def find_named(
     text: str,
     tokens: Sequence[Token],
@@ -374,6 +515,18 @@ def find_named(
             text, tokens, match.first_token, line_prefix_terms
         ):
             continue
+
+        repeated_name_end = _repeated_quoted_line_name(text, tokens, match)
+        if repeated_name_end is not None:
+            return Signal(
+                kind=kind,
+                term=match.phrase,
+                text=text[match.start : repeated_name_end],
+                start=match.start,
+                end=repeated_name_end,
+                first_token=match.first_token,
+                last_token=match.last_token,
+            )
 
         name_end: int | None = None
         for offset in range(1, rules.MAX_NAME_TOKENS + 1):

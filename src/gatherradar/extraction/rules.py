@@ -315,6 +315,18 @@ OPENING_HOURS_TERMS: tuple[str, ...] = (
     "visiting hours",
 )
 
+# These phrases are ordinary prose unless their own line also carries opening or
+# clock evidence. Signal detection applies that context check before they can help
+# classify a place or suppress an event date reading.
+DAILY_SCHEDULE_TERMS: frozenset[str] = frozenset(
+    {
+        "همه روزه",
+        "هر روز",
+        "open daily",
+        "open every day",
+    }
+)
+
 # Being invited to show up. Never enough on its own to create an event.
 ATTENDANCE_TERMS: tuple[str, ...] = (
     "منتظرتونن",
@@ -416,7 +428,18 @@ PRICE_TERMS: tuple[str, ...] = (
     "fee",
 )
 
-PRICE_LABELS: tuple[str, ...] = ("هزینه شرکت", "ورودی", "هزینه", "قیمت", "price", "entry", "fee")
+PRICE_LABELS: tuple[str, ...] = (
+    "قیمت بلیت",
+    "قیمت بلیط",
+    "هزینه شرکت",
+    "ticket price",
+    "ورودی",
+    "هزینه",
+    "قیمت",
+    "price",
+    "entry",
+    "fee",
+)
 
 ONLINE_TERMS: tuple[str, ...] = ("آنلاین", "آن لاین", "انلاین", "online", "virtual")
 IN_PERSON_TERMS: tuple[str, ...] = ("حضوری", "in person", "onsite", "on site")
@@ -426,6 +449,7 @@ HYBRID_TERMS: tuple[str, ...] = ("حضوری و آنلاین", "آنلاین و 
 KNOWN_CITIES: tuple[str, ...] = (
     "تهران",
     "کرج",
+    "کاشان",
     "اصفهان",
     "شیراز",
     "مشهد",
@@ -444,6 +468,28 @@ KNOWN_CITIES: tuple[str, ...] = (
     "tabriz",
     "yazd",
     "rasht",
+)
+
+# A map-pin line is accepted as a structured location only when the following
+# text contains explicit geographic/address wording (or a written known city).
+LOCATION_DETAIL_TERMS: tuple[str, ...] = (
+    "خیابان",
+    "بلوار",
+    "کوچه",
+    "پلاک",
+    "میدان",
+    "شهرک",
+    "جاده",
+    "بزرگراه",
+    "محدوده",
+    "street",
+    "st",
+    "road",
+    "rd",
+    "avenue",
+    "ave",
+    "boulevard",
+    "blvd",
 )
 
 # --------------------------------------------------------------------------------------
