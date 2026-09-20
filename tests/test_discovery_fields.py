@@ -101,6 +101,41 @@ class AddressAndCityTests(unittest.TestCase):
         self.assertEqual(facts.venue_name, "خانه هنرمندان")
         self.assertEqual(facts.address, "خیابان ایرانشهر")
 
+    def test_an_ambiguous_venue_label_with_an_address_becomes_address(self) -> None:
+        facts = discover("کنسرت موسیقی جمعه ۲۱ شهریور\nمکان: جردن، خیابان انصاری، پلاک ۲۵")
+
+        self.assertEqual(facts.address, "جردن، خیابان انصاری، پلاک ۲۵")
+        self.assertIsNone(facts.venue_name)
+
+    def test_ambiguous_venue_labels_keep_clear_venue_names(self) -> None:
+        cases = {
+            "مکان: گالری شیرین": "گالری شیرین",
+            "محل برگزاری: خانه هنرمندان": "خانه هنرمندان",
+        }
+        for labelled_value, expected in cases.items():
+            with self.subTest(labelled_value=labelled_value):
+                facts = discover(f"کنسرت موسیقی جمعه ۲۱ شهریور\n{labelled_value}")
+                self.assertEqual(facts.venue_name, expected)
+                self.assertIsNone(facts.address)
+
+    def test_a_venue_phrase_with_street_structure_is_kept_as_one_address(self) -> None:
+        facts = discover(
+            "نمایشگاه عکس جمعه ۲۱ شهریور\n"
+            "مکان برگزاری: گالری نمونه، بلوار هنر، کوچه دوم، پلاک ۴"
+        )
+
+        self.assertEqual(
+            facts.address,
+            "گالری نمونه، بلوار هنر، کوچه دوم، پلاک ۴",
+        )
+        self.assertIsNone(facts.venue_name)
+
+    def test_english_address_vocabulary_disambiguates_a_persian_venue_label(self) -> None:
+        facts = discover("Design meetup Friday\nمحل: Studio North, Example Street, No. 14")
+
+        self.assertEqual(facts.address, "Studio North, Example Street, No. 14")
+        self.assertIsNone(facts.venue_name)
+
     def test_an_unlabelled_place_word_is_not_a_venue(self) -> None:
         facts = discover("کنسرت موسیقی جمعه ۲۱ شهریور در خانه هنرمندان برگزار می‌شود")
 

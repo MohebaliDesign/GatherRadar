@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 
 from . import rules
-from .signals import CITY_TOKENS, Signal, SignalSet
+from .signals import CITY_TOKENS, Signal, SignalSet, has_address_detail
 from .text import line_bounds, normalize, tokenize
 
 _MAX_PLACE_SUMMARY = 200
@@ -261,13 +261,43 @@ def source_date_text(found: SignalSet) -> str | None:
     return _with_adjacent_complement(found, selected, fragments).strip(_TRIM) or None
 
 
+def _label_term(found: SignalSet, name: str, labels: tuple[str, ...]) -> str | None:
+    position = found.labels.get(name)
+    if position is None:
+        return None
+    label_start, value_start = position
+    written = normalize(found.text[label_start:value_start]).strip(
+        f" \t{rules.LABEL_SEPARATORS}"
+    )
+    for label in labels:
+        if written == normalize(label):
+            return label
+    return None
+
+
+def _ambiguous_venue_address_span(found: SignalSet) -> tuple[int, int] | None:
+    label = _label_term(found, "venue", rules.VENUE_LABELS)
+    if label not in rules.AMBIGUOUS_VENUE_LABELS:
+        return None
+    span = _labelled_span(found, "venue")
+    if span is None or not has_address_detail(found.text[slice(*span)]):
+        return None
+    return span
+
+
 def venue_name(found: SignalSet) -> str | None:
-    """Only an explicitly labelled venue; a place word in a sentence is not one."""
+    """An explicit venue value, unless an ambiguous Persian label holds an address."""
+    if _ambiguous_venue_address_span(found) is not None:
+        return None
     return _labelled_value(found, "venue")
 
 
 def address(found: SignalSet) -> str | None:
-    return _labelled_value(found, "address")
+    explicit = _labelled_value(found, "address")
+    if explicit is not None:
+        return explicit
+    span = _ambiguous_venue_address_span(found)
+    return found.text[slice(*span)] if span is not None else None
 
 
 def city(found: SignalSet) -> str | None:
@@ -279,7 +309,7 @@ def city(found: SignalSet) -> str | None:
     labelled = _labelled_value(found, "city")
     if labelled:
         return labelled
-    address_span = _labelled_span(found, "address")
+    address_span = _labelled_span(found, "address") or _ambiguous_venue_address_span(found)
     if address_span is not None:
         address_start, address_end = address_span
         for token in found.tokens:

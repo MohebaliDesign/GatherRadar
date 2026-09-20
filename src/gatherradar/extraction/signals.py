@@ -263,12 +263,18 @@ def _visual_temporal_signals(
     )
 
 
+def has_address_detail(value: str) -> bool:
+    """Whether source text explicitly contains centralized address vocabulary."""
+    tokens = tokenize(normalize(value))
+    return bool(find_phrases(tokens, _vocabulary(rules.LOCATION_DETAIL_TERMS)))
+
+
 def _defensible_visual_location(value: str) -> bool:
     tokens = tokenize(normalize(value))
     city_tokens = {normalize(city) for city in rules.KNOWN_CITIES}
     if tokens and tokens[0].text in city_tokens:
         return True
-    return bool(find_phrases(tokens, _vocabulary(rules.LOCATION_DETAIL_TERMS)))
+    return has_address_detail(value)
 
 
 def _label_positions(text: str, normalized: str) -> dict[str, tuple[int, int]]:
@@ -570,4 +576,12 @@ def has_meaningful_content(text: str) -> bool:
     return _has_meaningful_content(text, _FUNCTION_WORDS)
 
 
-__all__ = ["Signal", "SignalSet", "URL_PATTERN", "analyze", "find_named", "has_meaningful_content"]
+__all__ = [
+    "Signal",
+    "SignalSet",
+    "URL_PATTERN",
+    "analyze",
+    "find_named",
+    "has_address_detail",
+    "has_meaningful_content",
+]

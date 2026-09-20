@@ -474,14 +474,21 @@ KNOWN_CITIES: tuple[str, ...] = (
 # text contains explicit geographic/address wording (or a written known city).
 LOCATION_DETAIL_TERMS: tuple[str, ...] = (
     "خیابان",
+    "خ",
     "بلوار",
     "کوچه",
+    "بن بست",
     "پلاک",
+    "طبقه",
+    "واحد",
     "میدان",
     "شهرک",
     "جاده",
     "بزرگراه",
     "محدوده",
+    "چهارراه",
+    "سه راه",
+    "تقاطع",
     "street",
     "st",
     "road",
@@ -490,6 +497,11 @@ LOCATION_DETAIL_TERMS: tuple[str, ...] = (
     "ave",
     "boulevard",
     "blvd",
+    "square",
+    "plaza",
+    "alley",
+    "no",
+    "number",
 )
 
 # --------------------------------------------------------------------------------------
@@ -498,6 +510,9 @@ LOCATION_DETAIL_TERMS: tuple[str, ...] = (
 
 ADDRESS_LABELS: tuple[str, ...] = ("آدرس", "ادرس", "نشانی", "address", "location")
 VENUE_LABELS: tuple[str, ...] = ("محل برگزاری", "مکان برگزاری", "مکان", "محل", "venue")
+AMBIGUOUS_VENUE_LABELS: frozenset[str] = frozenset(
+    {"محل برگزاری", "مکان برگزاری", "مکان", "محل"}
+)
 DATE_LABELS: tuple[str, ...] = ("زمان برگزاری", "تاریخ", "زمان", "date", "time", "when")
 CITY_LABELS: tuple[str, ...] = ("شهر", "city")
 
