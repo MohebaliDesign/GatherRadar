@@ -1,19 +1,22 @@
 # GatherRadar
 
-> AI-assisted event discovery for small communities.
+> Event discovery for small communities.
 
 GatherRadar collects event information from a curated set of public websites and Instagram pages, turns it into consistent event records, and sends review-ready results to Google Sheets. The first version is a private MVP for planning activities with a community of roughly 20–40 people.
+
+Discovery is **deterministic and free**. The default engine is a rule-based classifier that runs locally: no paid AI, no API key, no cloud service, and no network access at the discovery step.
 
 ## MVP
 
 - Collect public event content from approved sources.
+- Classify what was collected as an **event**, a **place**, or **neither**.
 - Extract and normalize dates, locations, categories, prices, and links.
 - Keep every event traceable to its source.
 - Detect likely duplicates and flag uncertain data for human review.
 - Publish a clean, filterable event list to Google Sheets.
 
 ```text
-Curated sources → collection → extraction → normalization → deduplication → review → Google Sheets
+Curated sources → collection → discovery → normalization → deduplication → review → Google Sheets
 ```
 
 Automated Telegram publishing, recommendations, a public dashboard, and a multi-user product are intentionally deferred until the discovery workflow has been validated.
@@ -27,7 +30,91 @@ Source → RawItem → EventCandidate → Event
 ```
 
 The first curated registry lives in `config/sources.yaml`. The Instagram collector is the
-only live path so far, and it runs only when invoked explicitly.
+only live collection path so far, and it runs only when invoked explicitly. Website collectors
+are the next major source family.
+
+Discovery sits after collection:
+
+```text
+RawItem → DiscoveryService → DiscoveryProvider → DiscoveryFacts → EventCandidate | PlaceCandidate | Other
+```
+
+A provider decides what a raw item is — an event, a place, or neither — and extracts its
+source-supported facts in one operation. The service owns everything deterministic: skipping
+observations with no meaningful content, validating provider output, mapping the result onto
+the right candidate type, keeping provenance from the raw item, and assigning stable candidate
+ids.
+
+The interface is provider-neutral, and the shipped implementation is a **rule engine**, not a
+model. Candidates are transient (not persisted), and date, price, and category normalization
+is a separate, later step.
+
+## Discovering events and places
+
+```bash
+python -m gatherradar extract instagram davvvat_instagram --limit 5
+```
+
+This reads only what collection already stored. It opens no browser, contacts no source, makes
+no network call, needs no API key, costs nothing, and writes nothing.
+
+It analyzes the newest stored observations for the source — the latest observation of each
+item, newest by publish date, undated items last — and prints, for every item, what it was
+classified as, the scores and signals behind that decision, and the fields read out of it:
+
+```text
+[1] instagram:davvvat:ABC123
+    Result: Event
+    Scores: event 7.5 / place 0.5 / negative 0.0
+    Reason: event: terminology with date, time, or registration evidence
+    Signals: event_strong:کارگاه, date:جمعه, date:شهریور, time:از ساعت, price:ورودی, location:address
+    Negative: -
+    Fields:
+      title: کارگاه سفالگری
+      category: workshop
+      source_date_text: جمعه ۲۱ شهریور از ساعت ۱۶ تا ۲۲
+      address: تهران، نیاوران، سه راه یاسر
+      city: تهران
+      price_text: ورودی ۳۵۰ هزار تومان
+      language: fa
+      evidence_url: https://www.instagram.com/p/ABC123/
+
+Observed: 5
+Events: 1
+Places: 1
+Other: 2
+Skipped: 1
+Failed: 0
+```
+
+`Skipped` means nothing was classified — the caption was empty, or carried no content words at
+all. `Other` means the content *was* analyzed and found unrelated. The two are deliberately
+different answers.
+
+### How the rule engine decides
+
+No single keyword decides anything. An event needs a path through the evidence: either event
+terminology **with** date, time, or registration evidence, or strong event terminology **with**
+an invitation to attend and venue context. An attendance invitation alone, a date alone, an
+address alone, or an event word alone is never enough. Wording that says the occurrence
+already happened (`برگزار شد`, `هفته گذشته`, `behind the scenes`) counts against it as a
+penalty, not a veto.
+
+A place needs place vocabulary plus descriptive or visit context, and is only considered when
+no event path was satisfied — so a gallery announcing an opening on a date is an event, while a
+gallery introducing itself is a place.
+
+Titles are conservative: one is extracted only from a validated named construction
+(`رویداد سرام`, `نمایشگاه «نام نمایشگاه»`) or an explicit quotation. A line that merely mentions
+an event word gets no title, because an unknown title is better than an invented one.
+
+Persian weekdays, months, relative dates, digits, and times are detected but **not converted**;
+the source wording is kept exactly as published. Jalali-to-Gregorian conversion, numeric prices,
+and canonical persistence belong to the later normalization step.
+
+The vocabulary and every weight live in one reviewable place, `src/gatherradar/extraction/rules.py`.
+Useful flags: `--limit` (default 5), `--config` (default `config/sources.yaml`), and
+`--data-dir` (default `data`).
 
 ## Development
 
@@ -49,7 +136,7 @@ needed and `playwright install` is not required. If Google Chrome is not install
 normally, or run `python -m playwright install chrome`.
 
 The test suite is offline. It never launches Chrome, never contacts Instagram, and no test needs
-credentials.
+credentials, an API key, or an AI provider. No AI SDK is a dependency.
 
 ## Instagram browser profile
 
@@ -182,7 +269,13 @@ validated live against `@davvvat` — authentication through the persistent Chro
 real Persian caption extraction, published timestamps and image URLs, recent-item selection
 that is not displaced by pinned posts, and New/Changed/Existing behavior across repeated
 runs all work as intended.
-Next milestone: event detection and structured extraction over collected raw items.
+
+Discovery is implemented and tested offline: the provider-neutral boundary plus a
+deterministic, free rule engine that classifies stored items as event, place, or other and
+reads source-supported fields out of them. Instagram is the first collector; website collectors
+are the next major source family. Normalization (Jalali conversion, numeric prices, canonical
+persistence, deduplication, and Google Sheets) is a separate, later step, and candidates remain
+transient until it exists.
 
 ## License
 

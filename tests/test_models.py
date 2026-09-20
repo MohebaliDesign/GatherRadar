@@ -1,7 +1,14 @@
 import unittest
 from datetime import datetime
 
-from gatherradar.domain import EventCandidate, RawItem, Source, SourceType
+from gatherradar.domain import (
+    DiscoveryType,
+    EventCandidate,
+    PlaceCandidate,
+    RawItem,
+    Source,
+    SourceType,
+)
 
 
 class ModelTests(unittest.TestCase):
@@ -36,6 +43,27 @@ class ModelTests(unittest.TestCase):
                 is_event=True,
                 extraction_confidence=1.2,
             )
+
+    def test_place_candidate_requires_identity(self) -> None:
+        for candidate_id, raw_item_id in (("", "raw_1"), ("candidate_1", ""), (" ", "raw_1")):
+            with self.subTest(candidate_id=candidate_id, raw_item_id=raw_item_id):
+                with self.assertRaises(ValueError):
+                    PlaceCandidate(candidate_id=candidate_id, raw_item_id=raw_item_id)
+
+    def test_place_candidate_leaves_unknown_fields_null(self) -> None:
+        candidate = PlaceCandidate(candidate_id="candidate_1", raw_item_id="raw_1")
+
+        for name in ("title", "summary", "category", "address", "city", "opening_hours_text",
+                     "price_text", "language", "evidence_url"):
+            with self.subTest(field=name):
+                self.assertIsNone(getattr(candidate, name))
+
+    def test_discovery_type_is_a_closed_vocabulary(self) -> None:
+        self.assertEqual(
+            {member.value for member in DiscoveryType}, {"event", "place", "other"}
+        )
+        with self.assertRaises(ValueError):
+            DiscoveryType("venue")
 
 
 if __name__ == "__main__":

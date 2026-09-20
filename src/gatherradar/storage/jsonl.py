@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..domain import RawItem
+from ..domain import RawItem, SourceType
 
 
 class StorageError(Exception):
@@ -19,6 +20,20 @@ class StoreOutcome:
     new: int
     changed: int
     already_existing: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReadOutcome:
+    """What a read of the raw store found, including what it could not read.
+
+    Malformed lines are reported rather than raised, so one corrupt observation
+    does not cost the caller every valid one. Reasons name the line, never its
+    content, so a report cannot leak stored text.
+    """
+
+    path: Path
+    items: tuple[RawItem, ...] = ()
+    malformed: tuple[str, ...] = ()
 
 
 def raw_item_to_dict(item: RawItem) -> dict[str, Any]:
@@ -37,6 +52,63 @@ def raw_item_to_dict(item: RawItem) -> dict[str, Any]:
         "content_hash": item.content_hash,
         "raw_metadata": item.raw_metadata,
     }
+
+
+def _text(payload: dict[str, Any], name: str, *, required: bool = True) -> Any:
+    value = payload.get(name)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be text")
+    return value
+
+
+def _timestamp(payload: dict[str, Any], name: str, *, required: bool) -> datetime | None:
+    value = payload.get(name)
+    if value is None:
+        if required:
+            raise ValueError(f"{name} is missing")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be an ISO 8601 string")
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} is not a valid ISO 8601 timestamp") from exc
+
+
+def raw_item_from_dict(payload: dict[str, Any]) -> RawItem:
+    """Rebuild a stored observation, refusing anything that is not one.
+
+    Stored JSONL is untrusted input like any other boundary — it can be hand-edited
+    or written by an older collector — so every field is checked here, and RawItem's
+    own validation rejects empty identity and naive timestamps.
+    """
+    metadata = payload.get("raw_metadata") or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("raw_metadata must be an object")
+
+    source_type = _text(payload, "source_type")
+    try:
+        parsed_type = SourceType(source_type)
+    except ValueError as exc:
+        raise ValueError(f"unknown source_type '{source_type}'") from exc
+
+    return RawItem(
+        id=_text(payload, "id"),
+        source_id=_text(payload, "source_id"),
+        source_type=parsed_type,
+        external_id=_text(payload, "external_id"),
+        content_type=_text(payload, "content_type"),
+        content_url=_text(payload, "content_url"),
+        raw_text=_text(payload, "raw_text"),
+        captured_at=_timestamp(payload, "captured_at", required=True),
+        published_at=_timestamp(payload, "published_at", required=False),
+        author=_text(payload, "author", required=False),
+        image_url=_text(payload, "image_url", required=False),
+        content_hash=_text(payload, "content_hash", required=False) or "",
+        raw_metadata=metadata,
+    )
 
 
 class JsonlRawItemStore:
@@ -81,6 +153,50 @@ class JsonlRawItemStore:
             if isinstance(payload, dict):
                 records.append(payload)
         return records
+
+    def read_latest_items(self) -> ReadOutcome:
+        """Every stored id at its most recently stored observation, read-only.
+
+        The file is append-only, so an edited caption is on record more than once;
+        analysis must look at what the source says now, which is the last line for
+        that id. Order follows the file — ids in the order they first appeared — and
+        nothing here rewrites, reorders, or deletes stored history. Choosing which
+        of these observations to work on is the caller's decision, not storage's.
+        """
+        latest: dict[str, RawItem] = {}
+        malformed: list[str] = []
+
+        for line_number, payload in self._iter_payloads(malformed):
+            try:
+                item = raw_item_from_dict(payload)
+            except (KeyError, TypeError, ValueError) as exc:
+                malformed.append(f"line {line_number}: {exc}")
+                continue
+            latest[item.id] = item
+
+        return ReadOutcome(path=self._path, items=tuple(latest.values()), malformed=tuple(malformed))
+
+    def _iter_payloads(self, malformed: list[str]):
+        if not self._path.exists():
+            return
+
+        try:
+            content = self._path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise StorageError(f"could not read {self._path}: {exc}") from exc
+
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                malformed.append(f"line {line_number}: not valid JSON ({exc.msg})")
+                continue
+            if not isinstance(payload, dict):
+                malformed.append(f"line {line_number}: expected a JSON object")
+                continue
+            yield line_number, payload
 
     def existing_ids(self) -> set[str]:
         return {
