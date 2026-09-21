@@ -5,8 +5,16 @@ from .discovery_run import (
     run_instagram_discovery,
     select_latest,
 )
+from .evidence_run import (
+    EvidenceRunSummary,
+    instagram_evidence_output_path,
+    run_instagram_evidence,
+)
 
 __all__ = [
+    'EvidenceRunSummary',
+    'instagram_evidence_output_path',
+    'run_instagram_evidence',
     "DiscoveryRunSummary",
     "RunSummary",
     "find_source",

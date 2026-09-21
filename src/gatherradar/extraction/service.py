@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from ..domain import DiscoveryType, EventCandidate, PlaceCandidate, RawItem, Source
+from ..domain import (
+    DiscoveryType, DiscoveryUnit, EventCandidate, EvidenceBundle, PlaceCandidate,
+    RawItem, Source, caption_discovery_units,
+)
 from .base import DiscoveryProvider, InvalidExtractionOutputError, ProviderExtractionError
 from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput
 from .signals import has_meaningful_content
@@ -37,6 +40,7 @@ class DiscoveryOutcome:
     place: PlaceCandidate | None = None
     evidence: DiscoveryEvidence | None = None
     reason: str | None = None
+    discovery_unit_id: str | None = None
 
     @property
     def candidate(self) -> EventCandidate | PlaceCandidate | None:
@@ -91,6 +95,34 @@ class DiscoveryService:
         return self._provider.name
 
     def discover(self, raw_item: RawItem, source: Source | None = None) -> DiscoveryOutcome:
+        bundle = EvidenceBundle.from_raw_item(raw_item)
+        units = caption_discovery_units(bundle)
+        if not units:
+            return self._outcome(raw_item, DiscoveryStatus.SKIPPED, reason=SKIP_EMPTY_TEXT)
+        caption_item = replace(raw_item, raw_text=units[0].text)
+        return self._discover_raw(caption_item, source)
+
+    def discover_units(
+        self, raw_item: RawItem, units: tuple[DiscoveryUnit, ...],
+        source: Source | None = None,
+    ) -> tuple[DiscoveryOutcome, ...]:
+        return tuple(self.discover_unit(raw_item, unit, source) for unit in units)
+
+    def discover_unit(
+        self, raw_item: RawItem, unit: DiscoveryUnit, source: Source | None = None
+    ) -> DiscoveryOutcome:
+        if unit.raw_item_id != raw_item.id:
+            raise ValueError('discovery unit does not belong to the raw item')
+        unit_hash = hashlib.sha256(
+            (raw_item.content_hash + '\x1f' + unit.unit_id).encode('utf-8')
+        ).hexdigest()
+        unit_item = replace(raw_item, raw_text=unit.text, content_hash=unit_hash)
+        outcome = self._discover_raw(unit_item, source)
+        return replace(outcome, discovery_unit_id=unit.unit_id)
+
+    def _discover_raw(
+        self, raw_item: RawItem, source: Source | None = None
+    ) -> DiscoveryOutcome:
         extraction_input = build_extraction_input(raw_item, source)
         if not raw_item.raw_text.strip():
             # No text is not evidence of anything, so this is not classified at all.

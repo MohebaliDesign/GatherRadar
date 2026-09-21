@@ -234,10 +234,11 @@ Create this structure incrementally as implementation begins:
 src/gatherradar/
   domain/           # records, enums, and validation contracts
   collectors/       # source adapter interface and implementations
+  ocr/              # provider boundary and local Tesseract implementation
   extraction/       # discovery: classification, rule engine, and field extraction
   normalization/    # dates, text, locations, categories, and prices
   deduplication/    # exact and fuzzy grouping
-  storage/          # JSONL raw store now; SQLite repositories and migrations later
+  storage/          # raw/evidence JSONL and media now; SQLite repositories later
   exports/          # Google Sheets integration
   orchestration/    # run coordination and summaries
 tests/
@@ -265,6 +266,18 @@ HTML using URL patterns and semantic elements; `collectors/instagram.py` maps th
 into `RawItem`; storage is unchanged. The browser runs visibly and unmodified — no stealth,
 fingerprint changes, proxies, or checkpoint bypasses.
 
+Visual evidence acquisition is a separate explicit run over already-stored `RawItem` records.
+`collectors/instagram_evidence.py` revisits only those approved media URLs through the same
+authenticated Chrome profile, captures the displayed image or bounded ordered carousel slides,
+and samples a small deterministic set of reel frames. It stores content-addressed PNG artifacts
+below `data/media/`; one artifact failure is isolated from other items. Audio is out of scope.
+
+`OcrProvider` keeps evidence independent of one OCR engine. The first implementation invokes
+the local Tesseract executable with `fas+eng`, a bounded timeout, and no `shell=True`; it never
+downloads an executable or language pack. Raw and lightly cleaned OCR output, engine/version/
+configuration, artifact provenance, empty results, and failures are represented explicitly.
+No cloud OCR, paid AI, API key, or new Python dependency is required.
+
 The earlier [Instaloader](https://instaloader.github.io/) transport remains as a legacy
 fallback reference in `collectors/instagram_instaloader.py`, since its profile lookup is
 refused with HTTP 429. It is used only when explicitly selected, never as an automatic
@@ -280,6 +293,19 @@ the `RawItem` itself, and derives the candidate id from the raw item id and cont
 never depends on the provider. `orchestration/discovery_run.py` analyzes a batch item by item
 and keeps candidates in memory. Normalization-owned fields (`starts_at`, `ends_at`,
 `price_amount`, `currency`) stay null until the normalization step exists.
+
+The source-neutral evidence boundary is `RawItem -> EvidenceBundle -> 0..N DiscoveryUnits ->
+DiscoveryService`. The original caption is a `CAPTION` fragment and still reaches the rule
+engine unchanged. Media OCR is stored as separate `IMAGE_OCR`, `CAROUSEL_SLIDE_OCR`, and
+`REEL_FRAME_OCR` fragments; future website adapters use `WEBSITE_TEXT` through the same layer.
+`RawItem.raw_text` is never replaced with OCR. The current grouping strategy intentionally
+creates only the caption unit. It does not yet merge OCR or segment multi-event carousels, but
+the contracts permit multiple units and distinct candidate identities when that strategy is
+implemented.
+
+`storage/evidence_jsonl.py` persists evidence append-only and idempotently below
+`data/evidence/`. Artifact hash plus media position avoids identity based on signed CDN URLs;
+OCR engine/configuration and output changes remain auditable. Candidates remain transient.
 
 **GatherRadar's core MVP runs completely free.** The default and only implementation of that
 protocol is `RuleBasedDiscoveryProvider` (`rule-based/1`): deterministic rules with no model,
@@ -317,14 +343,18 @@ depends on knowing.
    engine behind it, reachable through `python -m gatherradar extract`. Tested offline with
    fake providers for the architecture and synthetic Persian and English captions for the
    rules. No AI is used and none is required.
-5. Add deterministic normalization and validation. **Next milestone** — Jalali-to-Gregorian
-   conversion, normalized timestamps, and numeric prices.
-6. Add canonical local storage with deduplication and repeatable reruns.
-7. Export candidates to a test Google Sheet without overwriting review fields.
-8. Add website adapters and broader source coverage. **The next major source family**, now
-   that the rule engine is source-neutral and validated on Instagram items.
-9. Pilot with a small curated source set and refine from measured errors.
-10. Evaluate Telegram and recommendations only after the discovery loop works.
+5. Add source-neutral visual evidence, bounded Instagram image/carousel/reel capture, local
+   OCR, and evidence persistence. **Implemented and tested offline; owner live validation is
+   still pending.** The existing caption candidate semantics remain unchanged.
+6. Add website adapters and broader source coverage. **The next major source family** after
+   the media-evidence branch is reviewed and validated. Website text uses the same evidence and
+   discovery-unit layer rather than a parallel semantic system.
+7. Add deterministic normalization and validation: Jalali-to-Gregorian conversion, normalized
+   timestamps, and numeric prices.
+8. Add canonical local storage with deduplication and repeatable reruns.
+9. Export candidates to a test Google Sheet without overwriting review fields.
+10. Pilot with a small curated source set and refine from measured errors.
+11. Evaluate Telegram and recommendations only after the discovery loop works.
 
 ## 11. Open decisions
 
