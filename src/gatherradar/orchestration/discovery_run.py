@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..collectors.instagram import DEFAULT_LIMIT
@@ -20,6 +20,7 @@ class DiscoveryRunSummary:
     source: Source | None = None
     input_path: Path | None = None
     malformed: tuple[str, ...] = ()
+    raw_items: tuple[RawItem, ...] = field(default=(), kw_only=True, repr=False)
 
     @property
     def observed(self) -> int:
@@ -85,6 +86,7 @@ def run_discovery(
     transient boundary and are not persisted. Normalization is a separate, later step.
     """
     known_sources = sources or {}
+    raw_items = tuple(raw_items)
     outcomes = tuple(
         service.discover(raw_item, known_sources.get(raw_item.source_id)) for raw_item in raw_items
     )
@@ -95,6 +97,7 @@ def run_discovery(
         source=source,
         input_path=input_path,
         malformed=malformed,
+        raw_items=raw_items,
     )
 
 

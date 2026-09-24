@@ -4,7 +4,7 @@
 
 GatherRadar is an early-stage Python project for answering a practical question: **what worthwhile events can a small community attend next?** It replaces repeated browsing across selected public sources with a reviewable pipeline that collects source content, preserves provenance, extracts structured facts, and classifies each observation as an **event**, a **place**, or **other**.
 
-The current implementation focuses on the foundation of that pipeline: source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, and deterministic rule-based discovery. Normalization, deduplication, canonical persistence, and Google Sheets synchronization are the next MVP stages rather than completed features.
+The current implementation includes source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, deterministic rule-based discovery, and opt-in date/time/price normalization. Deduplication, canonical persistence, and Google Sheets synchronization remain future stages.
 
 ## Why GatherRadar
 
@@ -27,7 +27,7 @@ The current implementation focuses on the foundation of that pipeline: source co
 | Conservative evidence grouping | ✅ Implemented |
 | Event / place / other discovery | ✅ Implemented |
 | Explainable deterministic rule engine | ✅ Implemented |
-| Date / time / price normalization | 🧭 Planned |
+| Date / time / price normalization | ✅ Implemented; conservative offline review |
 | Duplicate grouping | 🧭 Planned |
 | Canonical SQLite repository | 🧭 Planned |
 | Google Sheets review synchronization | 🧭 Planned |
@@ -52,7 +52,9 @@ DiscoveryService + RuleBasedDiscoveryProvider
         ↓
 EventCandidate | PlaceCandidate | Other
         ↓
-[planned] normalization → deduplication → SQLite → Google Sheets
+Deterministic normalization (opt-in, transient results)
+        ↓
+[planned] deduplication → persistence / Google Sheets
 ~~~
 
 The important boundary is that **collection and discovery are separate operations**. Collection talks to a source and stores observations. Extraction/discovery reads stored data and classifies it. For Instagram, media evidence is also an explicit, separate step.
@@ -146,6 +148,32 @@ python -m gatherradar extract instagram davvvat_instagram --limit 5 --evidence
 
 Evidence-aware extraction still does not persist semantic candidates. It reads stored raw/evidence data, builds conservative discovery units, and reports the transient results.
 
+### 6. Review normalized values offline
+
+~~~bash
+python -m gatherradar extract website davvvat_website --limit 5 --normalize
+python -m gatherradar extract instagram davvvat_instagram --limit 5 --evidence --normalize
+~~~
+
+`--normalize` appends source wording beside dates, times, aware timestamps, price, currency,
+reference basis and diagnostics. It reads the same local snapshot as discovery: no collection,
+browser, OCR, network or data writes. Without the flag, extract output is unchanged.
+
+Normalization uses `persiantools>=6.2,<7.0` for Jalali conversion, parsing copies for digit
+folding, and the configured source's `ZoneInfo` timezone. The package supplies `tzdata` on
+Windows. Source date and price text, candidate IDs and provenance remain unchanged.
+Date-only values stay dates, never midnight timestamps. Relative dates use stored publication
+time, or capture time as fallback. Nearby yearless dates may infer a year within a documented
+45-day window; they carry review diagnostics and `inferred` precision, not `exact`.
+
+Prices use Decimal in their stated units: `TOMAN`, `IRR`, or explicit supported foreign
+currency codes. Explicit free means zero with no invented currency. Unknown prices stay null.
+Multi-day hours, recurring schedules, multiple sessions, broad relative dates, price ranges,
+tiers and conditional prices remain partial/unresolved. A bare relative token also needs
+clear temporal context, so a publisher named “Today” cannot invent a date.
+See [the normalization contract](docs/DATA_CONTRACTS.md#deterministic-normalization-stage-7)
+for exact policies and [the validation report](docs/STAGE7_VALIDATION.md) for measured results.
+
 ## Discovery model
 
 The discovery layer is provider-neutral:
@@ -168,7 +196,7 @@ The shipped provider is `RuleBasedDiscoveryProvider` (`rule-based/1`). It combin
 
 The service layer owns deterministic validation, provenance, candidate mapping, and stable candidate IDs. The provider only decides the semantic type and source-supported facts. This keeps the architecture open to future discovery providers without coupling the rest of the pipeline to a model or vendor.
 
-Current candidate fields can include titles, categories, source date text, venue/address/city, event format, price text, registration URL, summary, language, and the direct evidence URL. Normalized timestamps and numeric prices intentionally remain unset until the normalization stage exists.
+Current candidate fields can include titles, categories, source date text, venue/address/city, event format, price text, registration URL, summary, language, and the direct evidence URL. Discovery leaves normalized values unset; the separate opt-in normalization layer produces a copy with supported structured values and diagnostics.
 
 For the full record shapes and evidence/grouping rules, see [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md).
 
@@ -207,6 +235,7 @@ GatherRadar/
 │   ├── domain/                   # Source, RawItem, evidence, and candidate models
 │   ├── extraction/               # provider interface, signals, rules, fields, service
 │   ├── grouping/                 # evidence selection + conservative grouping
+│   ├── normalization/            # deterministic dates, times, prices and diagnostics
 │   ├── ocr/                      # OCR provider boundary + Tesseract implementation
 │   ├── orchestration/            # collection/evidence/discovery run coordination
 │   ├── storage/                  # append-only JSONL and media storage
@@ -246,9 +275,9 @@ Do not commit browser profiles, cookies, sessions, raw private exports, or crede
 
 The intended MVP continuation is:
 
-1. Normalize Persian/English dates, times, timezones, prices, categories, and locations while preserving original wording.
+1. Review Stage 7 date/time/price normalization; category/location normalization remains deferred.
 2. Group exact and probable duplicates without destructive deletion.
-3. Add a canonical local SQLite repository for stable event history and idempotent reruns.
+3. Evaluate Sheets-first versus a canonical local SQLite repository for stable history and idempotent reruns. Normalization supports either future choice.
 4. Synchronize review-ready canonical candidates to Google Sheets while preserving human review fields.
 5. Add scheduling and broader delivery only after the discovery workflow is validated.
 

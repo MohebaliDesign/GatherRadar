@@ -147,7 +147,8 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 | `category` / `tags` | Controlled category plus optional discovery tags |
 | `source_date_text` | Original date wording for audit and review |
 | `starts_at` / `ends_at` | Timezone-aware normalized timestamps when known |
-| `date_precision` | `exact`, `day`, `range`, or `unknown` |
+| `start_date` / `end_date`, `start_time` / `end_time` | Separate normalized components; unknown clock never becomes midnight |
+| `date_precision` | `exact`, `day`, `range`, `inferred` (single date with inferred year), or `unknown` |
 | `timezone` | IANA timezone used for interpretation |
 | `venue_name` / `address` / `city` | Structured location fields when known |
 | `event_format` | `in_person`, `online`, `hybrid`, or `unknown` |
@@ -294,8 +295,8 @@ string. `DiscoveryService` validates that output, maps it onto `EventCandidate`,
 `PlaceCandidate`, or no candidate at all, sets provenance (`raw_item_id`, `evidence_url`) from
 the `RawItem` itself, and derives the candidate id from the raw item id and content hash so it
 never depends on the provider. `orchestration/discovery_run.py` analyzes a batch item by item
-and keeps candidates in memory. Normalization-owned fields (`starts_at`, `ends_at`,
-`price_amount`, `currency`) stay null until the normalization step exists.
+and keeps candidates in memory. Discovery leaves normalization-owned fields null;
+the opt-in normalization step below produces an updated candidate copy.
 
 The source-neutral evidence boundary is `RawItem -> EvidenceBundle -> 0..N DiscoveryUnits ->
 DiscoveryService`. The original caption is a `CAPTION` fragment and still reaches the rule
@@ -393,6 +394,31 @@ removed events. Broader source coverage and extraction accuracy remain unvalidat
 
 ## 10. Delivery sequence
 
+Stage 7 adds source-neutral `normalization/` after discovery, with separate date, clock,
+price, result and service modules. It preserves all original fields, identities, confidence
+and provenance. Candidate dates/times remain separate; only safe single-date clocks compose
+aware timestamps. Typed precision and diagnostics make unresolved and inferred values visible.
+Places reuse price results without event semantics. The planned canonical `Event` model is
+not used or persisted in this milestone and will need reconciliation before persistence.
+
+Jalali conversion uses `persiantools>=6.2,<7.0` (verified 6.2.0 on Python 3.13.15/Windows).
+Timezone comes from `Source` and is validated with `ZoneInfo`, including DST gap/fold checks.
+Relative dates use stored publication time, else capture time, never the wall clock. Bare
+relative tokens require a standalone/labelled temporal evidence line to avoid proper-name
+false positives. Yearless day/month inference accepts one adjacent-year candidate within
+45 days of that local reference, always flagged for review; yearless ranges must fit one
+Jalali year and span <=90 days. Money uses Decimal and distinct TOMAN/IRR stated units.
+Free is zero with unspecified currency. Source wording is never replaced with parsing text.
+
+`extract ... --normalize` appends an offline, write-free review of the exact discovery
+snapshot. Recurrences, discrete sessions, broad weeks/weekends, overnight ambiguity, and
+multi-tier prices are deliberately not forced into a single occurrence/price. Multi-day
+hours never become a continuous timestamp interval. See `docs/DATA_CONTRACTS.md` for the
+complete rules and `docs/STAGE7_VALIDATION.md` for actual bounded local validation.
+
+Normalization is independent of persistence. SQLite remains a recommendation, but the owner
+will evaluate a Sheets-first workflow next; Stage 7 neither selects nor implements it.
+
 The project intentionally became Instagram-first for initial source validation: an
 Instagram collector was easier to stand up before a website adapter and gives an early
 read on whether anonymous access is viable at all, which the rest of the pipeline
@@ -430,7 +456,8 @@ depends on knowing.
    including unchanged-detail idempotency and offline shared discovery. Generic future-source
    configuration is tested offline; other layouts and broader coverage remain unvalidated.
 8. Add deterministic normalization and validation: Jalali-to-Gregorian conversion, normalized
-   timestamps, and numeric prices.
+   dates/times and numeric prices (**Stage 7**). Implemented for owner review; partial and
+   unresolved cases remain explicit, with no candidate persistence.
 9. Add canonical local storage with deduplication and repeatable reruns.
 10. Export candidates to a test Google Sheet without overwriting review fields.
 11. Pilot with a small curated source set and refine from measured errors.
@@ -440,6 +467,7 @@ depends on knowing.
 
 - Initial source list and source priority.
 - Google authentication and ownership model for the review sheet.
+- Sheets-first versus SQLite-backed candidate persistence after normalization review.
 - Raw capture retention period.
 - Category taxonomy and Persian/English display conventions. The rule engine ships a small
   provisional vocabulary in `rules.py`; the final taxonomy is still open.

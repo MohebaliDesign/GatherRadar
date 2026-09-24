@@ -55,6 +55,7 @@ def run_evidence_discovery(
 ) -> EvidenceDiscoveryRunSummary:
     '''Read-only grouping and discovery, isolating failures per raw item and unit.'''
     grouping = strategy if strategy is not None else ConservativeGrouping()
+    raw_items = tuple(raw_items)
     by_item: dict[str, list[EvidenceFragment]] = {}
     for fragment in history:
         by_item.setdefault(fragment.raw_item_id, []).append(fragment)
@@ -92,6 +93,7 @@ def run_evidence_discovery(
         provider_name=service.provider_name, outcomes=tuple(all_outcomes),
         run_id=run_id, source=source, input_path=input_path, malformed=malformed,
         items=tuple(items), grouping_strategy=grouping.name,
+        raw_items=raw_items,
     )
 
 

@@ -3,7 +3,8 @@
 This document defines the records used by the MVP pipeline. Collectors may change, but these boundaries should remain stable unless the product contract changes.
 
 ```text
-Source → RawItem → EventCandidate | PlaceCandidate → Event
+Source → RawItem / Evidence → DiscoveryUnit → DiscoveryService
+       → EventCandidate | PlaceCandidate → NormalizationOutcome → later persistence/export
 ```
 
 ## Source
@@ -247,7 +248,7 @@ payloads into summaries or evidence.
 
 ## EventCandidate and PlaceCandidate
 
-The result of discovery before deterministic normalization and final persistence. Either may be incomplete or uncertain.
+The result of discovery, optionally copied by deterministic normalization before later persistence. Either may be incomplete or uncertain.
 
 `EventCandidate` preserves source wording such as `source_date_text` and `price_text`, plus extracted fields and `extraction_confidence`.
 
@@ -392,6 +393,115 @@ numeric amount is produced.
 The normalized canonical record used for filtering, deduplication, review, and later Google Sheets export.
 
 It stores normalized event facts, review/status fields, provenance (`canonical_source_url`, `source_item_ids`), first/last seen timestamps, and human review notes.
+
+This is a planned canonical model, not a Stage 7 persistence target. It still has legacy
+integer price fields and a Tehran timezone default; normalization does not instantiate it.
+Before persistence, its contract must be reconciled with the normalized candidate/result
+contract below. The product brief's canonical `event_id`, tags, registration deadline,
+review and history fields are not all discovery `EventCandidate` fields. Discovery uses
+`candidate_id` and `evidence_url`; Stage 7 does not add canonical lifecycle fields.
+
+## Deterministic normalization (Stage 7)
+
+`NormalizationService.normalize(candidate, raw_item, source, evidence_text=...)` returns
+an immutable `NormalizationOutcome`. `orchestration.normalization_run.run_normalization`
+handles discovery outcomes item by item, skips outcomes without candidates, and isolates
+missing context/unexpected failures with fixed, secret-safe diagnostics. It validates
+candidate/raw/source identity. Discovery summaries retain the exact RawItems used in the
+run, avoiding a second store read or reference-date race. Unit text is passed separately
+for relative-word context validation; the original RawItem is never overwritten.
+
+The outcome carries the candidate, optional `TemporalResult`, reusable `PriceResult`, and
+diagnostics. Event candidates are copied; place candidates remain unchanged and carry
+numeric price in `PriceResult` only. No location, category, confidence, identity, provenance,
+title, summary, `source_date_text`, or `price_text` is rewritten. Normalization does not
+collect, run OCR, use AI, persist, deduplicate, or calculate event lifecycle status.
+
+### Temporal values and precision
+
+The pre-Stage-7 Python candidate lacked the brief's precision/timezone fields. Backward
+compatible defaulted fields are now appended to `EventCandidate`:
+
+| Field | Meaning |
+| --- | --- |
+| `start_date`, `end_date` | Gregorian `date` values; null when unresolved. End date requires explicit bounded range wording |
+| `start_time`, `end_time` | Local 24-hour `time` values, separate from dates |
+| `timezone` | Validated configured `Source.timezone`; null on invalid/unavailable configuration |
+| `starts_at`, `ends_at` | Aware datetimes only for a supported single date plus clock, and an unambiguous same-day time range |
+| `date_precision` | Typed `DatePrecision`: `exact`, `day`, `range`, `inferred`, `unknown` |
+
+`exact` means a resolved single date and clock; `day` a resolved date without an accepted
+datetime; `range` bounded calendar dates (not necessarily continuous attendance). `inferred`
+distinguishes a single date with an inferred year, with clock resolution visible in the
+separate time fields. It prevents a year estimate being labelled `exact`. Yearless ranges
+retain `range` and the `inferred_year` review diagnostic. `unknown` also covers time-only
+results; time fields make an additional time-only precision unnecessary. Precision describes
+the interpretation's shape, not certainty or verification; always retain diagnostics.
+
+There is no fake midnight. Multi-day bounds plus hours never create `starts_at`/`ends_at`.
+Recurring/visiting schedules retain safely parsed calendar bounds but are not expanded.
+Discrete dates are not collapsed into a range. Reversed/equal time endpoints are retained
+as clocks for review, without inferred overnight dates or composed timestamps.
+
+`persiantools>=6.2,<7.0` validates Jalali month-name dates and converts them to Gregorian.
+Persian/Arabic digits, Arabic character variants and whitespace are folded on a parsing
+copy only. Invalid explicit dates and weekday contradictions remain invalid/unresolved;
+the parser never moves a date to agree with a weekday. Explicit range endpoint weekdays
+are checked individually. Gregorian support is limited to `YYYY-MM-DD` with year >=1700;
+ambiguous numeric dates and other calendars remain unresolved regardless of locale. No
+locale-based day/month guessing is currently implemented.
+
+The reference is `RawItem.published_at`, else `captured_at`, converted to the source timezone
+before obtaining the local reference date. `reference_at` and `reference_basis` are exposed.
+No wall clock is consulted. `امروز`/`فردا` and `today`/`tomorrow` can resolve against it.
+At the service boundary a **bare relative word** additionally requires a standalone or
+labelled temporal line in the corresponding discovery-unit text (or raw text for legacy
+caption discovery). This avoids normalizing a word extracted from a publisher name or
+ordinary prose. Missing unit context does not fall back to an unrelated caption.
+Broad weeks/weekends remain unresolved; there is no assumed Iran weekend rule.
+
+For clear yearless day/month wording, enumerate the reference Jalali year and its adjacent
+years. Accept only one valid date within **45 days before or after** the stored local
+reference. This symmetric bound handles near-Nowruz announcements without rolling old
+events into the future. Yearless ranges must fit in one Jalali year, have their start in
+that window, and span at most 90 days. Cross-Nowruz yearless ranges are unresolved. Every
+accepted year inference emits `inferred_year` and remains partially normalized. The bound
+is a conservative product policy, not proof of the intended year. Explicit years are never
+replaced by inferred ones. Captured-at fallback is deterministic, but cannot prove when
+an undated page was published.
+
+`ZoneInfo` validates IANA names; invalid names never fall back to Tehran/UTC. Local DST
+gaps and folds are invalid rather than choosing an arbitrary offset. Parsing has a
+4096-character per-field bound. Unconsumed temporal wording is reported and prevents
+datetime composition, even when safe calendar components remain available for review.
+
+### Money
+
+`PriceResult.price_amount` is `Decimal` in the **stated major currency unit**. The candidate
+annotation accepts `int | Decimal | None` for backward compatibility; normalization emits
+Decimal. `TOMAN` means تومان/تومن; `IRR` means ریال. No conversion or equivalence is implied.
+Explicit USD/EUR/GBP codes and unambiguous supported words/symbols are accepted. Generic
+`$`/دلار/dollars remain ambiguous. `هزار`/`میلیون` and English thousand/million multiply
+exactly; comma and Arabic thousands separators must have groups of three. Monetary
+arithmetic uses a local Decimal context; amounts over 18 significant digits are unresolved.
+
+Explicit unconditional free wording yields Decimal zero with null currency, because none
+was stated. Missing price never means free. Full-field grammar (with a small set of price
+labels) prevents picking one tier, discount, range, minimum, or amount out of prose. This
+deliberately leaves some clear-looking prices embedded in long sentences unresolved.
+
+### Review statuses
+
+`NormalizationStatus` is `normalized`, `partially_normalized`, `unresolved`, or `invalid`.
+Each diagnostic has a stable code, field, fixed message, and `info`/`review`/`error` severity.
+An error makes the outcome invalid; no values means unresolved; retained values with review
+diagnostics means partial; otherwise it is normalized. Missing date/price are review
+diagnostics, not invalid facts. Temporal and price statuses are also exposed independently.
+`normalized` does not mean the source is true or the event has been human-verified.
+
+`extract website ... --normalize` and `extract instagram ... [--evidence] --normalize`
+append review output to unchanged discovery output. All results stay in memory and can be
+used by either a later Sheets-first or SQLite-backed strategy. Neither is implemented here.
 
 ## Storage boundary
 
