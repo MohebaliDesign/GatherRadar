@@ -99,13 +99,15 @@ Google Sheets review view
   interface.
 - **Normalization and validation:** Applies deterministic conversions and flags
   incomplete or contradictory data.
-- **Deduplication:** Groups probable matches using source identifiers first, then
-  normalized title, date/time, venue, and location signals.
+- **Deduplication:** Stage 8 distinguishes strong automatic matches from possible
+  duplicates for review. Every pair in an automatic group must match; normalized
+  occurrence evidence and source/publisher context support explainable decisions.
 - **Canonical repository:** A local SQLite database is the recommended MVP
   source of truth. It supports idempotent reruns and history without operating a
   server.
-- **Google Sheets:** A review and collaboration surface. It must not be the only
-  copy of raw or canonical data.
+- **Google Sheets:** The intended daily review and management surface. Raw evidence
+  stays local; Stage 9 will choose Sheets-first versus SQLite-backed canonical
+  persistence. Neither is implemented by Stage 8.
 
 Keep the pipeline modular. A change to one website, extraction provider, or
 output destination should not require rewriting the rest of the system.
@@ -157,9 +159,9 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 | `registration_url` / `registration_deadline` | Registration facts when present |
 | `canonical_source_url` | Best direct evidence URL for the event |
 | `language` | Detected source language |
-| `extraction_confidence` | Calibrated score or level, not a truth guarantee |
+| `extraction_confidence` | Preserved provider score when agreed; not calibrated duplicate probability or proof |
 | `review_status` | `needs_review`, `verified`, or `rejected` |
-| `duplicate_group_id` | Optional link between probable duplicates |
+| `duplicate_group_id` | Hash of current canonical group membership, separate from stable event identity |
 | `first_seen_at` / `last_seen_at` | Discovery history |
 | `reviewer_notes` | Human corrections or decisions |
 
@@ -398,8 +400,8 @@ Stage 7 adds source-neutral `normalization/` after discovery, with separate date
 price, result and service modules. It preserves all original fields, identities, confidence
 and provenance. Candidate dates/times remain separate; only safe single-date clocks compose
 aware timestamps. Typed precision and diagnostics make unresolved and inferred values visible.
-Places reuse price results without event semantics. The planned canonical `Event` model is
-not used or persisted in this milestone and will need reconciliation before persistence.
+Places reuse price results without event semantics. Stage 7 does not instantiate `Event`;
+Stage 8 now reconciles and creates it in memory, without persistence.
 
 Jalali conversion uses `persiantools>=6.2,<7.0` (verified 6.2.0 on Python 3.13.15/Windows).
 Timezone comes from `Source` and is validated with `ZoneInfo`, including DST gap/fold checks.
@@ -418,6 +420,26 @@ complete rules and `docs/STAGE7_VALIDATION.md` for actual bounded local validati
 
 Normalization is independent of persistence. SQLite remains a recommendation, but the owner
 will evaluate a Sheets-first workflow next; Stage 7 neither selects nor implements it.
+
+Stage 8 adds source-neutral `deduplication/` after normalization: deterministic pair
+decisions, all-member automatic groups, separate possible-duplicate suggestions and
+canonical `Event` drafts. Precision is preferred over recall. Only distinctive titles
+with explicit single-date occurrence evidence can auto-group; cross-publisher pairs need
+matching clocks plus venue/address or registration corroboration. Inferred/relative
+dates, ranges and unresolved schedules stay review-only. Conflicting fields and upstream
+diagnostics remain visible, with candidate-level provenance and all input contexts retained.
+
+Canonical IDs anchor to the earliest captured RawItem in local history, with stable
+evidence slots for multiple events in one media item. They do not hash candidate membership;
+adding later support or editing content normally preserves identity. Duplicate-group IDs
+describe current composition. Earlier imported history, regrouping, splits/merges and
+media-slot changes can still alter identity until Stage 9 persists mappings.
+
+`canonicalize --source ...` (repeatable) or `--all-enabled` runs local discovery,
+normalization and canonicalization without acquisition or writes. Instagram media is
+explicitly selected through `--instagram-evidence`, with caption fallback. Places pass
+through unchanged. See `docs/DATA_CONTRACTS.md` and `docs/STAGE8_VALIDATION.md` for policy,
+validation and limitations. No canonical database, sheet, or export file is created.
 
 The project intentionally became Instagram-first for initial source validation: an
 Instagram collector was easier to stand up before a website adapter and gives an early
@@ -458,8 +480,10 @@ depends on knowing.
 8. Add deterministic normalization and validation: Jalali-to-Gregorian conversion, normalized
    dates/times and numeric prices (**Stage 7**). Implemented for owner review; partial and
    unresolved cases remain explicit, with no candidate persistence.
-9. Add canonical local storage with deduplication and repeatable reruns.
-10. Export candidates to a test Google Sheet without overwriting review fields.
+9. Add conservative event canonicalization and deduplication (**Stage 8**). Implemented
+   in memory with offline multi-source review; no destructive deletion or persistence.
+10. Choose canonical persistence and synchronize a test Google Sheet (**Stage 9**),
+    preserving reviewer-owned fields and stable identity mappings. Not started.
 11. Pilot with a small curated source set and refine from measured errors.
 12. Evaluate Telegram and recommendations only after the discovery loop works.
 

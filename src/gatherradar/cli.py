@@ -168,6 +168,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the legacy Instaloader Cookie-header import instead of the browser profile.",
     )
 
+    canonical = subcommands.add_parser('canonicalize', help='Review canonical events across local sources, offline and write-free.')
+    selection = canonical.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--source', action='append', dest='sources', help='Source ID; repeat to compare sources.')
+    selection.add_argument('--all-enabled', action='store_true', help='Analyze enabled sources with local data only.')
+    canonical.add_argument('--limit', type=int, default=5, help='Maximum local raw items per source (1–30).')
+    canonical.add_argument('--config', default='config/sources.yaml')
+    canonical.add_argument('--data-dir', default='data')
+    canonical.add_argument('--instagram-evidence', action='store_true', help='Use stored Stage 5 evidence, with caption fallback. No OCR.')
+
     return parser
 
 
@@ -492,6 +501,21 @@ def main(
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)
         return 2
+
+    if args.command == 'canonicalize':
+        from .deduplication.review import format_canonical_review
+        from .orchestration.canonicalization_run import run_canonical_review
+        try:
+            review = run_canonical_review(args.sources or (), all_enabled=args.all_enabled,
+                config_path=args.config, data_dir=args.data_dir, limit=args.limit,
+                instagram_evidence=args.instagram_evidence)
+        except (ValueError, OSError):
+            print('error: invalid canonical review selection, limit, or registry', file=sys.stderr)
+            return 1
+        print(format_canonical_review(review))
+        return 1 if (review.result.rejected or any(s.path_used == 'source_failed'
+                     or any(d.startswith('discovery_failed:') for d in s.diagnostics) for s in review.sources)
+                     or any(d.code in {'matching_failed', 'canonicalization_failed'} for d in review.result.diagnostics)) else 0
 
     if args.source_type == 'website':
         try:

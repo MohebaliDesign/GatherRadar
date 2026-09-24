@@ -34,6 +34,7 @@ class ReadOutcome:
     path: Path
     items: tuple[RawItem, ...] = ()
     malformed: tuple[str, ...] = ()
+    first_seen_at: tuple[tuple[str, datetime], ...] = ()
 
 
 def raw_item_to_dict(item: RawItem) -> dict[str, Any]:
@@ -164,6 +165,7 @@ class JsonlRawItemStore:
         of these observations to work on is the caller's decision, not storage's.
         """
         latest: dict[str, RawItem] = {}
+        first_seen: dict[str, datetime] = {}
         malformed: list[str] = []
 
         for line_number, payload in self._iter_payloads(malformed):
@@ -173,8 +175,10 @@ class JsonlRawItemStore:
                 malformed.append(f"line {line_number}: {exc}")
                 continue
             latest[item.id] = item
+            first_seen[item.id] = min(first_seen.get(item.id, item.captured_at), item.captured_at)
 
-        return ReadOutcome(path=self._path, items=tuple(latest.values()), malformed=tuple(malformed))
+        return ReadOutcome(path=self._path, items=tuple(latest.values()), malformed=tuple(malformed),
+                           first_seen_at=tuple(sorted(first_seen.items())))
 
     def _iter_payloads(self, malformed: list[str]):
         if not self._path.exists():
