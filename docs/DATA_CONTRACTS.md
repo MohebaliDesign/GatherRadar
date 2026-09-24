@@ -12,6 +12,13 @@ A configured place GatherRadar is allowed to inspect. A website and Instagram ac
 
 Key fields: stable `id`, `publisher_key`, `source_type`, canonical `url`, optional Instagram `username`, `enabled`, locale/timezone, and optional `city_hint`.
 
+`website` is an optional immutable `WebsiteConfig`, required to collect a website. Existing
+Instagram configuration is unchanged. It contains an adapter key, required detail path
+prefixes, one content selector (default `article`), exclude selectors, and explicitly safe
+query keys to drop. Selectors are tag/`.class`/`#id` only. Invalid option shapes, unsafe source
+IDs, credential-bearing URLs, duplicate IDs, and unknown source types are rejected. Adapter
+keys resolve in the collector factory; an unregistered key fails before network access.
+
 ## RawItem
 
 A source observation before semantic interpretation. Website collectors and Instagram collectors must both produce this same shape.
@@ -88,6 +95,42 @@ recency-ordered sequence. Items from the Reels feed are labeled `reel`, since th
 `is_video`, `hashtags`, `mentions`, `origin`, and `collector_version`
 (`instagram-instaloader/2`).
 
+### Website raw items (Stage 6)
+
+`data/raw/website/<source_id>.jsonl` uses the same append-only store. One permitted detail
+page is one RawItem; listing directories are URL-discovery inputs only. The adapter protocol
+owns URL discovery, detail text selection, and external identity; transport owns public HTTP,
+robots, request limits, and redirect checks. Shared orchestration has no source-ID switches.
+
+| Field | Website value |
+| --- | --- |
+| `id` | `website:<source_id>:<external_id>` |
+| `external_id` | Current specialized adapters: native final path key when no meaningful query remains; otherwise SHA-256 of the canonical URL. Generic adapter: URL SHA-256. |
+| `content_url` | Approved same-origin detail URL; fragment and verified tracking/navigation parameters removed, meaningful query bytes retained |
+| `content_type` | `webpage` |
+| `raw_text` | Relevant source content in document order, HTML entities decoded and whitespace separated; no invented labels, summaries, normalization, hidden href text, or structured-data field injection |
+| `published_at` | `null`: the current adapters do not have a verified publication timestamp |
+| `captured_at` | Aware UTC collection timestamp; excluded from the hash |
+| `author`, `image_url` | `null`; current adapters do not infer these |
+| `raw_metadata` | Adapter/version, listing/detail URLs, source title, optional native ID, structured-data presence, transport, retained content links (including registration hrefs when present) |
+
+Metadata is provenance, not rule-engine input. Full HTML and review/profile text are not
+stored in RawItems. A metadata-only change does not alter the existing content hash and
+therefore does not append a new observation; this Stage 6 limitation preserves the shared
+storage contract. CSS visibility beyond known exclusions, inline hidden/display attributes,
+and Davvvat's mobile duplicate is not generally evaluated by the static parser.
+The Davvvat adapter explicitly selects its known streamed detail panel even when the server
+places it in a hidden staging wrapper for later relocation. The generic adapter rejects
+content beneath hidden/excluded ancestors. Jabama only attaches price from one sibling
+booking aside with the purchase control and exactly one price paragraph; ambiguity omits it.
+
+Collection takes up to N valid details in source listing order (1–30, up to `min(3*N,30)`
+attempts, one listing, no pagination). Offline discovery instead takes latest observations
+in first-seen storage order; no capture-run manifest reconstructs later live list order.
+Missing/deleted events are not tombstoned. Recurring/multi-session pages are not split into
+individual occurrences. Related content must be excluded structurally by the adapter;
+arbitrary page segmentation and cross-page event merging are not implemented.
+
 ## EvidenceFragment, EvidenceBundle, and DiscoveryUnit
 
 `RawItem.raw_text` remains the original collected caption or website text. Media OCR never
@@ -111,9 +154,11 @@ uses the raw item, kind, position, captured asset hash, OCR engine/configuration
 and failure state; temporary Instagram CDN URLs are provenance only and never the identity.
 
 A `DiscoveryUnit` is an explicit group of one or more fragments believed to describe one
-potential event or place. A bundle may produce zero, one, or many units. Default discovery
-creates only one unit from the original caption and passes that exact text to the existing
-rule engine. Explicit evidence-aware discovery uses the Stage 5 policy below.
+potential event or place. A bundle may produce zero, one, or many units. `primary_fragment`
+maps Instagram raw text to `CAPTION` and website raw text to `WEBSITE_TEXT`.
+`EvidenceBundle.from_raw_item` uses that boundary. Default Instagram discovery still creates
+only the original caption unit with unchanged identity. The website CLI uses the Stage 5
+grouping path over its fresh primary text, without separate evidence persistence.
 
 `DiscoveryUnit.from_fragments(..., strategy='conservative/1')` sorts fragments by their
 domain sort key, retains their exact wording joined by a newline, and hashes an unambiguous
@@ -129,8 +174,9 @@ order. It excludes other raw item ids and stored captions, rebuilding the captio
 from the current RawItem. Latest stored observations win by `(kind, position)`: one image
 slot, each carousel `slide_index`, and each Reel `frame_timestamp_ms`. A latest failed or
 empty observation wins too; older successes are never semantic fallback. Website text is
-accepted per source URL as a separate page-text slot, without implementing a website
-collector or pretending that the current contract identifies page sections. Selected
+accepted per source URL as a separate page-text slot. For a website RawItem, stored text for
+the current primary page URL is excluded in favor of fresh `RawItem.raw_text`; page-section
+identities are not inferred. The website CLI supplies no extra page history. Selected
 fragments remain auditable, including failures; semantic eligibility belongs to grouping.
 
 Selection is read-only and means **latest known stored slots**, not a complete media run.
@@ -221,9 +267,13 @@ RawItem -> caption EvidenceFragment -> EvidenceBundle -> one DiscoveryUnit -> Di
 
 The API also accepts zero or many explicit discovery units. `extract --evidence` reads local
 raw/evidence JSONL, selects semantic evidence, groups it, and invokes `discover_units`.
-Default `extract` remains caption-only, with unchanged output and identities. Both paths
+Default `extract instagram` remains caption-only, with unchanged output and identities. Both paths
 remain offline, deterministic, and write-free; the evidence-aware path does not run OCR or
 require Tesseract. The explicit acquisition command is separate.
+
+`extract website` uses the same `run_evidence_discovery` and `discover_units` boundaries,
+with `WEBSITE_TEXT` primary fragments. The compatibility `DiscoveryService.discover` API
+also accepts website primary text; it retains its legacy single-observation identity policy.
 
 Classification and field extraction are separate responsibilities but one provider
 operation: `DiscoveryProvider.discover(ExtractionInput) -> DiscoveryFacts` decides

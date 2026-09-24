@@ -23,7 +23,7 @@ Automated Telegram publishing, recommendations, a public dashboard, and a multi-
 
 ## Current foundation
 
-The repository now defines the initial source registry and the shared data contracts used by future website and Instagram collectors:
+The repository defines the source registry and shared data contracts used by website and Instagram collectors:
 
 ```text
 Source → RawItem → EventCandidate → Event
@@ -41,9 +41,9 @@ with local artifact and OCR provenance. Default extraction still creates only th
 caption unit. Explicit `extract --evidence` selects locally stored evidence and applies
 `conservative/1` grouping before discovery; unrelated slides are never blindly concatenated.
 
-The first curated registry lives in `config/sources.yaml`. The Instagram collector is the
-only live collection path so far, and it runs only when invoked explicitly. Website collectors
-are the next major source family.
+The curated registry lives in `config/sources.yaml`. Instagram and public website collection
+run only when explicitly invoked. Website primary text uses `WEBSITE_TEXT` through the same
+evidence/grouping/discovery boundary.
 
 Discovery sits after collection:
 
@@ -62,6 +62,104 @@ model. Candidates are transient (not persisted), and date, price, and category n
 is a separate, later step.
 
 ## Discovering events and places
+
+### Public websites (Stage 6)
+
+```bash
+python -m gatherradar collect website davvvat_website --limit 5
+python -m gatherradar extract website davvvat_website --limit 5
+```
+
+The same commands accept `vadoostan_website` and `jabama_events_website`. Collection uses
+public static HTTP, with no browser, login, Instagram cookies, OCR, or paid service.
+It respects robots rules, checks every redirect against the approved origin and detail
+layout, and refuses account paths, downloads, access restrictions, and non-HTML responses.
+Robots failures stop collection; missing robots (404/410) permits public pages. Requests
+have a 15-second timeout, a 3 MB response bound, at least a one-second interval (or the
+robots crawl delay), and at most three redirects. There are no automatic retries.
+Access/rate-limit refusals stop that source while retaining earlier successful items.
+
+`WebsiteCollector` delegates URL discovery and content selection to `WebsiteAdapter`;
+`HttpTransport` is replaceable independently. One detail page becomes one RawItem.
+The listing itself never becomes semantic evidence. A broken detail is reported and
+does not discard successful items. `--limit` accepts 1–30 and means the first N valid
+details in listing order, with at most `min(3*N, 30)` detail attempts and no pagination.
+These are not necessarily the newest or upcoming events. Dynamic listings can select
+different items on successive runs.
+
+Raw history is append-only at `data/raw/website/<source_id>.jsonl`, with the existing
+New/Changed/Existing semantics. Source wording, Persian digits, and date/price expressions
+are preserved; HTML entities and whitespace are rendered into text with neutral separators.
+No labels or hidden URLs are injected to strengthen classification. Publication time is
+unknown (`null`), not copied from the event date. Metadata holds adapter/version, listing
+and detail URLs, title, native ID, transport, structured-data presence, and retained content
+hrefs. Metadata does not enter semantic extraction.
+
+`extract website` is always offline and write-free. It reads the latest stored observation
+of each identity in **first-seen storage order**, up to the limit. It does not reconstruct
+the current live listing. Each item's fresh primary `WEBSITE_TEXT` flows through unchanged
+`conservative/1` and `DiscoveryService`, retaining unit/fragment provenance and deterministic
+candidate IDs. No separate website evidence file is required. Instagram's default
+caption-only command and its optional `--evidence` behavior remain unchanged.
+
+Current adapters and bounded live validation on 2026-09-24:
+
+| Source | Supported detail layout | Collection / offline discovery |
+| --- | --- | --- |
+| Davvvat | `/event/<id>`; known streamed desktop detail panel without mobile duplicate, account prompts, or comments | Initial five records, five Events. A changing homepage selected different records on a normal rerun; with one actual listing snapshot held fixed, the live-detail rerun returned five Existing and unchanged storage. |
+| Vadoostan | `/app/experiences/<id>`; title/details/description before FAQ; organizer biography excluded | Five records, four Events and one Other; normal rerun returned five Existing and no appended lines. |
+| Jabama Events | `/events/<id>`; event article plus price from its single sibling booking panel, without reviews/profile/loading UI | Five records, five Events; normal rerun returned five Existing and no appended lines. `/theaters/` and other layouts are not supported. |
+
+Each examined item yielded one primary-text unit. Repeated offline runs preserved unit and
+candidate identities and raw files. These are small live samples, not a claim of full site
+coverage. The rule engine can leave titles/addresses unset or partially read dates despite
+complete raw wording; it was not tuned for these samples. Recurring series or several sessions
+within one detail page remain one source observation, without occurrence expansion.
+
+### Adding an approved website
+
+For a straightforward list/detail site, inspect public access, robots, and the detail layout,
+then add a source with a small `website` configuration:
+
+```yaml
+- id: community_website
+  publisher_key: community
+  name: Community Website
+  type: website
+  url: https://community.example/events
+  enabled: true
+  website:
+    adapter: generic
+    detail_path_prefixes: [/events/]
+    content_selector: '#event'
+    exclude_selectors: [.related, '#comments']
+    drop_query_params: [campaign]
+```
+
+Only drop a query key after verifying it is navigation/tracking, never item identity.
+Known `utm_*`, `fbclid`, and `gclid` tracking keys and URL fragments are removed by default;
+other query bytes/order are preserved. Detail prefixes match exactly one following opaque
+alphanumeric/hyphen/underscore key, optionally ending in `/`. Generic IDs hash the canonical
+URL. Current specialized adapters use the path-native ID when no meaningful query remains,
+otherwise the URL hash. The source ID namespaces every RawItem identity.
+
+Selectors intentionally support only a tag, `.class`, or `#id`, not arbitrary CSS. Generic
+extraction requires exactly one configured region and at most one retained `h1`; it excludes
+common navigation, footer, hidden, comment, review, FAQ, aside, and recommendation regions.
+The owner must configure exclusions for unusual related-content containers. No whole-body
+fallback, rendering of external stylesheets, or automatic full-page segmentation is provided.
+The sanitized `tests/fixtures/websites/generic-*.html` integration test demonstrates adding
+a future source through configuration alone, using unchanged orchestration/storage/CLI.
+
+An unusual site needs a small class implementing `WebsiteAdapter` and one factory entry
+in `collectors/websites/adapters.py:ADAPTERS`, plus sanitized fixtures and live validation.
+Keep selectors/layout handling there; do not change orchestration or the semantic engine.
+JavaScript-only, authenticated, non-UTF-8, paginated-only, and roundup/card-only sites are
+unsupported by this first static transport. **Arbitrary websites cannot be guaranteed to
+work from URL alone.** Layout changes should be investigated when collection fails or text
+changes; passing selectors alone cannot prove that all irrelevant content was excluded.
+
+### Instagram captions
 
 ```bash
 python -m gatherradar extract instagram davvvat_instagram --limit 5
@@ -409,8 +507,9 @@ runs all work as intended.
 
 Discovery is implemented and tested offline: the provider-neutral boundary plus a
 deterministic, free rule engine that classifies stored items as event, place, or other and
-reads source-supported fields out of them. Instagram is the first collector; website collectors
-are the next major source family.
+reads source-supported fields out of them. Stage 6 adds the shared Website Collector and
+configured adapters, validated on bounded public Davvvat, Vadoostan, and Jabama Event samples
+as described above. It does not change classification thresholds or vocabulary.
 
 Visual evidence acquisition is implemented behind a separate explicit command: images,
 bounded carousel slides, and bounded reel frames are stored locally, OCRed with local

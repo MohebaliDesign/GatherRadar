@@ -300,8 +300,8 @@ and keeps candidates in memory. Normalization-owned fields (`starts_at`, `ends_a
 The source-neutral evidence boundary is `RawItem -> EvidenceBundle -> 0..N DiscoveryUnits ->
 DiscoveryService`. The original caption is a `CAPTION` fragment and still reaches the rule
 engine unchanged. Media OCR is stored as separate `IMAGE_OCR`, `CAROUSEL_SLIDE_OCR`, and
-`REEL_FRAME_OCR` fragments; future website adapters use `WEBSITE_TEXT` through the same layer.
-`RawItem.raw_text` is never replaced with OCR. Default extraction still creates only the
+`REEL_FRAME_OCR` fragments; website adapters use `WEBSITE_TEXT` through the same layer.
+`RawItem.raw_text` is never replaced with OCR. Default Instagram extraction still creates only the
 caption unit. Stage 5 adds explicit `extract --evidence`: `grouping/` selects the current
 caption plus the latest stored fragment per semantic media position, then `conservative/1`
 builds zero or more units. Failed/empty latest versions suppress older OCR without changing
@@ -352,6 +352,45 @@ recently stored observation of each id and isolates malformed lines instead of r
 `python -m gatherradar extract instagram <source_id> --limit 5` runs discovery over stored
 items only: it never collects, never opens a browser, and persists nothing.
 
+Stage 6 adds `WebsiteCollector -> WebsiteAdapter`, with a replaceable public static HTTP
+transport and a small adapter factory. The generic adapter takes a detail-path prefix,
+one tag/class/id content selector, excludes, and explicitly safe query keys to remove.
+Small Davvvat, Vadoostan, and Jabama adapters isolate measured layout differences; shared
+collection/orchestration never switches on source IDs. No new dependency or authenticated
+website browser was needed. Adding an ordinary supported site requires configuration and
+validation; unusual layouts need an adapter plus registration/fixtures, not semantic changes.
+
+One detail page becomes one `webpage` RawItem, stored append-only under
+`data/raw/website/<source_id>.jsonl`. IDs combine source ID with a native path ID (current
+specialized adapters, query-free URLs) or canonical URL hash (generic/query-dependent URLs).
+Known tracking keys can be removed, but meaningful query parameters remain. Publication time
+stays null. HTML text preserves relevant source wording without injected labels/URLs;
+metadata retains adapter version, source title, URLs/links, native ID, and transport.
+Metadata-only edits still do not append under the existing raw content-hash contract.
+
+`collect website <source_id> --limit N` checks robots and every redirect, isolates failed
+details, and takes first valid listing-order items, up to 30 and `min(3*N,30)` attempts.
+It does not paginate. `extract website` reads latest stored observations in first-seen order,
+rebuilds fresh `WEBSITE_TEXT`, and calls unchanged `conservative/1` and `DiscoveryService`.
+It opens no browser, runs no OCR, contacts no source, and writes no candidates. Instagram
+caption-only semantics and Stage 5 grouping/classification policy are unchanged.
+
+Bounded live validation on 2026-09-24 collected five items per source: Davvvat yielded five
+Events; Vadoostan four Events/one Other; Jabama five Events. Vadoostan/Jabama normal reruns
+returned five Existing with no append. Davvvat's homepage selection changed between CLI
+runs; holding one actual listing response fixed and refetching its five details live
+confirmed five Existing and byte-identical raw storage on the unchanged rerun. Offline
+unit/candidate reruns were deterministic. Comments/reviews, navigation, mobile duplicates,
+FAQ/account content were excluded in the inspected layouts. Jabama `/events/` is supported;
+its separately observed `/theaters/` layout is deliberately outside coverage. Raw addresses
+and full titles can still be missing/partial in candidate fields; no rule tuning was done.
+
+This is not universal scraping. Static UTF-8 list/detail layouts only; no arbitrary CSS,
+JavaScript rendering, card-only roundup extraction, occurrence expansion, or full visibility
+computation. Layout drift and unrecognized recommendation containers need owner review.
+Neither website storage nor discovery reconstructs a historical listing snapshot or marks
+removed events. Broader source coverage and extraction accuracy remain unvalidated.
+
 ## 10. Delivery sequence
 
 The project intentionally became Instagram-first for initial source validation: an
@@ -383,10 +422,13 @@ depends on knowing.
    of the existing Stage 4 evidence: Davvvat produced a caption Event and six noisy frame
    Others; Vadoostan produced a caption Other and five independent slide Others. No blind
    carousel concatenation or new media candidates occurred. Broader segmentation accuracy
-   remains unvalidated; owner review is required before starting the next milestone.
-7. Add website adapters and broader source coverage. **The next major source family** after
-   grouping review. Website text uses the same evidence/discovery-unit boundary; no website
-   collector is implemented in Stage 5.
+   remains unvalidated. Stage 5 was merged through PR #4. A realistic sanitized Persian
+   carousel validates positive grouping; available runtime media did not provide a clear
+   positive multi-fragment example (see README).
+7. Add website adapters and broader source coverage (**Stage 6**). **Implemented and
+   validated on bounded public samples** from Davvvat, Vadoostan, and Jabama `/events/`,
+   including unchanged-detail idempotency and offline shared discovery. Generic future-source
+   configuration is tested offline; other layouts and broader coverage remain unvalidated.
 8. Add deterministic normalization and validation: Jalali-to-Gregorian conversion, normalized
    timestamps, and numeric prices.
 9. Add canonical local storage with deduplication and repeatable reruns.

@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .raw_item import RawItem
+from .source import SourceType
 
 
 class EvidenceKind(StrEnum):
@@ -100,6 +101,16 @@ def caption_fragment(raw_item: RawItem) -> EvidenceFragment:
     )
 
 
+def primary_fragment(raw_item: RawItem) -> EvidenceFragment:
+    if raw_item.source_type is SourceType.INSTAGRAM:
+        return caption_fragment(raw_item)
+    return EvidenceFragment.create(
+        raw_item_id=raw_item.id, kind=EvidenceKind.WEBSITE_TEXT,
+        text=raw_item.raw_text, raw_text=raw_item.raw_text,
+        source_url=raw_item.content_url, asset_hash=raw_item.content_hash,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceBundle:
     raw_item_id: str
@@ -117,7 +128,7 @@ class EvidenceBundle:
     def from_raw_item(
         cls, raw_item: RawItem, extra_fragments: tuple[EvidenceFragment, ...] = ()
     ) -> EvidenceBundle:
-        return cls(raw_item.id, (caption_fragment(raw_item), *extra_fragments))
+        return cls(raw_item.id, (primary_fragment(raw_item), *extra_fragments))
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +187,11 @@ def caption_discovery_units(bundle: EvidenceBundle) -> tuple[DiscoveryUnit, ...]
     return (DiscoveryUnit.from_fragment(caption),) if caption is not None else ()
 
 
+def primary_discovery_units(raw_item: RawItem) -> tuple[DiscoveryUnit, ...]:
+    return (DiscoveryUnit.from_fragment(primary_fragment(raw_item)),)
+
+
 __all__ = [
     'DiscoveryUnit', 'EvidenceBundle', 'EvidenceFragment', 'EvidenceKind',
-    'caption_discovery_units', 'caption_fragment',
+    'caption_discovery_units', 'caption_fragment', 'primary_fragment', 'primary_discovery_units',
 ]
