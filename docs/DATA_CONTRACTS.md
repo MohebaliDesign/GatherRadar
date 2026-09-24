@@ -48,7 +48,7 @@ The Instagram collector writes to `data/raw/instagram/<username>.jsonl` and fill
 | `raw_text` | The caption exactly as published, never rewritten or summarized; empty when none was found |
 | `published_at` | Post creation time, normalized to UTC and always timezone-aware; null when no timezone-aware timestamp is available |
 | `author` | The configured source username |
-| `image_url` | A thumbnail URL when available; media files are never downloaded |
+| `image_url` | A thumbnail URL when available; collection does not download media. The separate explicit evidence command may capture displayed media locally below `data/` |
 | `content_type` | `reel`, `image`, `video`, `carousel`, or `unknown` (see below) |
 
 Every collected shortcode appears at most once per run, preferring its reel form when
@@ -88,6 +88,52 @@ recency-ordered sequence. Items from the Reels feed are labeled `reel`, since th
 `is_video`, `hashtags`, `mentions`, `origin`, and `collector_version`
 (`instagram-instaloader/2`).
 
+## EvidenceFragment, EvidenceBundle, and DiscoveryUnit
+
+`RawItem.raw_text` remains the original collected caption or website text. Media OCR never
+overwrites it. One raw observation instead owns an `EvidenceBundle` containing immutable,
+deterministically identified `EvidenceFragment` records.
+
+`EvidenceKind` is source-neutral: `caption`, `image_ocr`, `carousel_slide_ocr`,
+`reel_frame_ocr`, and `website_text`. A fragment preserves its raw item id, observed text,
+source URL, optional local artifact path and SHA-256, optional slide index or frame timestamp,
+OCR engine/version/configuration, exact raw OCR output, and an optional failure reason. Empty
+and failed OCR observations are auditable evidence records, not semantic facts.
+
+Carousel OCR requires a non-negative integer `slide_index`; reel OCR requires a
+non-negative integer `frame_timestamp_ms`. Each position field is valid only for its
+corresponding kind; captions, image OCR, and website text carry neither. Zero is valid,
+and booleans are not positions. Existing correctly positioned fragments keep their IDs
+and serialized shape. Invalid stored records are reported without rewriting history.
+
+Fragments are ordered deterministically: caption first, then media position. Stable identity
+uses the raw item, kind, position, captured asset hash, OCR engine/configuration, OCR output,
+and failure state; temporary Instagram CDN URLs are provenance only and never the identity.
+
+A `DiscoveryUnit` is an explicit group of one or more fragments believed to describe one
+potential event or place. A bundle may produce zero, one, or many units. The current strategy
+creates only one unit from the original caption and passes that exact text to the existing rule
+engine. It does not concatenate OCR slides. Future segmentation may deliberately group slides
+1-3 separately from slides 5-6 without changing the evidence contract.
+
+### MediaArtifact
+
+A media artifact is a local OCR input with a stable kind (`image`, `carousel_slide`, or
+`reel_frame`), raw item id, content-addressed local path, SHA-256, source URL, and the relevant
+slide index or frame timestamp. Files live only below `data/media/`; same bytes at the same
+position reuse the same file, while changed bytes create a new auditable artifact.
+Instagram image screenshots use stable geometry and inward-rounded pixel bounds to avoid
+capturing neighboring carousel edges. Reel frames are captured with playback paused after
+the requested seek completes; a seek timeout produces a capture failure, not a timestamped
+artifact. These are rendered media screenshots and may include overlaid media controls.
+
+OCR evidence is append-only JSONL below `data/evidence/`. Repeating the same artifact and OCR
+result does not append another line. Engine/configuration or output changes produce a new
+fragment instead of mutating history. Malformed lines are isolated and reported.
+Unknown-kind diagnostics do not echo the invalid value. Unexpected browser and OCR
+exceptions report the failed operation and exception type without copying exception
+payloads into summaries or evidence.
+
 ## EventCandidate and PlaceCandidate
 
 The result of discovery before deterministic normalization and final persistence. Either may be incomplete or uncertain.
@@ -101,6 +147,16 @@ The result of discovery before deterministic normalization and final persistence
 ```text
 RawItem → DiscoveryService → DiscoveryProvider → DiscoveryFacts → EventCandidate | PlaceCandidate | Other
 ```
+
+The service now reaches this unchanged provider through the conservative caption route:
+
+```text
+RawItem -> caption EvidenceFragment -> EvidenceBundle -> one DiscoveryUnit -> DiscoveryService
+```
+
+The API also accepts zero or many explicit discovery units for future segmentation. Media OCR
+is persisted and inspectable in this milestone but is not automatically grouped or sent to the
+provider.
 
 Classification and field extraction are separate responsibilities but one provider
 operation: `DiscoveryProvider.discover(ExtractionInput) -> DiscoveryFacts` decides
@@ -213,7 +269,11 @@ Event                           → SQLite (planned)
 Google Sheets                   → review/output surface, not source of truth
 ```
 
-The JSONL store is append-only and never overwrites or deletes a stored observation.
+Media artifacts live below `data/media/` and source-neutral evidence fragments use append-only
+JSONL below `data/evidence/`. Neither store contains candidates. Both are local runtime data,
+and both preserve OCR/media changes as history rather than overwriting prior evidence.
+
+The raw JSONL store is append-only and never overwrites or deletes a stored observation.
 A rerun classifies each incoming item against the most recently stored observation with
 the same `id`:
 

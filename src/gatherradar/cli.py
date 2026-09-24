@@ -14,6 +14,8 @@ from .domain import DiscoveryType
 from .extraction import DiscoveryStatus
 from .orchestration.collection_run import RunSummary, run_instagram_collection
 from .orchestration.discovery_run import DiscoveryRunSummary, run_instagram_discovery
+from .orchestration.evidence_run import EvidenceRunSummary, run_instagram_evidence
+from .ocr import OcrError
 from .storage.jsonl import StorageError
 
 TRANSPORT_BROWSER = "browser"
@@ -112,6 +114,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="data",
         help="Root directory for local runtime data (default: data)",
     )
+
+    evidence = subcommands.add_parser(
+        'evidence', help='Acquire local visual evidence for stored source items.'
+    )
+    evidence_kinds = evidence.add_subparsers(dest='source_type', required=True)
+    evidence_instagram = evidence_kinds.add_parser(
+        'instagram', help='Capture and OCR media for stored Instagram items.'
+    )
+    evidence_instagram.add_argument('source_id', help='Source id from config/sources.yaml')
+    evidence_instagram.add_argument('--limit', type=int, default=DEFAULT_LIMIT)
+    evidence_instagram.add_argument('--config', default='config/sources.yaml')
+    evidence_instagram.add_argument('--data-dir', default='data')
+    evidence_instagram.add_argument('--max-carousel-slides', type=int, default=20)
+    evidence_instagram.add_argument('--max-reel-frames', type=int, default=6)
 
     auth = subcommands.add_parser(
         "auth", help="Create and verify an authenticated session for a source type."
@@ -273,6 +289,43 @@ def run_extract_instagram(args: argparse.Namespace) -> int:
     return 0
 
 
+def format_evidence_summary(summary: EvidenceRunSummary) -> str:
+    lines = [
+        'GatherRadar media evidence run', '', f'Run id: {summary.run_id}',
+        f'Source: {summary.source.name}', f'Raw items: {summary.raw_items}', '',
+        f'Image assets: {summary.image_assets}',
+        f'Carousel slides: {summary.carousel_slides}',
+        f'Reel frames: {summary.reel_frames}', '',
+        f'OCR succeeded: {summary.ocr_succeeded}', f'OCR empty: {summary.ocr_empty}',
+        f'OCR failed: {summary.ocr_failed}', '',
+        f'New evidence: {summary.new_evidence}',
+        f'Existing evidence: {summary.existing_evidence}', f'Saved: {summary.output_path}',
+    ]
+    if summary.failures:
+        lines.extend(('', 'Failures:', *(f'  - {reason}' for reason in summary.failures)))
+    if summary.malformed:
+        lines.extend(('', 'Unreadable stored lines:', *(f'  - {reason}' for reason in summary.malformed)))
+    lines.extend(('', 'No semantic candidates were persisted.'))
+    return '\n'.join(lines)
+
+
+def run_evidence_instagram(args: argparse.Namespace) -> int:
+    try:
+        summary = run_instagram_evidence(
+            args.source_id, config_path=args.config, data_dir=args.data_dir,
+            limit=args.limit, max_carousel_slides=args.max_carousel_slides,
+            max_reel_frames=args.max_reel_frames,
+        )
+    except (CollectorError, OcrError, StorageError, ValueError) as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 1
+    except FileNotFoundError as exc:
+        print(f'error: source registry not found: {exc}', file=sys.stderr)
+        return 1
+    print(format_evidence_summary(summary))
+    return 0
+
+
 def format_auth_success(username: str) -> str:
     return "\n".join(
         [
@@ -365,6 +418,12 @@ def main(
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)
         return 2
+
+    if args.command == 'evidence':
+        if args.max_carousel_slides < 1 or args.max_reel_frames < 1:
+            print('error: media capture limits must be positive integers', file=sys.stderr)
+            return 2
+        return run_evidence_instagram(args)
 
     if args.command == "extract":
         return run_extract_instagram(args)
