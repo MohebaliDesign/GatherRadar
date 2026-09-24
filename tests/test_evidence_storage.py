@@ -1,9 +1,11 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from gatherradar.domain import EvidenceFragment, EvidenceKind
 from gatherradar.storage import JsonlEvidenceStore
+from gatherradar.storage.evidence_jsonl import evidence_fragment_to_dict
 
 
 def fragment(version='1', text='کارگاه سفالگری'):
@@ -55,6 +57,41 @@ class EvidenceStorageTests(unittest.TestCase):
         self.assertEqual(len(result.fragments), 1)
         self.assertEqual(len(result.malformed), 1)
         self.assertNotIn('کارگاه', result.malformed[0])
+
+    def test_unknown_kind_does_not_echo_untrusted_content(self):
+        payload = evidence_fragment_to_dict(fragment())
+        payload['kind'] = 'synthetic-private-value'
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(payload) + '\n', encoding='utf-8')
+        self.store.append_new([fragment()])
+        result = self.store.read()
+        self.assertEqual(result.fragments, (fragment(),))
+        self.assertEqual(len(result.malformed), 1)
+        self.assertNotIn(payload['kind'], result.malformed[0])
+
+    def test_all_valid_kinds_roundtrip_without_identity_changes(self):
+        fragments = tuple(
+            EvidenceFragment.create(
+                raw_item_id='raw', kind=kind, text='text',
+                slide_index=0 if kind is EvidenceKind.CAROUSEL_SLIDE_OCR else None,
+                frame_timestamp_ms=0 if kind is EvidenceKind.REEL_FRAME_OCR else None,
+            ) for kind in EvidenceKind
+        )
+        self.store.append_new(fragments)
+        self.assertEqual(self.store.read().fragments, fragments)
+        self.assertEqual(self.store.append_new(fragments).already_existing, len(fragments))
+
+    def test_missing_media_position_is_isolated_without_rewriting_history(self):
+        payload = evidence_fragment_to_dict(fragment())
+        payload['kind'] = 'carousel_slide_ocr'
+        original = json.dumps(payload) + '\n'
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(original, encoding='utf-8')
+        self.store.append_new([fragment()])
+        result = self.store.read()
+        self.assertEqual(result.fragments, (fragment(),))
+        self.assertEqual(len(result.malformed), 1)
+        self.assertTrue(self.path.read_text(encoding='utf-8').startswith(original))
 
 
 if __name__ == '__main__':

@@ -55,6 +55,37 @@ class EvidenceFragmentTests(unittest.TestCase):
         self.assertEqual(slide.slide_index, 3)
         self.assertEqual(frame.frame_timestamp_ms, 1500)
 
+    def test_media_kinds_require_their_position(self):
+        for kind in (EvidenceKind.CAROUSEL_SLIDE_OCR, EvidenceKind.REEL_FRAME_OCR):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                EvidenceFragment.create(raw_item_id='raw', kind=kind, text='')
+
+    def test_incompatible_positions_are_rejected(self):
+        for kind in EvidenceKind:
+            valid = {}
+            if kind is EvidenceKind.CAROUSEL_SLIDE_OCR:
+                valid['slide_index'] = 0
+            if kind is EvidenceKind.REEL_FRAME_OCR:
+                valid['frame_timestamp_ms'] = 0
+            for field in ('slide_index', 'frame_timestamp_ms'):
+                if field in valid:
+                    continue
+                with self.subTest(kind=kind, field=field), self.assertRaises(ValueError):
+                    EvidenceFragment.create(
+                        raw_item_id='raw', kind=kind, text='', **{**valid, field: 0}
+                    )
+
+    def test_media_positions_are_nonnegative_integers(self):
+        for kind, field in (
+            (EvidenceKind.CAROUSEL_SLIDE_OCR, 'slide_index'),
+            (EvidenceKind.REEL_FRAME_OCR, 'frame_timestamp_ms'),
+        ):
+            for value in (-1, True, 0.5, '0'):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    EvidenceFragment.create(
+                        raw_item_id='raw', kind=kind, text='', **{field: value}
+                    )
+
     def test_website_text_uses_the_same_source_neutral_fragment(self):
         fragment = EvidenceFragment.create(
             raw_item_id='website:item:1', kind=EvidenceKind.WEBSITE_TEXT,

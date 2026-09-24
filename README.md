@@ -303,6 +303,21 @@ especially useful on Windows; keep the value in the local environment and do not
 machine-specific path. The evidence command reports a clear error when the executable, `fas`,
 or `eng` is unavailable.
 
+Both languages must appear in `--list-langs` before attempting a live evidence run.
+A failed prerequisite check remains failed on provider reuse; it cannot authorize OCR.
+Install missing language data manually, then repeat the checks. GatherRadar does not
+modify PATH or install missing components.
+
+Unexpected capture/OCR exceptions are reported by operation and exception type without
+echoing browser or provider exception payloads. A verification/checkpoint page stops
+further media navigation for manual resolution and retains earlier captures from that run.
+
+Media selection supports post layouts in either `article` or `main`, excludes linked
+post thumbnails and small profile images, and accounts for carousel clipping. Image
+captures wait for stable geometry and round their bounds inward to exclude unstable
+neighboring pixels. Reel sampling pauses playback and requires a completed seek; a
+seek timeout is a capture failure rather than a frame labeled with an unverified time.
+
 Audio transcription and speech-to-text are not implemented. OCR is local and free; no cloud
 OCR, paid AI, API key, or new Python dependency is used.
 
@@ -338,6 +353,12 @@ and OCR evidence is not yet grouped into semantic candidates. Normalization (Jal
 numeric prices, canonical
 persistence, deduplication, and Google Sheets) is a separate, later step, and candidates remain
 transient until it exists.
+
+Bounded live validation captured six frames from one Davvvat Reel and five slides from
+one Vadoostan carousel. After capture fixes, unchanged reruns appended no evidence for
+either sample. Persian OCR on the carousel was partly recognizable but error-prone;
+nonempty OCR is not proof of useful text. Standalone images, ordinary videos, repeated
+carousel visuals, and wider source/layout coverage still require separate validation.
 
 ## License
 

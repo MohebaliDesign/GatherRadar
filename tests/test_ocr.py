@@ -54,6 +54,36 @@ class TesseractTests(unittest.TestCase):
             TesseractOcrProvider(runner=runner).validate()
         self.assertIn('fas', str(raised.exception))
 
+    def test_failed_validation_cannot_be_bypassed_by_recognize(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if '--version' in command:
+                return completed('tesseract 5')
+            if '--list-langs' in command:
+                return completed('eng\n')
+            return completed('must not run')
+
+        provider = TesseractOcrProvider(runner=runner)
+        for action in (provider.validate, lambda: provider.recognize('image.png')):
+            with self.assertRaises(OcrUnavailableError):
+                action()
+        self.assertTrue(all('--version' in call or '--list-langs' in call for call in calls))
+
+    def test_failed_revalidation_invalidates_previous_success(self):
+        runner = ScriptedRunner()
+        provider = TesseractOcrProvider(runner=runner)
+        provider.validate()
+
+        def missing_language(command, **kwargs):
+            return completed('tesseract 5') if '--version' in command else completed('eng\n')
+
+        provider._runner = missing_language
+        for action in (provider.validate, lambda: provider.recognize('image.png')):
+            with self.assertRaises(OcrUnavailableError):
+                action()
+
     def test_success_preserves_raw_output_and_cleans_line_endings(self):
         result = TesseractOcrProvider(runner=ScriptedRunner()).recognize('image.png')
         self.assertEqual(result.status, OcrStatus.SUCCEEDED)

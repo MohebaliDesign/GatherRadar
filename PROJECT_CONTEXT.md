@@ -306,6 +306,8 @@ implemented.
 `storage/evidence_jsonl.py` persists evidence append-only and idempotently below
 `data/evidence/`. Artifact hash plus media position avoids identity based on signed CDN URLs;
 OCR engine/configuration and output changes remain auditable. Candidates remain transient.
+Carousel and reel OCR fragments require their respective non-negative integer position;
+other fragment kinds reject media positions. Valid persisted identities remain unchanged.
 
 **GatherRadar's core MVP runs completely free.** The default and only implementation of that
 protocol is `RuleBasedDiscoveryProvider` (`rule-based/1`): deterministic rules with no model,
@@ -344,8 +346,11 @@ depends on knowing.
    fake providers for the architecture and synthetic Persian and English captions for the
    rules. No AI is used and none is required.
 5. Add source-neutral visual evidence, bounded Instagram image/carousel/reel capture, local
-   OCR, and evidence persistence. **Implemented and tested offline; owner live validation is
-   still pending.** The existing caption candidate semantics remain unchanged.
+   OCR, and evidence persistence. **Implemented and validated on bounded live samples:** one
+   Davvvat Reel (six frames) and one Vadoostan carousel (five slides), local `fas+eng` OCR,
+   artifact/provenance inspection, and unchanged reruns with zero new evidence. Persian OCR
+   quality remains variable; standalone images and broader media/layout coverage are not yet
+   validated. The existing caption candidate semantics remain unchanged.
 6. Add website adapters and broader source coverage. **The next major source family** after
    the media-evidence branch is reviewed and validated. Website text uses the same evidence and
    discovery-unit layer rather than a parallel semantic system.

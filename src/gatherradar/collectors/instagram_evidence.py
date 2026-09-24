@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -10,6 +11,7 @@ from ..storage.media import MediaArtifactStore
 from .base import SourceDisabledError, SourceTypeMismatchError
 from .instagram_browser import (
     BrowserSessionExpiredError,
+    InstagramCheckpointError,
     PlaywrightChromeLauncher,
     SESSION_EXPIRED_MESSAGE,
     _ensure_location_allowed,
@@ -22,6 +24,30 @@ from .instagram_browser import (
 
 DEFAULT_MAX_CAROUSEL_SLIDES = 20
 DEFAULT_MAX_REEL_FRAMES = 6
+
+# is_visible() includes slides outside an overflow-clipped carousel and thumbnails
+# below the viewport. Only score the rendered portion of a loaded media element.
+_VISIBLE_MEDIA_AREA = '''(element) => {
+    if (element.closest('a[href*="/p/"], a[href*="/reel/"]')) return 0;
+    if (element.tagName === 'IMG' && (!element.complete || !element.naturalWidth)) return 0;
+    if (element.tagName === 'VIDEO' && element.readyState < 2) return 0;
+    const box = element.getBoundingClientRect();
+    let left = Math.max(0, box.left), top = Math.max(0, box.top);
+    let right = Math.min(innerWidth, box.right), bottom = Math.min(innerHeight, box.bottom);
+    for (let node = element; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return 0;
+        if (node === element) continue;
+        const rect = node.getBoundingClientRect();
+        if (/(hidden|clip|scroll|auto)/.test(style.overflowX)) {
+            left = Math.max(left, rect.left); right = Math.min(right, rect.right);
+        }
+        if (/(hidden|clip|scroll|auto)/.test(style.overflowY)) {
+            top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
+        }
+    }
+    return right-left >= 120 && bottom-top >= 120 ? (right-left)*(bottom-top) : 0;
+}'''
 
 
 class MediaPageDriver(Protocol):
@@ -82,12 +108,12 @@ def capture_post_artifacts(
         first = driver.capture_current_visual()
     except Exception as exc:
         return MediaCaptureResult(
-            failures=(MediaCaptureFailure(raw_item.id, f'visual capture failed: {exc}'),)
+            failures=(MediaCaptureFailure(raw_item.id, f'visual capture failed ({type(exc).__name__})'),)
         )
     try:
         has_next = driver.advance_carousel()
     except Exception as exc:
-        failures.append(MediaCaptureFailure(raw_item.id, f'carousel advance failed: {exc}'))
+        failures.append(MediaCaptureFailure(raw_item.id, f'carousel advance failed ({type(exc).__name__})'))
         has_next = False
     if not has_next:
         outcome = store.write(raw_item, MediaKind.IMAGE, first)
@@ -111,13 +137,13 @@ def capture_post_artifacts(
                 ).artifact
             )
         except Exception as exc:
-            failures.append(MediaCaptureFailure(raw_item.id, f'slide {index} failed: {exc}'))
+            failures.append(MediaCaptureFailure(raw_item.id, f'slide {index} failed ({type(exc).__name__})'))
         index += 1
         try:
             if not driver.advance_carousel():
                 break
         except Exception as exc:
-            failures.append(MediaCaptureFailure(raw_item.id, f'carousel advance failed: {exc}'))
+            failures.append(MediaCaptureFailure(raw_item.id, f'carousel advance failed ({type(exc).__name__})'))
             break
     return MediaCaptureResult(tuple(artifacts), tuple(failures))
 
@@ -130,7 +156,7 @@ def capture_reel_artifacts(
         timestamps = sample_reel_timestamps(driver.video_duration_ms(), max_frames)
     except Exception as exc:
         return MediaCaptureResult(
-            failures=(MediaCaptureFailure(raw_item.id, f'video inspection failed: {exc}'),)
+            failures=(MediaCaptureFailure(raw_item.id, f'video inspection failed ({type(exc).__name__})'),)
         )
     if not timestamps:
         return MediaCaptureResult(
@@ -154,7 +180,7 @@ def capture_reel_artifacts(
             )
         except Exception as exc:
             failures.append(
-                MediaCaptureFailure(raw_item.id, f'frame {timestamp} ms failed: {exc}')
+                MediaCaptureFailure(raw_item.id, f'frame {timestamp} ms failed ({type(exc).__name__})')
             )
     return MediaCaptureResult(tuple(artifacts), tuple(failures))
 
@@ -167,26 +193,47 @@ class PlaywrightMediaPageDriver:
         self.settle_ms = settle_ms
 
     def _largest_visible(self, selector: str) -> Any:
+        self.page.wait_for_function(
+            f'(selector) => [...document.querySelectorAll(selector)].some(el => ({_VISIBLE_MEDIA_AREA})(el) > 0)',
+            arg=selector, timeout=10_000,
+        )
         locator = self.page.locator(selector)
         choices: list[tuple[float, Any]] = []
         for index in range(locator.count()):
             item = locator.nth(index)
             if not item.is_visible():
                 continue
-            box = item.bounding_box() or {}
-            choices.append((float(box.get('width', 0)) * float(box.get('height', 0)), item))
+            area = item.evaluate(_VISIBLE_MEDIA_AREA)
+            if area > 0:
+                choices.append((area, item))
         if not choices:
             raise ValueError('no displayed media element was found')
         return max(choices, key=lambda entry: entry[0])[1]
 
     def capture_current_visual(self) -> bytes:
-        return self._largest_visible('article img').screenshot(type='png')
+        visual = self._largest_visible('article img, main img')
+        # Playwright waits for stable geometry before scrolling. A raw page
+        # screenshot otherwise races the last subpixel of carousel motion.
+        visual.scroll_into_view_if_needed()
+        box = visual.bounding_box()
+        if not box:
+            raise ValueError('displayed media has no capture bounds')
+        # Locator screenshots round fractional edges outward, including a sliver
+        # of the neighboring carousel slide. Keep only whole pixels inside it.
+        left, top = math.ceil(box['x']), math.ceil(box['y'])
+        return self.page.screenshot(type='png', clip={
+            'x': left, 'y': top,
+            'width': math.floor(box['x'] + box['width']) - left,
+            'height': math.floor(box['y'] + box['height']) - top,
+        })
 
     def advance_carousel(self) -> bool:
         selector = (
             'article button[aria-label=Next], '
             'article button[aria-label=بعدی], '
-            'article button:has(svg[aria-label=Next])'
+            'article button:has(svg[aria-label=Next]), '
+            'main button[aria-label=Next], main button[aria-label=بعدی], '
+            'main button:has(svg[aria-label=Next])'
         )
         controls = self.page.locator(selector)
         for index in range(controls.count() - 1, -1, -1):
@@ -202,18 +249,37 @@ class PlaywrightMediaPageDriver:
 
     def video_duration_ms(self) -> int | None:
         duration = self._video().evaluate('(video) => video.duration')
-        if not isinstance(duration, (int, float)) or duration <= 0:
+        if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
             return None
         return round(duration * 1000)
 
     def capture_frame(self, timestamp_ms: int) -> bytes:
         video = self._video()
+        video.evaluate('(video) => video.pause()')
         video.evaluate(
-            '''(video, seconds) => new Promise((resolve) => {
-                const done = () => resolve();
-                video.addEventListener('seeked', done, {once: true});
-                video.currentTime = Math.min(seconds, Math.max(0, video.duration - 0.05));
-                setTimeout(done, 1500);
+            '''(video, seconds) => new Promise((resolve, reject) => {
+                const target = Math.min(seconds, Math.max(0, video.duration - 0.05));
+                const cleanup = () => {
+                    clearTimeout(timer);
+                    video.removeEventListener('seeked', done);
+                    video.removeEventListener('loadeddata', done);
+                };
+                const done = () => {
+                    if (!video.seeking && video.readyState >= 2 &&
+                        Math.abs(video.currentTime - target) < 0.05) {
+                        video.pause();
+                        cleanup();
+                        resolve();
+                    }
+                };
+                const timer = setTimeout(() => {
+                    cleanup();
+                    reject(new Error('video seek timed out'));
+                }, 5000);
+                video.addEventListener('seeked', done);
+                video.addEventListener('loadeddata', done);
+                video.currentTime = target;
+                done();
             })''',
             timestamp_ms / 1000,
         )
@@ -256,7 +322,7 @@ class InstagramMediaEvidenceAcquirer:
                     if not has_instagram_session_cookie(browser.context):
                         raise BrowserSessionExpiredError(SESSION_EXPIRED_MESSAGE)
                     _wait_for_optional(
-                        browser.page, 'article img, article video, main video',
+                        browser.page, 'article img, main img, article video, main video',
                         self.content_wait_ms,
                     )
                     driver = PlaywrightMediaPageDriver(browser.page)
@@ -272,9 +338,13 @@ class InstagramMediaEvidenceAcquirer:
                     failures.extend(result.failures)
                 except BrowserSessionExpiredError:
                     raise
+                except InstagramCheckpointError as exc:
+                    # Stop for manual verification, retaining earlier captures.
+                    failures.append(MediaCaptureFailure(raw_item.id, str(exc)))
+                    break
                 except Exception as exc:
                     failures.append(
-                        MediaCaptureFailure(raw_item.id, f'media page failed: {exc}')
+                        MediaCaptureFailure(raw_item.id, f'media page failed ({type(exc).__name__})')
                     )
         return MediaCaptureResult(tuple(artifacts), tuple(failures))
 

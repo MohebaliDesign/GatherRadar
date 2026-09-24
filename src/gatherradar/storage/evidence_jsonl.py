@@ -59,7 +59,7 @@ def evidence_fragment_from_dict(payload: dict[str, Any]) -> EvidenceFragment:
     try:
         kind = EvidenceKind(payload['kind'])
     except ValueError as exc:
-        raise ValueError('unknown evidence kind: ' + payload['kind']) from exc
+        raise ValueError('unknown evidence kind') from exc
     return EvidenceFragment(
         fragment_id=payload['fragment_id'], raw_item_id=payload['raw_item_id'],
         kind=kind, text=payload['text'], source_url=_optional_text(payload, 'source_url'),

@@ -108,7 +108,7 @@ def run_instagram_evidence(
                 status=OcrStatus.FAILED, raw_text='', text='',
                 engine=getattr(provider, 'name', 'unknown'), engine_version='unknown',
                 config=str(getattr(provider, 'config', 'unknown')),
-                failure_reason=f'OCR failed: {exc}',
+                failure_reason=f'OCR failed ({type(exc).__name__})',
             )
         if result.status is OcrStatus.SUCCEEDED:
             succeeded += 1

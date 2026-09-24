@@ -43,10 +43,16 @@ class EvidenceFragment:
     def __post_init__(self) -> None:
         if not self.fragment_id.strip() or not self.raw_item_id.strip():
             raise ValueError('fragment_id and raw_item_id must not be empty')
-        if self.slide_index is not None and self.slide_index < 0:
-            raise ValueError('slide_index must be non-negative')
-        if self.frame_timestamp_ms is not None and self.frame_timestamp_ms < 0:
-            raise ValueError('frame_timestamp_ms must be non-negative')
+        for name, required_kind in (
+            ('slide_index', EvidenceKind.CAROUSEL_SLIDE_OCR),
+            ('frame_timestamp_ms', EvidenceKind.REEL_FRAME_OCR),
+        ):
+            value = getattr(self, name)
+            if self.kind is required_kind:
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(f'{required_kind.value} requires a non-negative integer {name}')
+            elif value is not None:
+                raise ValueError(f'{name} is only valid for {required_kind.value}')
 
     @property
     def meaningful(self) -> bool:

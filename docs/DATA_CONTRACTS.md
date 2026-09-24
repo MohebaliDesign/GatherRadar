@@ -100,6 +100,12 @@ source URL, optional local artifact path and SHA-256, optional slide index or fr
 OCR engine/version/configuration, exact raw OCR output, and an optional failure reason. Empty
 and failed OCR observations are auditable evidence records, not semantic facts.
 
+Carousel OCR requires a non-negative integer `slide_index`; reel OCR requires a
+non-negative integer `frame_timestamp_ms`. Each position field is valid only for its
+corresponding kind; captions, image OCR, and website text carry neither. Zero is valid,
+and booleans are not positions. Existing correctly positioned fragments keep their IDs
+and serialized shape. Invalid stored records are reported without rewriting history.
+
 Fragments are ordered deterministically: caption first, then media position. Stable identity
 uses the raw item, kind, position, captured asset hash, OCR engine/configuration, OCR output,
 and failure state; temporary Instagram CDN URLs are provenance only and never the identity.
@@ -116,10 +122,17 @@ A media artifact is a local OCR input with a stable kind (`image`, `carousel_sli
 `reel_frame`), raw item id, content-addressed local path, SHA-256, source URL, and the relevant
 slide index or frame timestamp. Files live only below `data/media/`; same bytes at the same
 position reuse the same file, while changed bytes create a new auditable artifact.
+Instagram image screenshots use stable geometry and inward-rounded pixel bounds to avoid
+capturing neighboring carousel edges. Reel frames are captured with playback paused after
+the requested seek completes; a seek timeout produces a capture failure, not a timestamped
+artifact. These are rendered media screenshots and may include overlaid media controls.
 
 OCR evidence is append-only JSONL below `data/evidence/`. Repeating the same artifact and OCR
 result does not append another line. Engine/configuration or output changes produce a new
 fragment instead of mutating history. Malformed lines are isolated and reported.
+Unknown-kind diagnostics do not echo the invalid value. Unexpected browser and OCR
+exceptions report the failed operation and exception type without copying exception
+payloads into summaries or evidence.
 
 ## EventCandidate and PlaceCandidate
 

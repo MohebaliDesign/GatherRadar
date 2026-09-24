@@ -13,7 +13,7 @@ from gatherradar.collectors.instagram_evidence import MediaCaptureResult
 from gatherradar.domain import MediaKind, RawItem, SourceType
 from gatherradar.ocr import OcrResult, OcrStatus
 from gatherradar.orchestration.evidence_run import EvidenceRunSummary, run_instagram_evidence
-from gatherradar.storage import JsonlRawItemStore
+from gatherradar.storage import JsonlEvidenceStore, JsonlRawItemStore
 from gatherradar.orchestration.collection_run import instagram_output_path, find_source
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +97,31 @@ class EvidenceRunTests(unittest.TestCase):
         self.run_evidence()
         paths = [path.as_posix() for path in self.data_dir.rglob('*') if path.is_file()]
         self.assertFalse(any('candidate' in path for path in paths))
+
+    def test_ocr_exception_is_persisted_safely_and_other_evidence_survives(self):
+        class TwoArtifacts:
+            def acquire(self, items, source, store):
+                return MediaCaptureResult(tuple(
+                    store.write(items[0], MediaKind.CAROUSEL_SLIDE, content,
+                                slide_index=index).artifact
+                    for index, content in enumerate((b'one', b'two'))
+                ))
+
+        provider = FakeOcr()
+        good = OcrResult(OcrStatus.SUCCEEDED, 'text\n', 'text', 'fake', '1', 'fas+eng')
+        with mock.patch.object(provider, 'recognize', side_effect=[
+            RuntimeError('synthetic-private-detail'), good,
+        ]):
+            summary = run_instagram_evidence(
+                'davvvat_instagram', config_path=CONFIG, data_dir=self.data_dir,
+                acquirer=TwoArtifacts(), ocr_provider=provider,
+            )
+        self.assertEqual((summary.ocr_failed, summary.ocr_succeeded), (1, 1))
+        self.assertEqual(summary.new_evidence, 3)
+        self.assertNotIn('synthetic-private-detail', str(summary.failures))
+        persisted = JsonlEvidenceStore(summary.output_path).read()
+        self.assertEqual(len(persisted.fragments), 3)
+        self.assertNotIn('synthetic-private-detail', summary.output_path.read_text(encoding='utf-8'))
 
     def test_unknown_source_is_rejected(self):
         with self.assertRaises(SourceNotFoundError):

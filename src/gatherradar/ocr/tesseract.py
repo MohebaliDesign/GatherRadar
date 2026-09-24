@@ -50,6 +50,8 @@ class TesseractOcrProvider:
             ) from exc
 
     def validate(self) -> None:
+        # A failed initial check or recheck must never authorize recognize().
+        self._version = None
         try:
             version = self._run([self.executable, '--version'])
         except subprocess.TimeoutExpired as exc:
@@ -57,7 +59,6 @@ class TesseractOcrProvider:
         if version.returncode != 0:
             raise OcrUnavailableError('Tesseract version check failed: ' + version.stderr.strip())
         first_line = (version.stdout or version.stderr or 'tesseract unknown').splitlines()[0]
-        self._version = first_line.strip()
         try:
             listed = self._run([self.executable, '--list-langs'])
         except subprocess.TimeoutExpired as exc:
@@ -71,6 +72,7 @@ class TesseractOcrProvider:
                 'Tesseract language data is missing: ' + ', '.join(missing) +
                 '. Install the required language packs (' + ' + '.join(self.languages) + ').'
             )
+        self._version = first_line.strip()
 
     def recognize(self, image_path: str | Path) -> OcrResult:
         if self._version is None:

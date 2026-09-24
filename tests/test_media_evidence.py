@@ -1,11 +1,18 @@
 import tempfile
 import unittest
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
+from types import SimpleNamespace
 
 from gatherradar.collectors.instagram_evidence import (
+    InstagramMediaEvidenceAcquirer, MediaCaptureResult, PlaywrightMediaPageDriver,
     capture_post_artifacts, capture_reel_artifacts, sample_reel_timestamps,
 )
+from gatherradar.collectors.instagram_browser import CHECKPOINT_MESSAGE, InstagramCheckpointError
+from gatherradar.orchestration.collection_run import find_source
 from gatherradar.domain import MediaKind, RawItem, SourceType
 from gatherradar.storage import MediaArtifactStore
 
@@ -117,6 +124,17 @@ class CarouselCaptureTests(unittest.TestCase):
         self.assertEqual([item.slide_index for item in result.artifacts], [0, 2])
         self.assertEqual(len(result.failures), 1)
 
+    def test_capture_errors_do_not_echo_browser_details(self):
+        driver = FakeDriver([b'one'])
+        with mock.patch.object(
+            driver, 'capture_current_visual',
+            side_effect=RuntimeError('synthetic-session-detail'),
+        ):
+            result = capture_post_artifacts(driver, raw_item(), self.store)
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn('visual capture failed', result.failures[0].reason)
+        self.assertNotIn('synthetic-session-detail', result.failures[0].reason)
+
 
 class ReelCaptureTests(unittest.TestCase):
     def setUp(self):
@@ -150,6 +168,106 @@ class ReelCaptureTests(unittest.TestCase):
         result = capture_reel_artifacts(driver, raw_item('reel'), self.store, max_frames=3)
         self.assertGreaterEqual(len(result.artifacts), 1)
         self.assertEqual(len(result.failures), 1)
+
+
+class AcquirerFailureTests(unittest.TestCase):
+    def test_checkpoint_stops_navigation_and_keeps_prior_artifacts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = MediaArtifactStore(folder, 'instagram', 'source')
+            first = raw_item()
+            items = (first, replace(first, id='second'), replace(first, id='third'))
+            artifact = store.write(first, MediaKind.IMAGE, b'image').artifact
+            page = SimpleNamespace(url=first.content_url)
+
+            @contextmanager
+            def browser(*args):
+                yield SimpleNamespace(page=page, context=object())
+
+            module = 'gatherradar.collectors.instagram_evidence.'
+            source = find_source('davvvat_instagram', Path(__file__).resolve().parents[1] / 'config/sources.yaml')
+            with (
+                mock.patch(module + 'open_authenticated_browser', browser),
+                mock.patch(module + '_goto') as navigate,
+                mock.patch(module + '_ensure_location_allowed', side_effect=[
+                    None, InstagramCheckpointError(CHECKPOINT_MESSAGE),
+                ]),
+                mock.patch(module + 'has_instagram_session_cookie', return_value=True),
+                mock.patch(module + '_wait_for_optional'),
+                mock.patch(module + 'capture_post_artifacts', return_value=MediaCaptureResult((artifact,))),
+            ):
+                result = InstagramMediaEvidenceAcquirer(data_dir=folder).acquire(items, source, store)
+            self.assertEqual(navigate.call_count, 2)
+            self.assertEqual(result.artifacts, (artifact,))
+            self.assertEqual(result.failures[0].reason, CHECKPOINT_MESSAGE)
+
+
+class MediaPageDriverTests(unittest.TestCase):
+    def test_main_layout_selects_rendered_slide_not_clipped_or_unrelated_images(self):
+        active, clipped, avatar, thumbnail = (mock.Mock() for _ in range(4))
+        for image, area in ((active, 200000), (clipped, 0), (avatar, 0), (thumbnail, 0)):
+            image.is_visible.return_value = True
+            image.evaluate.return_value = area
+        active.bounding_box.return_value = {'x': 222.9, 'y': 29.6, 'width': 483.1875, 'height': 599.95}
+        page = mock.Mock()
+        page.screenshot.return_value = b'active slide'
+        page.locator.return_value.count.return_value = 4
+        page.locator.return_value.nth.side_effect = [active, clipped, avatar, thumbnail]
+        self.assertEqual(PlaywrightMediaPageDriver(page).capture_current_visual(), b'active slide')
+        page.locator.assert_called_once_with('article img, main img')
+        active.scroll_into_view_if_needed.assert_called_once()
+        page.screenshot.assert_called_once_with(
+            type='png', clip={'x': 223, 'y': 30, 'width': 483, 'height': 599}
+        )
+        for image in (clipped, avatar, thumbnail):
+            image.screenshot.assert_not_called()
+
+    def test_main_carousel_next_control_is_supported(self):
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        control = page.locator.return_value.nth.return_value
+        control.is_visible.return_value = control.is_enabled.return_value = True
+        self.assertTrue(PlaywrightMediaPageDriver(page).advance_carousel())
+        self.assertIn('main button[aria-label=Next]', page.locator.call_args.args[0])
+        control.click.assert_called_once()
+
+    def test_frame_capture_pauses_before_seeking_and_screenshot(self):
+        calls = []
+
+        class Video:
+            def evaluate(self, script, *args):
+                if args:
+                    self_test.assertEqual(calls, ['pause'])
+                    self_test.assertEqual(args, (1.5,))
+                    calls.append('seek')
+                else:
+                    self_test.assertIn('pause()', script)
+                    calls.append('pause')
+
+            def screenshot(self, **kwargs):
+                self_test.assertEqual(calls, ['pause', 'seek'])
+                return b'paused frame'
+
+        self_test = self
+        driver = PlaywrightMediaPageDriver(None)
+        with mock.patch.object(driver, '_video', return_value=Video()):
+            self.assertEqual(driver.capture_frame(1500), b'paused frame')
+
+    def test_failed_seek_never_captures_a_mislabeled_frame(self):
+        video = mock.Mock()
+        video.evaluate.side_effect = [None, RuntimeError('seek timed out')]
+        driver = PlaywrightMediaPageDriver(None)
+        with mock.patch.object(driver, '_video', return_value=video):
+            with self.assertRaises(RuntimeError):
+                driver.capture_frame(1500)
+        video.screenshot.assert_not_called()
+
+    def test_unloaded_or_nonfinite_duration_is_unavailable(self):
+        driver = PlaywrightMediaPageDriver(None)
+        video = mock.Mock()
+        with mock.patch.object(driver, '_video', return_value=video):
+            for duration in (None, float('nan'), float('inf'), 0):
+                video.evaluate.return_value = duration
+                self.assertIsNone(driver.video_duration_ms())
 
 
 if __name__ == '__main__':
