@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time
+from decimal import Decimal
+
+from .temporal import DatePrecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,12 +23,18 @@ class EventCandidate:
     city: str | None = None
     event_format: str | None = None
     price_text: str | None = None
-    price_amount: int | None = None
+    price_amount: int | Decimal | None = None
     currency: str | None = None
     registration_url: str | None = None
     language: str | None = None
     extraction_confidence: float | None = None
     evidence_url: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    timezone: str | None = None
+    date_precision: DatePrecision = DatePrecision.UNKNOWN
 
     def __post_init__(self) -> None:
         if not self.candidate_id.strip() or not self.raw_item_id.strip():

@@ -102,6 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
                              help='Maximum items (1–30); listing order for collection, storage order for extraction.')
         website.add_argument('--config', default='config/sources.yaml')
         website.add_argument('--data-dir', default='data')
+        if kinds is extract_kinds:
+            website.add_argument('--normalize', action='store_true', help='Review deterministic normalization offline.')
 
     extract_instagram = extract_kinds.add_parser(
         "instagram",
@@ -110,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         "source. Nothing is collected and nothing is persisted.",
     )
     extract_instagram.add_argument("source_id", help="Source id from config/sources.yaml")
+    extract_instagram.add_argument('--normalize', action='store_true', help='Review deterministic normalization offline.')
     extract_instagram.add_argument(
         '--evidence', action='store_true',
         help='Group already-stored local evidence offline; no collection or OCR.',
@@ -303,7 +306,22 @@ def run_extract_instagram(args: argparse.Namespace) -> int:
         return 1
 
     print(format_evidence_discovery_summary(summary) if args.evidence else format_discovery_summary(summary))
+    if args.normalize:
+        print(_normalized_review(summary))
     return 0
+
+
+def _normalized_review(summary: DiscoveryRunSummary) -> str:
+    # Lazy import keeps default discovery independent of normalization execution.
+    from .normalization.review import format_normalization
+    from .orchestration.normalization_run import run_normalization
+
+    return format_normalization(run_normalization(
+        summary.outcomes, {item.id: item for item in summary.raw_items},
+        {summary.source.id: summary.source} if summary.source is not None else {},
+        unit_texts={unit.unit_id: unit.text for item in summary.items for unit in item.units}
+        if isinstance(summary, EvidenceDiscoveryRunSummary) else None,
+    ))
 
 
 def format_evidence_discovery_summary(summary: EvidenceDiscoveryRunSummary) -> str:
@@ -483,6 +501,8 @@ def main(
             print(f'error: {exc}', file=sys.stderr)
             return 1
         print(format_evidence_discovery_summary(summary) if args.command == 'extract' else format_summary(summary))
+        if args.command == 'extract' and args.normalize:
+            print(_normalized_review(summary))
         return 0
 
     if args.command == 'evidence':
