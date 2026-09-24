@@ -4,7 +4,8 @@ This document defines the records used by the MVP pipeline. Collectors may chang
 
 ```text
 Source → RawItem / Evidence → DiscoveryUnit → DiscoveryService
-       → EventCandidate | PlaceCandidate → NormalizationOutcome → later persistence/export
+       → EventCandidate | PlaceCandidate → NormalizationOutcome
+       → conservative canonicalization → Event drafts → later persistence/export
 ```
 
 ## Source
@@ -394,12 +395,14 @@ The normalized canonical record used for filtering, deduplication, review, and l
 
 It stores normalized event facts, review/status fields, provenance (`canonical_source_url`, `source_item_ids`), first/last seen timestamps, and human review notes.
 
-This is a planned canonical model, not a Stage 7 persistence target. It still has legacy
-integer price fields and a Tehran timezone default; normalization does not instantiate it.
-Before persistence, its contract must be reconciled with the normalized candidate/result
-contract below. The product brief's canonical `event_id`, tags, registration deadline,
-review and history fields are not all discovery `EventCandidate` fields. Discovery uses
-`candidate_id` and `evidence_url`; Stage 7 does not add canonical lifecycle fields.
+Stage 8 reconciles the legacy model: title is nullable; timezone has no implicit Tehran
+default; date/time components, `DatePrecision`, Decimal-compatible prices, canonical
+field provenance and membership are explicit. Timestamps must be timezone-aware.
+`source_item_ids` continues to mean raw-item IDs. Lifecycle status remains `unknown` and
+review status defaults to `needs_review`; grouping never means verified. Stage 8 creates
+this model in memory only. Tags, reviewer notes and status remain domain fields but are
+not fabricated from candidates. Registration deadlines are still outside the implemented
+candidate contract. Discovery keeps `candidate_id` and `evidence_url` unchanged.
 
 ## Deterministic normalization (Stage 7)
 
@@ -503,13 +506,148 @@ diagnostics, not invalid facts. Temporal and price statuses are also exposed ind
 append review output to unchanged discovery output. All results stay in memory and can be
 used by either a later Sheets-first or SQLite-backed strategy. Neither is implemented here.
 
+## Conservative canonicalization (Stage 8)
+
+`deduplication.canonicalize(contexts)` is the source-neutral in-memory batch boundary.
+Each `CandidateContext` carries the `NormalizationOutcome`, original candidate, exact
+RawItem/Source, historical `first_seen_at` and stable evidence slot. No provenance metadata
+is added to `EventCandidate`. The result retains **all input contexts**, including rejected
+inputs, plus canonical Events, automatic multi-member groups, all pair decisions, possible
+relationships, singleton Events, unchanged Place candidates and structured diagnostics.
+Events and Places are never compared or merged. No raw observation or candidate is deleted.
+
+### Pair decisions
+
+| Kind | Meaning |
+| --- | --- |
+| `same_event` | Sufficient deterministic evidence for automatic grouping, subject to all-member compatibility |
+| `possible_duplicate` | Review suggestion only; Events stay separate |
+| `distinct` | A conservative conflict veto; no automatic grouping |
+| `insufficient` | No sufficiently specific relationship established |
+
+Every decision contains sorted candidate IDs and sorted reason codes, without a numerical
+probability. Comparison keys use Unicode NFKC, Arabic/Persian letter and digit folding,
+case folding, punctuation and whitespace normalization. Stored wording is never rewritten.
+Exact titles require at least one nongeneric, nonnumeric token. Approximate titles need
+at least two shared distinctive tokens and token Jaccard overlap >=0.85. Differing numeric
+tokens prevent approximate matching. Generic event words alone are not a positive signal.
+Partial shared wording alone is insufficient; disjoint distinctive titles veto grouping.
+
+The v1 automatic policy requires a strong distinctive title, the same explicit single
+start date, the same known timezone and no recognized conflict. With a shared publisher,
+date-only agreement can suffice; the publisher alone never does. Across publishers, the
+pair additionally needs equal start clocks and either matching venue/address or an exact
+non-homepage registration key. Same city alone is insufficient across publishers.
+
+Explicit unequal dates, reliable unequal clocks, and differing populated city, venue,
+address or timezone veto automatic grouping. Location comparison is literal folded text,
+not geocoding: aliases/translations can cause conservative false negatives. Missing values
+are neutral. Prices do not determine event identity. Different registration vendors are
+reported but are not assumed to identify different occurrences: there is no verified
+source-neutral URL schema for that claim. Registration keys remove only the listed common
+UTM/click tracking parameters; unknown query bytes/order, fragments, schemes and path/slash
+semantics remain intact. Root URLs and either configured publisher homepage are weak.
+
+Both candidates need `exact` or `day` precision, no end date and no temporal diagnostics
+to auto-group. Price-only diagnostics do not block it. Inferred years (including ranges
+carrying `inferred_year`), relative dates, multi-day ranges, recurrences and unparsed or
+multiple-session schedules stay review-only. Stage 8 does not expand occurrences. A
+distinctive title alone, registration agreement, or date plus location can suggest review.
+Differences in uncertain dates/clocks remain reasons, not automatically reliable vetoes.
+
+### Grouping and failure handling
+
+Candidate IDs define deterministic insertion order. A candidate joins the first group
+only if **every** pair with existing members is `same_event`; otherwise it starts a
+singleton. A~B and B~C cannot bridge an A/C conflict or insufficient pair. All inputs belong
+to at most one automatic group. A strong pair blocked by the all-member constraint appears
+as a separate review suggestion with `all_member_grouping_blocked`, retaining the original
+pair decision as well.
+
+`duplicate_group_id = duplicate:<SHA-256(sorted candidate IDs)>` describes current
+composition, including singleton composition. Event/group/decision/member ordering is
+explicit. This greedy complete-link policy is deterministic, not a maximum-clique search.
+New members can affect future partitions; persisted split/merge review belongs to Stage 9.
+
+Context identity, dates, timestamps, precision, prices, URLs and normalization consistency
+are checked at the batch boundary. Invalid contexts remain in `rejected`; duplicate IDs
+or ambiguous repeated raw-item/slot inputs are quarantined rather than selected by input
+order. Matching exceptions produce `insufficient` with `matching_failed`; canonicalization
+exceptions retain affected contexts and report `canonicalization_failed`. Other pairs and
+groups continue. Exceptions never echo source payloads. CLI exits nonzero for source,
+context, matching or canonicalization failures; missing stores are a normal report outcome.
+
+### Stable Event identity
+
+The anchor is the minimum `(first_seen_at, raw_item_id, identity_slot, candidate_id)`.
+`first_seen_at` comes from the earliest valid capture timestamp for that raw ID across
+the append-only raw history, not publication date, current input order or wall clock.
+`ReadOutcome.first_seen_at` supplies this metadata from the **same read** as latest items.
+First/last seen refer to stored observations: unchanged collections are not appended and
+therefore do not advance last seen.
+
+`event_id = event:<SHA-256([anchor raw ID, anchor slot])>` is independent of group size
+and candidate/content hashes. Primary website text and captions use `primary`; a separate
+media unit uses its first stable kind/slide-index/frame-position slot. This prevents several
+events in one carousel from sharing an Event ID. Adding a later supporting source or editing
+content at the anchor slot normally preserves identity. Candidate ID only breaks otherwise
+equal ties; it is not in the event hash. Canonical source URL is the anchor candidate's
+evidence URL, falling back to that RawItem's content URL. No URL is constructed.
+
+Importing an earlier observation, losing an anchor, moving slides, changing evidence
+selection, or future group splits/merges may change identity. In-memory identity cannot
+replace Stage 9's persistent canonical mappings and review of identity evolution.
+
+### Canonical fields and provenance
+
+All populated, agreeing values corroborate one source-supported value; nulls do not
+conflict. Title/location/category/language agreement uses folded text but selects the
+earliest anchor-ordered **original** wording. Other text requires literal agreement.
+Equally strong disagreements become null with `field_conflict` and supporting candidate
+IDs. This includes different summaries or source wording; the complete originals remain
+available through retained contexts. Missing title remains null, never a placeholder.
+Extraction confidence is preserved on agreement, never averaged or recalibrated.
+
+Price amount and stated currency resolve together. Decimal precision, `TOMAN` and `IRR`
+remain distinct. A zero from one candidate cannot acquire another candidate's currency.
+Temporal fields resolve as a source-supplied interpretation: an explicit safe tuple can
+outweigh an inferred interpretation, but the disagreement is diagnosed. Otherwise, an
+existing tuple must cover the populated compatible values of equally strong tuples.
+Equal-strength contradictions or complementary tuples with no covering interpretation
+stay unresolved. No timestamp, overnight date, range or recurrence is synthesized by
+combining facts. Unselected partial interpretations are diagnosed and retained in context.
+This deliberately favors coherence over filling every canonical cell.
+
+`FieldProvenance(field, candidate_ids)` references selected facts and corroboration.
+`CanonicalDiagnostic(code, field, candidate_ids)` records conflicts and upstream
+normalization codes without large evidence payloads. Membership includes sorted unique
+candidate IDs, raw IDs (`source_item_ids`), source IDs, publisher keys and evidence URLs.
+Every Event defaults to `needs_review`. Domain records do not import scraping, normalization,
+database or Google clients. `CandidateContext` belongs to the orchestration/matching layer.
+
+### Offline review and limitations
+
+`canonicalize --source <id> --source <id>` or `canonicalize --all-enabled` reads local
+stored data only. `--instagram-evidence` explicitly selects stored Stage 5 media grouping
+with caption fallback; without it Instagram uses captions only. Source reports identify
+the chosen mode, missing data and failures. The existing `extract` commands are unchanged.
+Raw/evidence snapshots are not rewritten, and the command does not collect, open a browser,
+run OCR, contact a network, or persist canonical state. Per-source limits are 1–30 raw items.
+
+Unrecognized title aliases, multilingual names, location variants, multi-location events,
+missing titles, recurring/session ambiguity, inferred dates, contradictions and future
+source updates remain limitations. Places pass through; Place deduplication is deferred.
+Pair enumeration is quadratic and intended for bounded private-source review. Stage 9
+will choose Sheets-first or SQLite-backed persistence; Stage 8 selects neither.
+See [Stage 8 validation](STAGE8_VALIDATION.md) for measured results and coverage gaps.
+
 ## Storage boundary
 
 ```text
 RawItem                         → JSONL
 EventCandidate / PlaceCandidate → transient / processing boundary
-Event                           → SQLite (planned)
-Google Sheets                   → review/output surface, not source of truth
+Event                           → in-memory draft; persistence deferred to Stage 9
+Google Sheets                   → planned daily review/management surface
 ```
 
 Media artifacts live below `data/media/` and source-neutral evidence fragments use append-only

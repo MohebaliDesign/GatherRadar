@@ -4,7 +4,7 @@
 
 GatherRadar is an early-stage Python project for answering a practical question: **what worthwhile events can a small community attend next?** It replaces repeated browsing across selected public sources with a reviewable pipeline that collects source content, preserves provenance, extracts structured facts, and classifies each observation as an **event**, a **place**, or **other**.
 
-The current implementation includes source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, deterministic rule-based discovery, and opt-in date/time/price normalization. Deduplication, canonical persistence, and Google Sheets synchronization remain future stages.
+The current implementation includes source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, deterministic rule-based discovery, date/time/price normalization, and conservative in-memory event canonicalization. Canonical persistence and Google Sheets synchronization remain future stages.
 
 ## Why GatherRadar
 
@@ -28,8 +28,8 @@ The current implementation includes source collection, append-only raw storage, 
 | Event / place / other discovery | ✅ Implemented |
 | Explainable deterministic rule engine | ✅ Implemented |
 | Date / time / price normalization | ✅ Implemented; conservative offline review |
-| Duplicate grouping | 🧭 Planned |
-| Canonical SQLite repository | 🧭 Planned |
+| Duplicate grouping / canonical event drafts | ✅ Implemented; conservative offline review |
+| Canonical persistence (Sheets-first / SQLite decision pending) | 🧭 Planned |
 | Google Sheets review synchronization | 🧭 Planned |
 | Scheduling, Telegram publishing, recommendations, public dashboard | ⏸ Deferred |
 
@@ -54,7 +54,9 @@ EventCandidate | PlaceCandidate | Other
         ↓
 Deterministic normalization (opt-in, transient results)
         ↓
-[planned] deduplication → persistence / Google Sheets
+Conservative deduplication → canonical Event drafts (in memory)
+        ↓
+[planned] persistence / Google Sheets
 ~~~
 
 The important boundary is that **collection and discovery are separate operations**. Collection talks to a source and stores observations. Extraction/discovery reads stored data and classifies it. For Instagram, media evidence is also an explicit, separate step.
@@ -174,6 +176,39 @@ clear temporal context, so a publisher named “Today” cannot invent a date.
 See [the normalization contract](docs/DATA_CONTRACTS.md#deterministic-normalization-stage-7)
 for exact policies and [the validation report](docs/STAGE7_VALIDATION.md) for measured results.
 
+### 7. Review canonical events across sources (Stage 8)
+
+~~~bash
+python -m gatherradar canonicalize --source davvvat_website --source davvvat_instagram --limit 5
+python -m gatherradar canonicalize --all-enabled --instagram-evidence --limit 5
+~~~
+
+This is offline analysis of existing local stores: no collection, browser, OCR, network,
+or data writes. `--source` is repeatable; `--all-enabled` analyzes only enabled sources
+with local data and reports missing stores. `--limit` is 1–30 raw items **per source**.
+Website selection uses storage order; Instagram uses stored publication recency.
+Explicit selection can inspect disabled sources offline. `--config` and `--data-dir`
+work as on other commands.
+
+Instagram defaults to caption-only discovery. `--instagram-evidence` opts into Stage 5
+grouping of stored evidence with a current-caption fallback for items without usable
+media. The report identifies each source's path. Legacy `extract instagram` is unchanged.
+
+Only strong `same_event` pairs auto-group, and every member must match every other
+member. Possible duplicates remain separate review suggestions. Inferred dates,
+recurring schedules, missing titles and unresolved sessions cannot auto-group.
+Canonical drafts preserve unknown fields, membership, field provenance and conflicts;
+all default to `needs_review`.
+
+Event IDs use the earliest observed raw-item anchor (plus an evidence slot for separate
+media events), so later corroborating sources and content edits normally preserve them.
+Composition-based duplicate-group IDs are separate. Persistent split/merge identity is
+deferred to Stage 9. No canonical state is saved.
+
+See [the Stage 8 contract](docs/DATA_CONTRACTS.md#conservative-canonicalization-stage-8)
+and [actual validation](docs/STAGE8_VALIDATION.md). The bounded local sample contained
+no sufficiently strong duplicate pair; positive grouping is covered by synthetic fixtures.
+
 ## Discovery model
 
 The discovery layer is provider-neutral:
@@ -236,6 +271,7 @@ GatherRadar/
 │   ├── extraction/               # provider interface, signals, rules, fields, service
 │   ├── grouping/                 # evidence selection + conservative grouping
 │   ├── normalization/            # deterministic dates, times, prices and diagnostics
+│   ├── deduplication/            # pair decisions, complete-link groups, canonical drafts
 │   ├── ocr/                      # OCR provider boundary + Tesseract implementation
 │   ├── orchestration/            # collection/evidence/discovery run coordination
 │   ├── storage/                  # append-only JSONL and media storage
@@ -276,8 +312,8 @@ Do not commit browser profiles, cookies, sessions, raw private exports, or crede
 The intended MVP continuation is:
 
 1. Review Stage 7 date/time/price normalization; category/location normalization remains deferred.
-2. Group exact and probable duplicates without destructive deletion.
-3. Evaluate Sheets-first versus a canonical local SQLite repository for stable history and idempotent reruns. Normalization supports either future choice.
+2. Review Stage 8 conservative event groups and possible-duplicate suggestions; Place deduplication remains deferred.
+3. Evaluate Sheets-first versus a canonical local SQLite repository for stable history and idempotent reruns. In-memory canonicalization supports either future choice.
 4. Synchronize review-ready canonical candidates to Google Sheets while preserving human review fields.
 5. Add scheduling and broader delivery only after the discovery workflow is validated.
 

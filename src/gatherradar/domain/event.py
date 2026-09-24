@@ -1,8 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time
+from decimal import Decimal
 from enum import StrEnum
+
+from .raw_item import _require_aware
+from .temporal import DatePrecision
+
+
+@dataclass(frozen=True, slots=True)
+class FieldProvenance:
+    field: str
+    candidate_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalDiagnostic:
+    code: str
+    field: str
+    candidate_ids: tuple[str, ...] = ()
 
 
 class EventStatus(StrEnum):
@@ -23,7 +40,7 @@ class ReviewStatus(StrEnum):
 @dataclass(frozen=True, slots=True)
 class Event:
     event_id: str
-    title: str
+    title: str | None
     canonical_source_url: str
     first_seen_at: datetime
     last_seen_at: datetime
@@ -35,13 +52,13 @@ class Event:
     source_date_text: str | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
-    timezone: str = "Asia/Tehran"
+    timezone: str | None = None
     venue_name: str | None = None
     address: str | None = None
     city: str | None = None
     event_format: str | None = None
     price_text: str | None = None
-    price_amount: int | None = None
+    price_amount: int | Decimal | None = None
     currency: str | None = None
     registration_url: str | None = None
     language: str | None = None
@@ -49,9 +66,28 @@ class Event:
     source_item_ids: tuple[str, ...] = ()
     duplicate_group_id: str | None = None
     reviewer_notes: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    date_precision: DatePrecision = DatePrecision.UNKNOWN
+    identity_anchor_raw_item_id: str = ""
+    identity_anchor_slot: str = "primary"
+    candidate_ids: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] = ()
+    publisher_keys: tuple[str, ...] = ()
+    evidence_urls: tuple[str, ...] = ()
+    field_provenance: tuple[FieldProvenance, ...] = ()
+    diagnostics: tuple[CanonicalDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.event_id.strip() or not self.title.strip() or not self.canonical_source_url.strip():
-            raise ValueError("event_id, title, and canonical_source_url must not be empty")
+        if not self.event_id.strip() or not self.canonical_source_url.strip():
+            raise ValueError("event_id and canonical_source_url must not be empty")
+        if self.title is not None and not self.title.strip():
+            raise ValueError("title must be populated or null")
+        for name in ("first_seen_at", "last_seen_at", "starts_at", "ends_at"):
+            _require_aware(getattr(self, name), name)
+        if self.last_seen_at < self.first_seen_at:
+            raise ValueError("last_seen_at precedes first_seen_at")
         if self.extraction_confidence is not None and not 0 <= self.extraction_confidence <= 1:
             raise ValueError("extraction_confidence must be between 0 and 1")
