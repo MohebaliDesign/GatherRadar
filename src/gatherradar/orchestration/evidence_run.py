@@ -18,6 +18,7 @@ from ..ocr import OcrProvider, OcrResult, OcrStatus, TesseractOcrProvider
 from ..storage import JsonlEvidenceStore, JsonlRawItemStore, MediaArtifactStore
 from .collection_run import find_source, instagram_output_path
 from .discovery_run import select_latest
+from .evidence_paths import instagram_evidence_output_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,11 +37,6 @@ class EvidenceRunSummary:
     output_path: Path
     failures: tuple[str, ...] = ()
     malformed: tuple[str, ...] = ()
-
-
-def instagram_evidence_output_path(source: Source, data_dir: str | Path) -> Path:
-    username = (source.username or source.id).strip().lower()
-    return Path(data_dir) / 'evidence' / 'instagram' / f'{username}.jsonl'
 
 
 def _evidence_kind(kind: MediaKind) -> EvidenceKind:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -135,6 +136,29 @@ class DiscoveryUnit:
             raise ValueError('a DiscoveryUnit must contain at least one fragment')
         if any(fragment.raw_item_id != self.raw_item_id for fragment in self.fragments):
             raise ValueError('every fragment must belong to the unit raw_item_id')
+
+    @classmethod
+    def from_fragments(
+        cls, fragments: tuple[EvidenceFragment, ...], *, strategy: str
+    ) -> DiscoveryUnit:
+        '''Build a versioned unit after grouping, preserving every source word.'''
+        if not fragments or not strategy.strip():
+            raise ValueError('fragments and grouping strategy must not be empty')
+        ordered = tuple(sorted(fragments, key=lambda fragment: fragment.sort_key))
+        raw_item_id = ordered[0].raw_item_id
+        if any(fragment.raw_item_id != raw_item_id for fragment in ordered):
+            raise ValueError('every fragment must belong to the unit raw_item_id')
+        if len({fragment.fragment_id for fragment in ordered}) != len(ordered):
+            raise ValueError('a unit cannot contain duplicate fragment identities')
+        payload = json.dumps(
+            [raw_item_id, strategy, [fragment.fragment_id for fragment in ordered]],
+            ensure_ascii=False, separators=(',', ':'),
+        )
+        return cls(
+            unit_id='unit:' + hashlib.sha256(payload.encode('utf-8')).hexdigest(),
+            raw_item_id=raw_item_id, text='\n'.join(fragment.text for fragment in ordered),
+            fragments=ordered,
+        )
 
     @classmethod
     def from_fragment(cls, fragment: EvidenceFragment) -> DiscoveryUnit:

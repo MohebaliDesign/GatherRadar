@@ -72,6 +72,8 @@ Source adapters (website / Instagram)
       ↓
 Raw capture store
       ↓
+Evidence selection and conservative grouping (explicit opt-in for media)
+      ↓
 Discovery (event / place / other) and extraction
       ↓
 Normalization and validation
@@ -235,6 +237,7 @@ src/gatherradar/
   domain/           # records, enums, and validation contracts
   collectors/       # source adapter interface and implementations
   ocr/              # provider boundary and local Tesseract implementation
+  grouping/         # semantic snapshot selection and conservative discovery units
   extraction/       # discovery: classification, rule engine, and field extraction
   normalization/    # dates, text, locations, categories, and prices
   deduplication/    # exact and fuzzy grouping
@@ -298,10 +301,34 @@ The source-neutral evidence boundary is `RawItem -> EvidenceBundle -> 0..N Disco
 DiscoveryService`. The original caption is a `CAPTION` fragment and still reaches the rule
 engine unchanged. Media OCR is stored as separate `IMAGE_OCR`, `CAROUSEL_SLIDE_OCR`, and
 `REEL_FRAME_OCR` fragments; future website adapters use `WEBSITE_TEXT` through the same layer.
-`RawItem.raw_text` is never replaced with OCR. The current grouping strategy intentionally
-creates only the caption unit. It does not yet merge OCR or segment multi-event carousels, but
-the contracts permit multiple units and distinct candidate identities when that strategy is
-implemented.
+`RawItem.raw_text` is never replaced with OCR. Default extraction still creates only the
+caption unit. Stage 5 adds explicit `extract --evidence`: `grouping/` selects the current
+caption plus the latest stored fragment per semantic media position, then `conservative/1`
+builds zero or more units. Failed/empty latest versions suppress older OCR without changing
+storage. Unit identity includes raw item id, strategy version, and ordered fragment ids;
+unit text joins only deliberately grouped source fragments, unchanged, with newlines.
+
+Grouping reuses existing signals without changing classification rules. New anchors split
+groups; only adjacent, structured supporting facts without recognized conflicts may attach.
+Ambiguous or unavailable fragments break attachment. Consecutive Reel samples with fully
+equivalent folded text group together; changed wording/digits stay separate. Captions are
+never copied to multiple groups, and a single media group joins a caption only when their
+roles are complementary and nonconflicting, or their complete texts are equivalent.
+Uncertain relationships remain separate. This does not reliably segment multiple events
+inside one image or resolve noisy OCR, implicit references, or semantic contradictions.
+
+`orchestration/evidence_discovery_run.py` reads local raw/evidence stores, selects items with
+the existing recency policy, isolates malformed records and per-item/unit failures, and
+returns transient candidates plus units for provenance review. It invokes no collector or
+OCR engine. Evidence-aware candidate IDs are unit-specific; default caption-only IDs and
+output remain unchanged. No database-specific logic or candidate persistence is introduced.
+
+The append-only evidence contract lacks run manifests, removed-slot markers, and observation
+timestamps. Selection means latest stored version per slot, not a full capture snapshot:
+missing positions can remain stale, and returning to an already-stored fragment is not
+recorded by Stage 4 deduplication. This limitation is documented rather than changing
+persistence in Stage 5. SQLite remains the recommended canonical MVP store; choosing a
+future Sheets-first workflow is a separate decision.
 
 `storage/evidence_jsonl.py` persists evidence append-only and idempotently below
 `data/evidence/`. Artifact hash plus media position avoids identity based on signed CDN URLs;
@@ -351,15 +378,21 @@ depends on knowing.
    artifact/provenance inspection, and unchanged reruns with zero new evidence. Persian OCR
    quality remains variable; standalone images and broader media/layout coverage are not yet
    validated. The existing caption candidate semantics remain unchanged.
-6. Add website adapters and broader source coverage. **The next major source family** after
-   the media-evidence branch is reviewed and validated. Website text uses the same evidence and
-   discovery-unit layer rather than a parallel semantic system.
-7. Add deterministic normalization and validation: Jalali-to-Gregorian conversion, normalized
+6. Add conservative evidence grouping and explicit offline evidence-aware discovery
+   (**Stage 5**). Implemented with synthetic offline tests and bounded read-only inspection
+   of the existing Stage 4 evidence: Davvvat produced a caption Event and six noisy frame
+   Others; Vadoostan produced a caption Other and five independent slide Others. No blind
+   carousel concatenation or new media candidates occurred. Broader segmentation accuracy
+   remains unvalidated; owner review is required before starting the next milestone.
+7. Add website adapters and broader source coverage. **The next major source family** after
+   grouping review. Website text uses the same evidence/discovery-unit boundary; no website
+   collector is implemented in Stage 5.
+8. Add deterministic normalization and validation: Jalali-to-Gregorian conversion, normalized
    timestamps, and numeric prices.
-8. Add canonical local storage with deduplication and repeatable reruns.
-9. Export candidates to a test Google Sheet without overwriting review fields.
-10. Pilot with a small curated source set and refine from measured errors.
-11. Evaluate Telegram and recommendations only after the discovery loop works.
+9. Add canonical local storage with deduplication and repeatable reruns.
+10. Export candidates to a test Google Sheet without overwriting review fields.
+11. Pilot with a small curated source set and refine from measured errors.
+12. Evaluate Telegram and recommendations only after the discovery loop works.
 
 ## 11. Open decisions
 
