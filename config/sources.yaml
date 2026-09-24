@@ -9,6 +9,11 @@ sources:
     type: website
     url: https://davvvat.ir/
     enabled: true
+    website:
+      adapter: davvvat
+      detail_path_prefixes: [/event/]
+      content_selector: .event-detail-right
+      drop_query_params: [from]
 
   - id: davvvat_instagram
     publisher_key: davvvat
@@ -24,6 +29,10 @@ sources:
     type: website
     url: https://vadoostan.ir/app/experiences
     enabled: true
+    website:
+      adapter: vadoostan
+      detail_path_prefixes: [/app/experiences/]
+      content_selector: main
 
   - id: vadoostan_instagram
     publisher_key: vadoostan
@@ -39,6 +48,10 @@ sources:
     type: website
     url: https://jabama.events/all?city=tehran
     enabled: true
+    website:
+      adapter: jabama-events
+      detail_path_prefixes: [/events/]
+      content_selector: article
     city_hint: Tehran
 
   - id: jabama_events_instagram

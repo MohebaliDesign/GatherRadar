@@ -5,9 +5,10 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from ..domain import (
-    DiscoveryType, DiscoveryUnit, EventCandidate, EvidenceBundle, PlaceCandidate,
-    RawItem, Source, caption_discovery_units,
+    DiscoveryType, DiscoveryUnit, EventCandidate, PlaceCandidate,
+    RawItem, Source,
 )
+from ..domain.evidence import primary_discovery_units
 from .base import DiscoveryProvider, InvalidExtractionOutputError, ProviderExtractionError
 from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput
 from .signals import has_meaningful_content
@@ -95,8 +96,7 @@ class DiscoveryService:
         return self._provider.name
 
     def discover(self, raw_item: RawItem, source: Source | None = None) -> DiscoveryOutcome:
-        bundle = EvidenceBundle.from_raw_item(raw_item)
-        units = caption_discovery_units(bundle)
+        units = primary_discovery_units(raw_item)
         if not units:
             return self._outcome(raw_item, DiscoveryStatus.SKIPPED, reason=SKIP_EMPTY_TEXT)
         caption_item = replace(raw_item, raw_text=units[0].text)

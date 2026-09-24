@@ -10,7 +10,7 @@ from .collectors.instagram import DEFAULT_LIMIT, InstagramCollector
 from .collectors.instagram_auth import InstagramAuthError, create_session_from_cookie
 from .collectors.instagram_browser import authenticate_browser_profile, browser_profile_path
 from .collectors.instagram_instaloader import InstaloaderPostFetcher
-from .domain import DiscoveryType, EvidenceKind
+from .domain import DiscoveryType, EvidenceKind, SourceType
 from .extraction import DiscoveryStatus
 from .orchestration.collection_run import RunSummary, run_instagram_collection
 from .orchestration.discovery_run import DiscoveryRunSummary, run_instagram_discovery
@@ -18,6 +18,7 @@ from .orchestration.evidence_discovery_run import (
     EvidenceDiscoveryRunSummary, run_instagram_evidence_discovery,
 )
 from .orchestration.evidence_run import EvidenceRunSummary, run_instagram_evidence
+from .orchestration.website_run import run_website_collection, run_website_discovery
 from .ocr import OcrError
 from .storage.jsonl import StorageError
 
@@ -94,6 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract_kinds = extract.add_subparsers(dest="source_type", required=True)
 
+    for kinds, verb in ((collect_kinds, 'Collect'), (extract_kinds, 'Classify stored')):
+        website = kinds.add_parser('website', help=f'{verb} items for one website source.')
+        website.add_argument('source_id', help='Source id from config/sources.yaml')
+        website.add_argument('--limit', type=int, default=5,
+                             help='Maximum items (1–30); listing order for collection, storage order for extraction.')
+        website.add_argument('--config', default='config/sources.yaml')
+        website.add_argument('--data-dir', default='data')
+
     extract_instagram = extract_kinds.add_parser(
         "instagram",
         help="Classify stored Instagram items for one source.",
@@ -166,7 +175,7 @@ def format_summary(summary: RunSummary) -> str:
         "",
         f"Run id: {summary.run_id}",
         f"Source: {source.name}",
-        f"Username: @{source.username}",
+        f"Username: @{source.username}" if source.source_type is SourceType.INSTAGRAM else f"URL: {source.url}",
         "",
         f"Observed: {summary.observed}",
         f"New: {summary.new}",
@@ -465,6 +474,16 @@ def main(
     if args.limit < 1:
         print("error: --limit must be a positive integer", file=sys.stderr)
         return 2
+
+    if args.source_type == 'website':
+        try:
+            runner = run_website_discovery if args.command == 'extract' else run_website_collection
+            summary = runner(args.source_id, config_path=args.config, data_dir=args.data_dir, limit=args.limit)
+        except (CollectorError, StorageError, ValueError, OSError) as exc:
+            print(f'error: {exc}', file=sys.stderr)
+            return 1
+        print(format_evidence_discovery_summary(summary) if args.command == 'extract' else format_summary(summary))
+        return 0
 
     if args.command == 'evidence':
         if args.max_carousel_slides < 1 or args.max_reel_frames < 1:
