@@ -111,10 +111,75 @@ uses the raw item, kind, position, captured asset hash, OCR engine/configuration
 and failure state; temporary Instagram CDN URLs are provenance only and never the identity.
 
 A `DiscoveryUnit` is an explicit group of one or more fragments believed to describe one
-potential event or place. A bundle may produce zero, one, or many units. The current strategy
-creates only one unit from the original caption and passes that exact text to the existing rule
-engine. It does not concatenate OCR slides. Future segmentation may deliberately group slides
-1-3 separately from slides 5-6 without changing the evidence contract.
+potential event or place. A bundle may produce zero, one, or many units. Default discovery
+creates only one unit from the original caption and passes that exact text to the existing
+rule engine. Explicit evidence-aware discovery uses the Stage 5 policy below.
+
+`DiscoveryUnit.from_fragments(..., strategy='conservative/1')` sorts fragments by their
+domain sort key, retains their exact wording joined by a newline, and hashes an unambiguous
+JSON encoding of raw item id, strategy/version, and ordered fragment ids. Mixed raw item ids,
+duplicate fragment ids, empty groups, and empty strategy names are rejected. Changed OCR
+fragment identity or strategy version changes unit identity. `from_fragment` and the legacy
+caption route retain their existing behavior.
+
+### Semantic selection and grouping (Stage 5)
+
+`grouping.select_semantic_evidence` accepts a current RawItem and evidence in storage append
+order. It excludes other raw item ids and stored captions, rebuilding the caption directly
+from the current RawItem. Latest stored observations win by `(kind, position)`: one image
+slot, each carousel `slide_index`, and each Reel `frame_timestamp_ms`. A latest failed or
+empty observation wins too; older successes are never semantic fallback. Website text is
+accepted per source URL as a separate page-text slot, without implementing a website
+collector or pretending that the current contract identifies page sections. Selected
+fragments remain auditable, including failures; semantic eligibility belongs to grouping.
+
+Selection is read-only and means **latest known stored slots**, not a complete media run.
+The contract contains no capture-run membership, observed-at timestamp, total slide count,
+or removed-slot tombstone. Slots absent from later runs can remain stale. Image/carousel
+kind changes cannot be reconciled reliably. Stage 4 deduplicates fragment ids globally, so
+an A → B → A observation sequence stores only A and B; selection must still return B.
+Likewise, a repeated failed version may not append after a different success. A capture
+failure without an OCR fragment cannot invalidate a slot. Malformed records are isolated
+and cannot reliably identify a slot to invalidate. These limitations require a future
+acquisition/persistence decision; Stage 5 does not rewrite history or infer missing runs.
+
+`GroupingStrategy.group(EvidenceBundle)` is the source-neutral boundary.
+`ConservativeGrouping` (`conservative/1`) uses existing signal analysis on each fragment
+independently. Grouping never classifies concatenations to decide whether to merge:
+
+- A validated named event/place or independent Event/Place classification is an anchor.
+  Multiple distinct line-level named events/places or independent event lines mark a
+  fragment ambiguous for attachment. The fragment itself remains one unit; internal layout
+  segmentation is not available.
+- A new anchor normally starts a group. A supporting fragment can attach only after an
+  anchor, within the same media kind, and with no ambiguous/failed/empty intervening slot.
+  Carousel indices must be consecutive; Reel adjacency means consecutive stored samples,
+  not continuous visual evidence. Every nonblank support line must have recognized
+  structure: a nonempty leading field label, a compact date/time expression, leading
+  supported price/opening-hours wording, or leading registration wording with its URL and
+  no remaining content prose. Event/place terminology, retrospective wording, and attendance
+  prose disqualify support-only fragments. This deliberately misses some valid continuations.
+- Conflicting recognized date/time, address, venue, city, price, registration URL, or opening
+  hours wording prevents attachment. Comparisons use folded source wording, not semantic
+  normalization. Even complementary date/time wording may be split when both fragments
+  already carry temporal evidence. Conflicts are checked against every member of the group.
+- Consecutive Reel samples with identical whole text after existing script/digit/case folding
+  and whitespace collapse share a unit, keeping **all** participating fragment provenance
+  and wording. No token-overlap threshold, fuzzy matching, or cross-unit deduplication is
+  used; small word/digit changes and nonconsecutive repeated scenes may remain separate.
+- Caption stands alone with multiple media groups. With one group, caption joins only if
+  one side is an anchor and the other entirely supporting facts, with no recognized
+  conflicts/ambiguity, or all complete texts are equivalent. A single image is one group,
+  but competing anchors or unrelated generic caption text still remain separate.
+- Failed/empty fragments and text rejected by the existing meaningful-content guard never
+  supply unit text. They are not removed from storage. Unrecognized content words remain
+  separate and may classify as Other; noise is not reliably detectable. No eligible text
+  produces zero units.
+
+Adjacency plus structured support is a heuristic, not verified co-reference. Missed OCR
+names, several occurrences on one line or poster, implicit venue references, and semantic
+contradictions remain unsolved. Precision is preferred over recall, but perfect separation
+is not claimed.
 
 ### MediaArtifact
 
@@ -154,9 +219,11 @@ The service now reaches this unchanged provider through the conservative caption
 RawItem -> caption EvidenceFragment -> EvidenceBundle -> one DiscoveryUnit -> DiscoveryService
 ```
 
-The API also accepts zero or many explicit discovery units for future segmentation. Media OCR
-is persisted and inspectable in this milestone but is not automatically grouped or sent to the
-provider.
+The API also accepts zero or many explicit discovery units. `extract --evidence` reads local
+raw/evidence JSONL, selects semantic evidence, groups it, and invokes `discover_units`.
+Default `extract` remains caption-only, with unchanged output and identities. Both paths
+remain offline, deterministic, and write-free; the evidence-aware path does not run OCR or
+require Tesseract. The explicit acquisition command is separate.
 
 Classification and field extraction are separate responsibilities but one provider
 operation: `DiscoveryProvider.discover(ExtractionInput) -> DiscoveryFacts` decides
@@ -201,6 +268,22 @@ belongs to the run outcome, never to a candidate, and is never persisted.
 `orchestration.discovery_run.run_discovery` processes raw items independently and reports
 `observed`, `discovered`, `events`, `places`, `other`, `skipped`, and `failed`. Candidates are
 returned in memory and are not persisted. Normalization is a separate, later step.
+
+For explicit units, `discover_unit` hashes the current raw content hash with `unit_id`
+before deriving candidate identity. Different units therefore have different candidate
+IDs, independent of provider/model. Evidence-aware caption units also have unit-specific
+IDs; equality with legacy caption-only candidate IDs is not promised.
+
+`orchestration.evidence_discovery_run` retains each RawItem's units and aligned outcomes in
+`EvidenceItemDiscovery`; an outcome's `discovery_unit_id` links its candidate to the unit's
+exact `fragments`. Candidate domain records are unchanged. This is group-level provenance,
+not field-level fragment attribution. Candidates alone must not be detached from these
+outcomes if an audit needs contributing fragments; future persistence must retain that link.
+`EvidenceDiscoveryRunSummary.observed` counts RawItems, `unit_count` counts units, classification
+and skipped counters count unit outcomes, and `failed` includes grouping failures and unit
+failures. A zero-unit item has `no_meaningful_evidence`, not an Other outcome. Malformed input
+reports store/line only, grouping and unexpected unit exceptions report operation/type only,
+and later items/units continue. No candidate, unit, or modified evidence is persisted.
 
 ### Rule-based discovery
 

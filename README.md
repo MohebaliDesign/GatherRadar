@@ -37,9 +37,9 @@ Source -> RawItem -> evidence acquisition -> EvidenceBundle -> 0..N DiscoveryUni
 
 The original caption becomes one `CAPTION` fragment without changing `RawItem.raw_text`.
 Image OCR, ordered carousel-slide OCR, and timestamped reel-frame OCR are separate fragments
-with local artifact and OCR provenance. The current production grouping strategy deliberately
-creates only the original caption unit, so existing candidate semantics remain unchanged and
-unrelated slides are never blindly concatenated.
+with local artifact and OCR provenance. Default extraction still creates only the original
+caption unit. Explicit `extract --evidence` selects locally stored evidence and applies
+`conservative/1` grouping before discovery; unrelated slides are never blindly concatenated.
 
 The first curated registry lives in `config/sources.yaml`. The Instagram collector is the
 only live collection path so far, and it runs only when invoked explicitly. Website collectors
@@ -102,6 +102,73 @@ Failed: 0
 `Skipped` means nothing was classified — the caption was empty, or carried no content words at
 all. `Other` means the content *was* analyzed and found unrelated. The two are deliberately
 different answers.
+
+### Discovering from stored evidence (opt-in)
+
+```bash
+python -m gatherradar extract instagram davvvat_instagram --limit 5 --evidence
+```
+
+This reads local raw and evidence JSONL only. It never opens Chrome, contacts Instagram,
+runs OCR, requires Tesseract, or persists candidates. Without `--evidence`, caption-only
+behavior, output, and candidate identities remain unchanged.
+
+`conservative/1` selects the current RawItem caption and the latest **stored** media version
+per image slot, carousel slide index, or Reel frame timestamp. A latest empty or failed OCR
+version suppresses earlier text in that slot. History remains untouched.
+
+Grouping precedes classification and never tries combinations to raise an Event score:
+
+- Named events/places and independent Event/Place paths are anchors. A new anchor starts
+  a separate group. Multiple recognizable occurrences within one fragment prevent it from
+  anchoring additional text; image-layout segmentation is not implemented.
+- Adjacent supporting slides/frames may attach to an anchor only when every line has
+  recognizable supporting structure (date/time, labelled location, price, opening hours,
+  or registration with a URL), no competing topic, and no conflicting recognized facts.
+  Ambiguous text, failed/empty positions, and missing carousel indices break attachment.
+- Consecutive Reel frames with identical text after case, script/digit folding, and
+  whitespace folding share a unit. Source wording from every contributing frame stays
+  intact; changed words or digits remain separate. There is no fuzzy scene matching.
+- Caption is never copied across groups. With exactly one media group, it joins only
+  when one side is an anchor and the other consists of supporting facts without conflicts,
+  or their complete texts are equivalent. Competing anchors and generic captions stay
+  separate even with one image. Caption-only evidence remains useful.
+- Failed, empty, punctuation-only, and function-word-only fragments supply no semantic
+  text. Other unrecognized text stays separate and may classify as Other. No meaningful
+  evidence means zero units.
+
+The report shows each RawItem, unit count, shortened stable unit IDs, contributing kinds
+and positions (slides are zero-based), classifications, fields, and skip/failure reasons.
+Each unit retains the exact fragments; its ID includes the strategy version and ordered
+fragment identities. Evidence-aware candidate IDs are unit-specific, including caption
+units, and intentionally differ from the legacy caption-only candidate IDs.
+
+This is conservative heuristic grouping, not proof that fragments describe one event.
+OCR can miss names or turn unrelated wording into signals. A single poster/caption may
+already contain multiple events. Similar-looking text is not automatically deduplicated.
+The store has no full-run manifest or removal markers; absent slots and reverted, already
+deduplicated observations cannot be reconstructed reliably. See the
+[evidence contract](docs/DATA_CONTRACTS.md#semantic-selection-and-grouping-stage-5).
+
+Bounded read-only validation of existing Stage 4 samples produced seven Davvvat units
+(caption Event + six noisy frame Others) and six Vadoostan units (caption + five individual
+slide Others). No media-derived candidates or blind five-slide merge resulted. These
+samples validate separation under poor OCR, not general segmentation accuracy.
+
+A follow-up positive-grouping check inspected five stored RawItems from each of Vadoostan,
+Davvvat, Jabama Events, and Emrooz Events (20 items total). Only the carousel and Reel above
+had stored media evidence; Jabama and Emrooz had no evidence files. None of the 11 selected
+media fragments supplied a clear event/place anchor, so **no suitable real positive grouping
+example was found**. No media was recollected and no OCR was rerun.
+
+Positive grouping is instead validated with a
+[synthetic Persian poster carousel](tests/fixtures/evidence_grouping/persian_workshop_carousel.json):
+slide 0 names a pottery workshop; adjacent slide 1 supplies labelled date/time, address,
+price, and registration details without a competing anchor. The unchanged `conservative/1`
+policy produces one two-fragment Event unit. Tests check exact extracted wording, fragment
+provenance, stable rerun/unit/candidate identities, and separation when a competing anchor,
+ambiguous heading, or slide gap is introduced. This validates the capability offline;
+positive multi-fragment grouping on real captured evidence remains unvalidated.
 
 ### How the rule engine decides
 
@@ -284,9 +351,8 @@ the same artifact and OCR output records it as existing; changed pixels, OCR out
 version, or configuration remain separate auditable observations. A failed slide, frame, or OCR
 operation is reported without discarding unrelated items.
 
-`extract` remains offline and does not read or merge OCR fragments yet. This milestone captures
-inspectable evidence and establishes the grouping boundary; semantic grouping of media into
-zero or more event/place candidates is intentionally a later change.
+`extract` remains offline and caption-only by default. `extract --evidence` reads this
+already-stored OCR through conservative grouping; acquisition remains a separate command.
 
 ### Local Tesseract prerequisite
 
@@ -348,11 +414,10 @@ are the next major source family.
 
 Visual evidence acquisition is implemented behind a separate explicit command: images,
 bounded carousel slides, and bounded reel frames are stored locally, OCRed with local
-Tesseract, and persisted as source-neutral evidence. Audio transcription is not implemented,
-and OCR evidence is not yet grouped into semantic candidates. Normalization (Jalali conversion,
-numeric prices, canonical
-persistence, deduplication, and Google Sheets) is a separate, later step, and candidates remain
-transient until it exists.
+Tesseract, and persisted as source-neutral evidence. Stage 5 adds conservative grouping and
+explicit offline evidence-aware discovery. Audio transcription is not implemented.
+Normalization (Jalali conversion and numeric prices), canonical persistence, deduplication,
+and Google Sheets remain later steps. Candidates remain transient.
 
 Bounded live validation captured six frames from one Davvvat Reel and five slides from
 one Vadoostan carousel. After capture fixes, unchanged reruns appended no evidence for

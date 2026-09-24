@@ -10,10 +10,13 @@ from .collectors.instagram import DEFAULT_LIMIT, InstagramCollector
 from .collectors.instagram_auth import InstagramAuthError, create_session_from_cookie
 from .collectors.instagram_browser import authenticate_browser_profile, browser_profile_path
 from .collectors.instagram_instaloader import InstaloaderPostFetcher
-from .domain import DiscoveryType
+from .domain import DiscoveryType, EvidenceKind
 from .extraction import DiscoveryStatus
 from .orchestration.collection_run import RunSummary, run_instagram_collection
 from .orchestration.discovery_run import DiscoveryRunSummary, run_instagram_discovery
+from .orchestration.evidence_discovery_run import (
+    EvidenceDiscoveryRunSummary, run_instagram_evidence_discovery,
+)
 from .orchestration.evidence_run import EvidenceRunSummary, run_instagram_evidence
 from .ocr import OcrError
 from .storage.jsonl import StorageError
@@ -98,6 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
         "source. Nothing is collected and nothing is persisted.",
     )
     extract_instagram.add_argument("source_id", help="Source id from config/sources.yaml")
+    extract_instagram.add_argument(
+        '--evidence', action='store_true',
+        help='Group already-stored local evidence offline; no collection or OCR.',
+    )
     extract_instagram.add_argument(
         "--limit",
         type=int,
@@ -272,7 +279,8 @@ def format_discovery_summary(summary: DiscoveryRunSummary) -> str:
 
 def run_extract_instagram(args: argparse.Namespace) -> int:
     try:
-        summary = run_instagram_discovery(
+        runner = run_instagram_evidence_discovery if args.evidence else run_instagram_discovery
+        summary = runner(
             args.source_id,
             config_path=args.config,
             data_dir=args.data_dir,
@@ -285,8 +293,47 @@ def run_extract_instagram(args: argparse.Namespace) -> int:
         print(f"error: source registry not found: {exc}", file=sys.stderr)
         return 1
 
-    print(format_discovery_summary(summary))
+    print(format_evidence_discovery_summary(summary) if args.evidence else format_discovery_summary(summary))
     return 0
+
+
+def format_evidence_discovery_summary(summary: EvidenceDiscoveryRunSummary) -> str:
+    lines = [
+        'GatherRadar evidence-aware discovery run', '', f'Run id: {summary.run_id}',
+        f'Source: {summary.source.name if summary.source else "-"}',
+        f'Grouping: {summary.grouping_strategy}',
+        f'Provider: {summary.provider_name} (deterministic rules, no AI and no network access)',
+    ]
+    if not summary.items:
+        lines.extend(('', 'No stored items to analyze.'))
+    for position, item in enumerate(summary.items, 1):
+        lines.extend(('', f'[{position}] {item.raw_item_id}', f'    DiscoveryUnits: {len(item.units)}'))
+        if item.reason:
+            lines.append(f'    Result: {"Failed" if item.failed else "Skipped"} ({item.reason})')
+        if item.ignored_fragments:
+            lines.append(f'    Nonsemantic fragments ignored: {item.ignored_fragments}')
+        for number, (unit, outcome) in enumerate(zip(item.units, item.outcomes), 1):
+            labels = []
+            for fragment in unit.fragments:
+                if fragment.kind is EvidenceKind.CAROUSEL_SLIDE_OCR:
+                    labels.append(f'slide {fragment.slide_index}')
+                elif fragment.kind is EvidenceKind.REEL_FRAME_OCR:
+                    labels.append(f'frame {fragment.frame_timestamp_ms}ms')
+                else:
+                    labels.append(fragment.kind.value)
+            lines.append(f'    Unit {number} ({unit.unit_id[:17]}): {" + ".join(labels)}')
+            lines.extend('    ' + line for line in _format_outcome(number, outcome)[1:])
+    if summary.malformed:
+        lines.extend(('', 'Unreadable stored lines:', *(f'  - {reason}' for reason in summary.malformed)))
+    lines.extend((
+        '', f'Raw items: {summary.observed}', f'DiscoveryUnits: {summary.unit_count}',
+        f'Events: {summary.events}', f'Places: {summary.places}', f'Other: {summary.other}',
+        f'Skipped units: {summary.skipped}',
+        f'Items without units: {sum(not item.units and not item.failed for item in summary.items)}',
+        f'Failed: {summary.failed}', '',
+        'Nothing was persisted: candidates are transient; normalization is a separate step.',
+    ))
+    return '\n'.join(lines)
 
 
 def format_evidence_summary(summary: EvidenceRunSummary) -> str:
