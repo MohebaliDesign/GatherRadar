@@ -14,7 +14,7 @@ events can our community attend next?**
 The product replaces repeated browsing across selected websites and Instagram
 pages with a reviewable event-discovery pipeline. It collects public event
 content, preserves the source, extracts structured facts, normalizes them,
-groups likely duplicates, and publishes useful candidates to Google Sheets.
+groups likely duplicates, persists canonical state in SQLite, and exports a local review workbook.
 
 This is a small, private validation project. Optimize for trustworthy output,
 fast learning, and easy changes rather than public scale or feature breadth.
@@ -23,8 +23,10 @@ fast learning, and easy changes rather than public scale or feature breadth.
 
 ### Current MVP outcome
 
-A repeatable run produces a clean Google Sheet containing current event
-candidates that the owner can filter, verify, compare, and shortlist.
+A repeatable run produces a Persian RTL XLSX containing current Events and separate
+Place observations that the owner can filter, verify, compare, and shortlist.
+SQLite persists canonical history and supported review decisions. Default use needs
+no Google account, server, paid API, or Office installation.
 
 ### In scope
 
@@ -38,8 +40,10 @@ candidates that the owner can filter, verify, compare, and shortlist.
 - Date, time, timezone, location, category, and price normalization.
 - Duplicate detection without destructive deletion.
 - Confidence and review states for uncertain records.
-- Local persistence and Google Sheets export or synchronization.
-- Manual or scheduled local execution with understandable run summaries.
+- Local JSONL evidence audit, SQLite canonical/review history, and XLSX review snapshots.
+- Portable CSV/JSON and optional manual Gemini handoff bundles.
+- Optional Google Sheets API integration, isolated from default operation.
+- Manually triggered local execution with understandable run summaries; scheduling is deferred.
 
 ### Deferred
 
@@ -57,7 +61,7 @@ candidates that the owner can filter, verify, compare, and shortlist.
 3. The pipeline identifies event-like content and extracts candidate facts.
 4. Deterministic rules normalize and validate those facts.
 5. Exact and probable duplicates are grouped.
-6. Candidates are written to a review-friendly Google Sheet.
+6. Canonical results commit to SQLite, then export to XLSX, CSV, JSON and a Gemini bundle.
 7. The owner verifies uncertain fields and chooses what is worth sharing.
 
 Human review is a product feature in this phase, not an exception. The system
@@ -80,9 +84,11 @@ Normalization and validation
       ↓
 Deduplication
       ↓
-Canonical local repository
+Review-window filtering
       ↓
-Google Sheets review view
+SQLite canonical/review repository
+      ↓
+XLSX (default review), CSV, JSON, manual Gemini bundle; optional Google Sheets
 ```
 
 ### Architectural responsibilities
@@ -102,12 +108,14 @@ Google Sheets review view
 - **Deduplication:** Stage 8 distinguishes strong automatic matches from possible
   duplicates for review. Every pair in an automatic group must match; normalized
   occurrence evidence and source/publisher context support explainable decisions.
-- **Canonical repository:** A local SQLite database is the recommended MVP
-  source of truth. It supports idempotent reruns and history without operating a
-  server.
-- **Google Sheets:** The intended daily review and management surface. Raw evidence
-  stays local; Stage 9 will choose Sheets-first versus SQLite-backed canonical
-  persistence. Neither is implemented by Stage 8.
+- **Canonical persistence:** standard-library SQLite behind `CanonicalRepository`.
+  Runs, current Event identity, immutable fact snapshots, and human review are separate.
+  Raw captions/OCR remain in JSONL, never duplicated into the database.
+- **XLSX:** default Persian RTL review workspace. Only supported decisions/notes import;
+  arbitrary fact edits stay visual and never feed extraction or matching.
+- **CSV/JSON:** portable tabular/structured exports generated from persisted runs.
+- **Gemini bundle:** optional manual one-way publishing, no API/auth inside GatherRadar.
+- **Google Sheets:** optional authenticated adapter; live validation is pending.
 
 Keep the pipeline modular. A change to one website, extraction provider, or
 output destination should not require rewriting the rest of the system.
@@ -145,7 +153,8 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 | --- | --- |
 | `event_id` | Stable internal event identifier |
 | `title` | Best source-supported event title |
-| `summary` | Short factual summary grounded in the source |
+| `summary` | Reserved for a future dedicated summary contract; not generated, normally empty |
+| `description_text` | The source's own description text, never rewritten or summarized |
 | `category` / `tags` | Controlled category plus optional discovery tags |
 | `source_date_text` | Original date wording for audit and review |
 | `starts_at` / `ends_at` | Timezone-aware normalized timestamps when known |
@@ -153,6 +162,10 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 | `date_precision` | `exact`, `day`, `range`, `inferred` (single date with inferred year), or `unknown` |
 | `timezone` | IANA timezone used for interpretation |
 | `venue_name` / `address` / `city` | Structured location fields when known |
+| `area_text` | Approximate neighborhood/locality as written; never a venue, address or geocode |
+| `source_schedule_text` | Exact multi-session/recurring schedule wording; never expanded into occurrences |
+| `duration_text` / `organizer_name` | Explicitly stated length and labelled organizer/host |
+| `availability_text` | Explicit availability wording; sold-out wording sets status `sold_out` |
 | `event_format` | `in_person`, `online`, `hybrid`, or `unknown` |
 | `price_text` | Source wording for price; never discard it after normalization |
 | `price_amount` / `currency` | Parsed price fields when unambiguous |
@@ -168,21 +181,22 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 Unknown fields remain null or explicitly unknown. Never infer a venue, price,
 date, or registration detail merely to make a row look complete.
 
-### Google Sheets view
+### Local review view
 
-Use one row per canonical candidate. The initial ordered columns are:
+Each run creates a Persian RTL Event snapshot and an optional separate Place snapshot.
+Decision/title/date/schedule/location (venue, area, city, address)/price/availability/
+description/organizer/action links come first; IDs, ISO values and provenance are hidden. Jalali dates/weekdays are computed from normalized values.
+Permanent local sheets: `راهنما`, `تاریخچه اجراها`, `بررسی تکراری‌ها`, hidden `_meta`.
+Workbook schema 3 (schema-2 workbooks upgrade in place) opens on the newest Event snapshot, freezes only row 1, and uses
+centralized compact styles: Vazir for Persian/mixed text, Poppins for English/technical
+content. Fonts are referenced, not bundled; clients choose a fallback if absent.
+Schema-1 prerelease workbooks are refused intact; export to a separate recovery path.
 
-```text
-review_status, event_id, title, category, start_date, start_time, end_date,
-end_time, timezone, venue_name, city, event_format, price_text,
-registration_deadline, registration_url, source_name, source_type,
-canonical_source_url, summary, tags, extraction_confidence, first_seen_at,
-last_seen_at, reviewer_notes
-```
-
-Do not place full raw payloads or credentials in the sheet. Sync by `event_id`
-so reruns update existing rows instead of appending endless copies. Preserve
-human-owned review fields during automated updates.
+SQLite is the completion authority. Event decisions and notes carry only by stable
+Event ID; duplicate pair review persists without changing matching. Place review is
+run/candidate-scoped, with no Place deduplication. Historical workbook snapshots are
+not rewritten. Invalid/conflicting review rows are reported; no arbitrary source-fact
+correction is imported. See [local workflow](docs/LOCAL_REVIEW.md).
 
 ## 6. Data and language rules
 
@@ -244,8 +258,10 @@ src/gatherradar/
   extraction/       # discovery: classification, rule engine, and field extraction
   normalization/    # dates, text, locations, categories, and prices
   deduplication/    # exact and fuzzy grouping
-  storage/          # raw/evidence JSONL and media now; SQLite repositories later
-  exports/          # Google Sheets integration
+  storage/          # JSONL/media audit and SQLite canonical/review state
+  review/           # shared contracts, serialization and owner workflow
+  exports/          # local XLSX, CSV/JSON and manual Gemini bundle
+  sheets/           # optional Desktop OAuth/API adapter
   orchestration/    # run coordination and summaries
 tests/
   fixtures/         # sanitized, stable source samples
@@ -330,8 +346,8 @@ The append-only evidence contract lacks run manifests, removed-slot markers, and
 timestamps. Selection means latest stored version per slot, not a full capture snapshot:
 missing positions can remain stale, and returning to an already-stored fragment is not
 recorded by Stage 4 deduplication. This limitation is documented rather than changing
-persistence in Stage 5. SQLite remains the recommended canonical MVP store; choosing a
-future Sheets-first workflow is a separate decision.
+persistence in Stage 5. Stage 9 persists local canonical/review state; the stored-media
+slot-selection limitation remains explicit and is not a full capture snapshot.
 
 `storage/evidence_jsonl.py` persists evidence append-only and idempotently below
 `data/evidence/`. Artifact hash plus media position avoids identity based on signed CDN URLs;
@@ -363,13 +379,24 @@ collection/orchestration never switches on source IDs. No new dependency or auth
 website browser was needed. Adding an ordinary supported site requires configuration and
 validation; unusual layouts need an adapter plus registration/fixtures, not semantic changes.
 
+The listing page also supplies each item's own card (only its anchor's text) as a
+current-run `website_listing` evidence fragment, and adapters record verified structural
+facts (price/status badges, header slots, labelled sections) with `detail`/`listing`
+provenance. Structural values outrank prose readings; explicit card/detail disagreement
+leaves the field null with a `source_field_conflict` diagnostic. See
+`docs/SOURCE_FIELD_COVERAGE.md`. Jabama Experiences (`/all?city=tehran&type=experiences`,
+static) is a separate source sharing the Jabama adapter; the same detail page listed by
+both Jabama sources groups as one Event. Davvvat's robots.txt disallows GatherRadar, so
+`davvvat_website` stays defined but disabled by default and is never bypassed.
+
 One detail page becomes one `webpage` RawItem, stored append-only under
 `data/raw/website/<source_id>.jsonl`. IDs combine source ID with a native path ID (current
 specialized adapters, query-free URLs) or canonical URL hash (generic/query-dependent URLs).
 Known tracking keys can be removed, but meaningful query parameters remain. Publication time
 stays null. HTML text preserves relevant source wording without injected labels/URLs;
 metadata retains adapter version, source title, URLs/links, native ID, and transport.
-Metadata-only edits still do not append under the existing raw content-hash contract.
+The item's own listing card and verified structural fields join the content hash (a newly
+sold-out card appends a revision); other metadata-only edits still do not append.
 
 `collect website <source_id> --limit N` checks robots and every redirect, isolates failed
 details, and takes first valid listing-order items, up to 30 and `min(3*N,30)` attempts.
@@ -412,14 +439,19 @@ false positives. Yearless day/month inference accepts one adjacent-year candidat
 Jalali year and span <=90 days. Money uses Decimal and distinct TOMAN/IRR stated units.
 Free is zero with unspecified currency. Source wording is never replaced with parsing text.
 
+Explicit Persian day ordinals through 31 and attached/separate `ماه` month suffixes
+are supported in single dates and clear ranges. Discrete sessions stay unresolved;
+date ranges with daily hours retain date/time components and `multi_day_hours`, with
+no continuous `starts_at`/`ends_at` interval. Existing reference/year bounds still apply.
+
 `extract ... --normalize` appends an offline, write-free review of the exact discovery
 snapshot. Recurrences, discrete sessions, broad weeks/weekends, overnight ambiguity, and
 multi-tier prices are deliberately not forced into a single occurrence/price. Multi-day
 hours never become a continuous timestamp interval. See `docs/DATA_CONTRACTS.md` for the
 complete rules and `docs/STAGE7_VALIDATION.md` for actual bounded local validation.
 
-Normalization is independent of persistence. SQLite remains a recommendation, but the owner
-will evaluate a Sheets-first workflow next; Stage 7 neither selects nor implements it.
+Normalization is independent of persistence. Stage 9 selects local SQLite review
+persistence; Stage 7 itself remains pure and write-free.
 
 Stage 8 adds source-neutral `deduplication/` after normalization: deterministic pair
 decisions, all-member automatic groups, separate possible-duplicate suggestions and
@@ -433,7 +465,8 @@ Canonical IDs anchor to the earliest captured RawItem in local history, with sta
 evidence slots for multiple events in one media item. They do not hash candidate membership;
 adding later support or editing content normally preserves identity. Duplicate-group IDs
 describe current composition. Earlier imported history, regrouping, splits/merges and
-media-slot changes can still alter identity until Stage 9 persists mappings.
+media-slot changes can still alter identity. Stage 9 records authoritative anchors in
+`event_identity_map`; it does not guess aliases or automatically resolve splits/merges.
 
 `canonicalize --source ...` (repeatable) or `--all-enabled` runs local discovery,
 normalization and canonicalization without acquisition or writes. Instagram media is
@@ -482,20 +515,33 @@ depends on knowing.
    unresolved cases remain explicit, with no candidate persistence.
 9. Add conservative event canonicalization and deduplication (**Stage 8**). Implemented
    in memory with offline multi-source review; no destructive deletion or persistence.
-10. Choose canonical persistence and synchronize a test Google Sheet (**Stage 9**),
-    preserving reviewer-owned fields and stable identity mappings. Not started.
+10. Local SQLite persistence, XLSX review, CSV/JSON and manual Gemini export (**Stage 9**):
+    implemented with fresh bounded Website/Instagram and offline/local validation.
+    The owner has accepted the architecture and workbook UX; the latest accuracy
+    pass corrects corroborated venues, ordinal dates and attendance-format evidence,
+    and the source-completeness pass preserves listing-card facts, area, description,
+    duration, organizer, availability and schedule wording, and adds Jabama Experiences.
+    Google API publishing remains optional.
+    See `docs/STAGE9_VALIDATION.md` for actual evidence and limitations.
 11. Pilot with a small curated source set and refine from measured errors.
 12. Evaluate Telegram and recommendations only after the discovery loop works.
 
 ## 11. Open decisions
 
 - Initial source list and source priority.
-- Google authentication and ownership model for the review sheet.
-- Sheets-first versus SQLite-backed candidate persistence after normalization review.
+- **Resolved:** optional personal-owner Desktop OAuth, Sheets-only scope; no service account or sharing automation.
+- **Resolved:** local SQLite canonical/review state, default XLSX, portable CSV/JSON,
+  optional manual Gemini bundle and optional Sheets API. JSONL remains the audit trail.
 - Raw capture retention period.
 - Category taxonomy and Persian/English display conventions. The rule engine ships a small
-  provisional vocabulary in `rules.py`; the final taxonomy is still open.
-- Scheduling mechanism for local runs.
+  provisional vocabulary in `rules.py`; the final taxonomy is still open. Source genre chips
+  (e.g. Vadoostan `بازی`/`ورزش`/`موسیقی`) have no taxonomy entry yet; they are kept verbatim as `source_category_text` and displayed.
+- Whether to extract embedded booking-session data (Jabama script payload) and expand
+  occurrences; both are outside the current contract. Structured session extraction is a
+  future capability; the release gate keeps only visible source schedule wording.
+- **Resolved:** `davvvat_website` is disabled by default because its robots.txt disallows
+  GatherRadar (re-checked 2026-09-27); its definition and adapter are kept.
+- Scheduling is deferred; Stage 9 is manually triggered only.
 - Whether anything beyond the rule engine is ever needed. **Resolved for now:** discovery is
   deterministic and free, and no paid AI or API key is part of the core MVP. `DiscoveryProvider`
   stays provider-neutral so that decision remains reversible, and measured rule-engine error
@@ -503,3 +549,53 @@ depends on knowing.
 
 Resolve these through small end-to-end experiments. Update this document when a
 decision changes the product boundary, data contract, or architecture.
+
+## 12. Stage 9 manual application service
+
+`RefreshService.run` imports supported local workbook edits before acquisition,
+observes exact current RawItems (including unchanged items), optionally acquires
+Instagram evidence, then reuses discovery, normalization and Stage 8 canonicalization.
+Failed sources remain visible while successful sources continue. `refresh --stored`
+analyzes existing observations offline. `export --run latest` reads SQLite only.
+`refresh` defaults to media acquisition; `--skip-instagram-evidence` is caption-only.
+
+The default review horizon is 14 days (1–90), inclusive from run start in the explicit
+review timezone (default Asia/Tehran). Ranges overlap; undated/unknown-precision Events
+remain visible after dated ones. Inferred dates keep diagnostics. No event timezone
+is overwritten. Out-of-window canonical Events remain in SQLite history.
+
+Persistence precedes export. SQLite version 1 uses foreign keys, explicit atomic
+transactions, WAL, FULL synchronous writes and a five-second busy timeout. Newer or
+unrecognized databases fail safely. Keep the DB local with one writer; no multi-user
+or synced-folder database model is provided. The exporter interfaces and repository
+protocol leave future integration seams without implementing future platforms.
+
+XLSX uses openpyxl and temporary-save/readback/atomic-replace. Locked/corrupt workbooks
+are preserved. CSV is UTF-8 BOM with formula escaping; JSON preserves exact structured
+values. Automatic local Gemini bundles reuse both serializers and add deterministic
+manifest/instructions. They contain no raw dumps, auth state or local absolute paths.
+There is no Gemini upload, API, fact inference or automatic round-trip.
+
+Runtime defaults are below ignored `data/`: `state/gatherradar.sqlite3`,
+`review/GatherRadar.xlsx`, `exports/`, and lightweight `runs/` manifests.
+See [data contracts](docs/DATA_CONTRACTS.md), [local review](docs/LOCAL_REVIEW.md),
+[manual Gemini](docs/GEMINI_HANDOFF.md), and [actual validation](docs/STAGE9_VALIDATION.md).
+
+Stage 9 supported-field hardening admits only an adapter-verified retained website
+heading as optional `ExtractionInput.source_title`, after validating it against the
+observation text. It names already-classified Events without changing classification.
+Heading context participates in website observation hashing. Older captures without
+that marker require fresh acquisition; arbitrary first-line titles remain prohibited.
+Standalone address/venue section labels and the Persian recurring-weekday connector
+preserve source wording. Unresolved recurrence/date interpretation remains explicit.
+Event summaries remain null: there is no deterministic Event summary contract yet.
+
+Unlabelled locations and metadata-only links/structured data remain outside semantic
+extraction; source URLs and raw evidence remain available for owner verification.
+
+The release gate adds two narrow, source-neutral discovery rules. An adapter-verified
+source category label (`source_category_text`) outranks free-text category inference;
+`category` is only its supported mapping, else null. A structured-occurrence path lets an
+item without generic Event vocabulary be an Event only when its own detail page has one
+verified date slot with a clock time plus price/registration/attendance evidence; listing
+context alone never qualifies and generic thresholds are unchanged.

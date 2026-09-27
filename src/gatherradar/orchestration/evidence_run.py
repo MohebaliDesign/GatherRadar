@@ -11,7 +11,7 @@ from ..collectors.instagram_evidence import (
     InstagramMediaEvidenceAcquirer, MediaCaptureResult,
 )
 from ..domain import (
-    EvidenceFragment, EvidenceKind, MediaArtifact, MediaKind, Source, SourceType,
+    EvidenceFragment, EvidenceKind, MediaArtifact, MediaKind, RawItem, Source, SourceType,
     caption_fragment,
 )
 from ..ocr import OcrProvider, OcrResult, OcrStatus, TesseractOcrProvider
@@ -64,6 +64,7 @@ def run_instagram_evidence(
     max_carousel_slides: int = DEFAULT_MAX_CAROUSEL_SLIDES,
     max_reel_frames: int = DEFAULT_MAX_REEL_FRAMES,
     acquirer: object | None = None, ocr_provider: OcrProvider | None = None,
+    observed_items: tuple[RawItem, ...] | None = None,
 ) -> EvidenceRunSummary:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError('limit must be a positive integer')
@@ -76,7 +77,10 @@ def run_instagram_evidence(
         raise SourceDisabledError(f'source {source.id} is disabled in the registry')
     raw_store = JsonlRawItemStore(instagram_output_path(source, data_dir))
     raw_read = raw_store.read_latest_items()
-    items = select_latest(raw_read.items, limit)
+    items = select_latest(raw_read.items, limit) if observed_items is None else observed_items
+    if (len(items) > limit or len({i.id for i in items}) != len(items)
+            or any(i.source_id != source.id or i.source_type is not SourceType.INSTAGRAM for i in items)):
+        raise ValueError('invalid evidence run membership')
     provider = ocr_provider or TesseractOcrProvider()
     if items:
         provider.validate()
@@ -96,7 +100,22 @@ def run_instagram_evidence(
     fragments = [caption_fragment(item) for item in items]
     succeeded = empty = failed = 0
     failures = [failure.reason for failure in capture.failures]
+    evidence_store = JsonlEvidenceStore(instagram_evidence_output_path(source, data_dir))
+    prior_read = evidence_store.read()
     for artifact in capture.artifacts:
+        cached = next((f for f in reversed(prior_read.fragments)
+            if f.raw_item_id == artifact.raw_item_id and f.asset_hash == artifact.asset_hash
+            and f.kind == _evidence_kind(artifact.kind) and f.slide_index == artifact.slide_index
+            and f.frame_timestamp_ms == artifact.frame_timestamp_ms
+            and f.extraction_engine == getattr(provider, 'name', None)
+            and f.extraction_version == getattr(provider, 'version', None)
+            and f.extraction_config == getattr(provider, 'config', None)
+            and getattr(provider, 'version', None) is not None and not f.failure_reason), None)
+        if cached is not None:
+            fragments.append(cached)
+            succeeded += bool(cached.text)
+            empty += not bool(cached.text)
+            continue
         try:
             result = provider.recognize(artifact.local_path)
         except Exception as exc:
@@ -115,8 +134,6 @@ def run_instagram_evidence(
             failures.append(result.failure_reason or 'OCR failed')
         fragments.append(fragment_from_ocr(artifact, result))
 
-    evidence_store = JsonlEvidenceStore(instagram_evidence_output_path(source, data_dir))
-    prior_read = evidence_store.read()
     stored = evidence_store.append_new(fragments)
     return EvidenceRunSummary(
         run_id=uuid.uuid4().hex[:12], source=source, raw_items=len(items),

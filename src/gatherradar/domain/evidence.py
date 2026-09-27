@@ -16,6 +16,8 @@ class EvidenceKind(StrEnum):
     CAROUSEL_SLIDE_OCR = 'carousel_slide_ocr'
     REEL_FRAME_OCR = 'reel_frame_ocr'
     WEBSITE_TEXT = 'website_text'
+    # The item's own card on the approved listing page, from the same observation.
+    WEBSITE_LISTING = 'website_listing'
 
 
 def _digest(*parts: object) -> str:
@@ -111,6 +113,25 @@ def primary_fragment(raw_item: RawItem) -> EvidenceFragment:
     )
 
 
+def website_listing_fragment(raw_item: RawItem) -> EvidenceFragment | None:
+    '''This observation's own listing-card text, never a historical listing.'''
+    if raw_item.source_type is not SourceType.WEBSITE:
+        return None
+    text = raw_item.raw_metadata.get('listing_card_text')
+    if not isinstance(text, str) or not text.strip():
+        return None
+    list_url = raw_item.raw_metadata.get('list_url')
+    return EvidenceFragment.create(
+        raw_item_id=raw_item.id, kind=EvidenceKind.WEBSITE_LISTING, text=text, raw_text=text,
+        source_url=list_url if isinstance(list_url, str) else None, asset_hash=raw_item.content_hash,
+    )
+
+
+def primary_fragments(raw_item: RawItem) -> tuple[EvidenceFragment, ...]:
+    listing = website_listing_fragment(raw_item)
+    return (primary_fragment(raw_item),) + ((listing,) if listing is not None else ())
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceBundle:
     raw_item_id: str
@@ -128,7 +149,7 @@ class EvidenceBundle:
     def from_raw_item(
         cls, raw_item: RawItem, extra_fragments: tuple[EvidenceFragment, ...] = ()
     ) -> EvidenceBundle:
-        return cls(raw_item.id, (primary_fragment(raw_item), *extra_fragments))
+        return cls(raw_item.id, (*primary_fragments(raw_item), *extra_fragments))
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,5 +214,6 @@ def primary_discovery_units(raw_item: RawItem) -> tuple[DiscoveryUnit, ...]:
 
 __all__ = [
     'DiscoveryUnit', 'EvidenceBundle', 'EvidenceFragment', 'EvidenceKind',
-    'caption_discovery_units', 'caption_fragment', 'primary_fragment', 'primary_discovery_units',
+    'caption_discovery_units', 'caption_fragment', 'primary_fragment', 'primary_fragments',
+    'primary_discovery_units', 'website_listing_fragment',
 ]

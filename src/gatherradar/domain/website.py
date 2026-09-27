@@ -3,6 +3,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Facts an adapter may read from explicit page structure (a labelled section,
+# a fixed header slot, a caption label). Values are exact retained source text.
+STRUCTURED_FIELDS = frozenset({
+    'description_text', 'area_text', 'duration_text', 'organizer_name', 'availability_text',
+    'price_text', 'source_date_text', 'source_category_text',
+})
+# Where a structured value was observed: the item's own detail page, or its own
+# listing card on the approved listing page.
+FIELD_ORIGINS = ('detail', 'listing')
+MAX_CARD_TEXT = 1500
+
 
 @dataclass(frozen=True, slots=True)
 class WebsiteConfig:

@@ -27,6 +27,7 @@ def run_website_collection(
         uuid.uuid4().hex[:12], source, result.observed, stored.new, stored.changed,
         stored.already_existing, len(result.failures), stored.path,
         tuple(failure.reason for failure in result.failures),
+        observed_items=result.items,
     )
 
 

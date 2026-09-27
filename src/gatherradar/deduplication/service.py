@@ -16,7 +16,7 @@ from ..domain.temporal import DatePrecision
 from .keys import stable_id
 from .matcher import match_pair
 from .models import CandidateContext, CanonicalizationResult, DuplicateDecision, DuplicateGroup, MatchKind
-from .resolution import resolve_group, TEMPORAL_FIELDS, TEXT_FIELDS
+from .resolution import resolve_group, CONTEXT_FIELDS, TEMPORAL_FIELDS, TEXT_FIELDS
 
 
 def validate_context(context: CandidateContext) -> None:
@@ -42,10 +42,12 @@ def validate_context(context: CandidateContext) -> None:
                 or any(char.isspace() for char in value)):
             raise ValueError("invalid evidence URL")
         url.port
-    for field in TEXT_FIELDS:
+    for field in (*TEXT_FIELDS, *CONTEXT_FIELDS):
         value = getattr(c, field)
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise ValueError("invalid text")
+    if not isinstance(c.field_conflicts, tuple) or any(f not in TEXT_FIELDS for f in c.field_conflicts):
+        raise ValueError("invalid field conflicts")
     for field in ("start_date", "end_date"):
         value = getattr(c, field)
         if value is not None and type(value) is not date:

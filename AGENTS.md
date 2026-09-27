@@ -14,7 +14,7 @@ instruction source and avoids duplicated rules.
 - Build the smallest trustworthy event-discovery pipeline for the owner and a
   private community of roughly 20–40 people.
 - Keep the current milestone focused on curated public sources through a
-  reviewable Google Sheets output.
+  reviewable local XLSX output with portable exports; Google publishing is optional.
 - Do not introduce a dashboard, Telegram automation, recommendations, accounts,
   payments, multi-tenancy, or public-scale infrastructure unless the task
   explicitly changes the milestone.
@@ -38,8 +38,9 @@ instruction source and avoids duplicated rules.
   canonical storage → exports.
 - Keep source-specific selectors and parsing inside their adapter.
 - Keep domain records independent of scraping, AI, database, and Google clients.
-- Treat local SQLite storage as the recommended MVP source of truth and Google
-  Sheets as a review surface.
+- Use local SQLite canonical/review persistence behind a repository boundary.
+  JSONL remains the source/evidence audit trail; XLSX is the default human review UI.
+  CSV/JSON and manual Gemini bundles are exports; Google Sheets is optional.
 - Make runs idempotent. Use stable IDs, source URLs/IDs, content hashes, and
   upserts so a rerun does not create duplicate rows.
 - Preserve raw observations separately from canonical event candidates.

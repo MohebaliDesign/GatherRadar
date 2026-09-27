@@ -224,3 +224,16 @@ data/
 session-*
 *.session
 .instaloader-session*
+
+# Google Desktop OAuth; runtime workbook state is under data/
+credentials.json
+token.json
+client_secret*.json
+
+# Local review and portable exports, including custom paths
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.lock
+*.xlsx
+/exports/
+/review/

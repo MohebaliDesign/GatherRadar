@@ -106,6 +106,7 @@ class ConservativeGrouping:
 
     def group(self, bundle: EvidenceBundle) -> tuple[DiscoveryUnit, ...]:
         caption: _Profile | None = None
+        listing: list[_Profile] = []
         groups: list[list[_Profile]] = []
         current: list[_Profile] | None = None
         previous: EvidenceFragment | None = None
@@ -117,6 +118,9 @@ class ConservativeGrouping:
             profile = _profile(fragment)
             if fragment.kind is EvidenceKind.CAPTION:
                 caption = profile
+                continue
+            if fragment.kind is EvidenceKind.WEBSITE_LISTING:
+                listing.append(profile)
                 continue
             adjacent = previous is not None and _adjacent(previous, fragment)
             repeated = (
@@ -140,6 +144,14 @@ class ConservativeGrouping:
                 groups[0].insert(0, caption)
             else:
                 groups.insert(0, [caption])
+        # A listing card was selected by the exact detail link, so it describes
+        # the same item as that page. It joins the page unit; field-level
+        # disagreement is detected by discovery, never resolved here.
+        pages = [group for group in groups if any(p.fragment.kind is EvidenceKind.WEBSITE_TEXT for p in group)]
+        if listing and len(pages) == 1:
+            pages[0].extend(listing)
+        elif listing:
+            groups.append(listing)
         return tuple(
             DiscoveryUnit.from_fragments(
                 tuple(profile.fragment for profile in group), strategy=self.name

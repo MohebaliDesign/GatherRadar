@@ -30,7 +30,7 @@ _AMOUNT_WITH_CURRENCY = re.compile(
     r"(?:تومان|تومن|ریال|دلار|usd|eur|gbp|dollars?))\b"
 )
 _ANY_AMOUNT = re.compile(r"(?<!\w)\d[\d\s,٬،.]*(?!\w)")
-_TEMPORAL_CONNECTORS = frozenset({"و", "تا", "الی", "از", "ماه", "and", "to", "at"})
+_TEMPORAL_CONNECTORS = frozenset({"و", "تا", "الی", "از", "ماه", "ها", "and", "to", "at"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,9 +287,41 @@ def _ambiguous_venue_address_span(found: SignalSet) -> tuple[int, int] | None:
 
 def venue_name(found: SignalSet) -> str | None:
     """An explicit venue value, unless an ambiguous Persian label holds an address."""
-    if _ambiguous_venue_address_span(found) is not None:
+    if _ambiguous_venue_address_span(found) is None:
+        labelled = _labelled_value(found, "venue")
+        # "محل برگزاری: تهران" names a city, which `city` already reports.
+        if labelled and " ".join(normalize(labelled).split()) not in CITY_TOKENS:
+            return labelled
+    return _corroborated_venue(found)
+
+
+def _corroborated_venue(found: SignalSet) -> str | None:
+    """A separately written name + explicit event-at-name + labelled address.
+
+    A name appearing only as an organizer, in prose, or at the end of an address
+    cannot establish a venue. All three independent textual roles must agree.
+    This uses retained text, not source IDs, HTML selectors or fabricated labels.
+    """
+    street_address = address(found)
+    if not street_address or not has_address_detail(street_address):
         return None
-    return _labelled_value(found, "venue")
+    candidates = set()
+    for line in found.text.splitlines():
+        name = line.strip(_TRIM)
+        if (not name or len(name) > 80 or len(name.split()) > 6 or has_address_detail(name)
+                or any(c.isdigit() or c in ':：،,.!?؟' for c in name)):
+            continue
+        folded = re.escape(normalize(name))
+        if not re.search(r'(?<!\w)' + folded + r'(?!\w)', normalize(street_address)):
+            continue
+        # Limited occurrence wording, at most four intervening name words, and
+        # a clause boundary immediately after the complete name. Not arbitrary prose.
+        pattern = (r'(?<!\w)(?:برنامه|رویداد|کارگاه|اکران|event|workshop|screening)'
+                   r'(?:\s+[^\W\d_]+){0,4}\s+(?:در|at)\s+' + folded + r'(?=\s*[,،.;؛\n]|\s*$)')
+        matches = re.finditer(pattern, found.normalized)
+        if any(not re.search(r'قبلی|گذشته|پیشین|previous|last', match[0]) for match in matches):
+            candidates.add(name)
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def address(found: SignalSet) -> str | None:
@@ -326,16 +358,39 @@ def event_format(found: SignalSet) -> str | None:
 
     An address is never taken as proof that an event is in person.
     """
-    normalized = found.normalized
-    has_online = any(normalize(term) in normalized for term in rules.ONLINE_TERMS)
-    has_in_person = any(normalize(term) in normalized for term in rules.IN_PERSON_TERMS)
-    if any(normalize(term) in normalized for term in rules.HYBRID_TERMS) or (has_online and has_in_person):
+    has_online = has_in_person = False
+    for clause in re.split(r'[\n.!?؟؛;]', found.normalized):
+        clause = clause.strip()
+        # Historical or negated participation does not establish current format.
+        if re.search(r'(?<!\w)(?:قبلا|قبلی|گذشته|پیشین|نیست|نبود|نخواهد|نمی|not|previous|previously|last)(?!\w)', clause):
+            continue
+        if _direct_format(clause, rules.HYBRID_TERMS):
+            return 'hybrid'
+        has_online |= _direct_format(clause, rules.ONLINE_TERMS)
+        has_in_person |= _direct_format(clause, rules.IN_PERSON_TERMS)
+    if has_online and has_in_person:
         return "hybrid"
     if has_online:
         return "online"
     if has_in_person:
         return "in_person"
     return None
+
+
+def _direct_format(clause: str, terms: tuple[str, ...]) -> bool:
+    mode = '(?:' + '|'.join(re.escape(normalize(term)) for term in terms) + ')'
+    if re.fullmatch(r'(?:(?:نحوه برگزاری|نوع برگزاری|فرمت|format)\s*[:：]\s*)?' + mode, clause):
+        return True
+    if re.fullmatch(r'(?:به صورت|به شکل)\s+' + mode, clause):
+        return True
+    attendance = r'(?:برگزاری|رویداد|کارگاه|وبینار|کلاس|جلسه|شرکت|حضور|event|workshop|webinar|class|participation)'
+    patterns = (
+        r'(?<!\w)' + attendance + r'\s+(?:(?:به صورت|به شکل)\s+)?' + mode + r'(?!\w)',
+        r'(?<!\w)' + mode + r'\s+' + attendance + r'(?!\w)',
+        r'(?<!\w)(?:attend|join|held)\s+' + mode + r'(?!\w)',
+        r'(?<!\w)(?:به صورت|به شکل)\s+' + mode + r'\s+برگزار(?!\w)',
+    )
+    return any(re.search(pattern, clause) for pattern in patterns)
 
 
 def price_text(found: SignalSet) -> str | None:
@@ -376,6 +431,96 @@ def registration_url(found: SignalSet) -> str | None:
     return min(candidates)[2] if candidates else None
 
 
+def _short_labelled(found: SignalSet, name: str, limit: int) -> str | None:
+    value = _labelled_value(found, name)
+    return value if value and len(value) <= limit else None
+
+
+def area_text(found: SignalSet) -> str | None:
+    """An explicitly labelled neighborhood/locality, kept as written; never geocoded."""
+    return _short_labelled(found, "area", 120)
+
+
+def duration_text(found: SignalSet) -> str | None:
+    """An explicitly labelled length ("مدت: ۳ ساعت"); clocks never imply one."""
+    return _short_labelled(found, "duration", 60)
+
+
+def organizer_name(found: SignalSet) -> str | None:
+    """Only a value behind an explicit organizer label; never an arbitrary name."""
+    return _short_labelled(found, "organizer", 120)
+
+
+def availability_text(found: SignalSet) -> str | None:
+    """Explicit capacity/availability wording: a labelled value or a whole status line."""
+    labelled = _short_labelled(found, "capacity", 80)
+    if labelled:
+        return labelled
+    phrases = {" ".join(normalize(p).split()) for p in rules.AVAILABILITY_PHRASES}
+    for line in found.text.splitlines():
+        value = line.strip(_TRIM)
+        if value and " ".join(normalize(value).split()) in phrases:
+            return value
+    return None
+
+
+def is_sold_out(value: str | None) -> bool:
+    folded = " ".join(normalize(value or "").split()).strip(_TRIM)
+    return folded in {" ".join(normalize(p).split()) for p in rules.SOLD_OUT_PHRASES}
+
+
+_WEEKDAY = "|".join(sorted((re.escape(normalize(d)) for d in rules.PERSIAN_WEEKDAYS), key=len, reverse=True))
+_MONTH = "|".join(sorted((re.escape(normalize(m)) for m in rules.JALALI_MONTHS + rules.GREGORIAN_MONTHS),
+                         key=len, reverse=True))
+_PLURAL_WEEKDAY = re.compile(r"(?<!\w)(?:" + _WEEKDAY + r")\s?ها(?!\w)")
+_WEEKDAY_TOKEN = re.compile(r"(?<!\w)(?:" + _WEEKDAY + r")(?!\w)")
+_SESSIONS = re.compile(r"(?<!\w)(?:[2-9]|[1-9]\d+|" + "|".join(rules.SESSION_COUNT_WORDS) + r")\s*جلسه(?!\w)")
+_DAY_LIST = re.compile(r"(?<!\d)\d{1,2}(?:\s*[،,]\s*\d{1,2})+(?:\s*و\s*\d{1,2})?\s*(?:" + _MONTH + r")(?!\w)")
+_RECURRENCE = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(normalize(t)) for t in rules.RECURRENCE_TERMS) + r")(?!\w)")
+_SENTENCE = re.compile(r"[^\n.!?؟؛;]+")
+_ONLY_WEEKDAYS = re.compile(r"(?:\s|[،,\-–]|و|(?:" + _WEEKDAY + r")(?:\s?ها)?)+")
+
+
+def source_schedule_text(found: SignalSet, exclude: str | None = None) -> str | None:
+    """Exact multi-session/recurring schedule sentences; no occurrences are generated.
+
+    A sentence qualifies with explicit schedule wording — a plural weekday
+    ("یکشنبه‌ها"), several weekdays, a session count, recurrence vocabulary, or a
+    day list before a month ("5،12،19 و 26 مهر") — together with temporal
+    evidence. A single ordinary date stays in `source_date_text` only.
+    """
+    kept: dict[str, str] = {}
+    for match in _SENTENCE.finditer(found.text):
+        span = _trimmed_span(found.text, match.start(), match.end())
+        if span is None:
+            continue
+        start, end = span
+        value, folded = found.text[start:end], found.normalized[start:end]
+        if exclude is not None and value.strip() == exclude.strip():
+            continue  # A title mentioning "(۴ جلسه)" is not a schedule statement.
+        # A weekday is its own date signal, so it cannot also be the evidence
+        # that a plural weekday is a schedule: prose like "چهارشنبه‌ها تجریش
+        # شلوغ است" needs a clock, a number or another date to qualify, unless
+        # the sentence is nothing but weekday wording ("جمعه‌ها").
+        has_temporal = (any(start <= s.start < end for s in found.times)
+                        or any(start <= s.start < end and not _WEEKDAY_TOKEN.fullmatch(found.normalized[s.start:s.end])
+                               for s in found.dates)
+                        or bool(re.search(r"\d", folded))
+                        or bool(_ONLY_WEEKDAYS.fullmatch(folded)))
+        weekdays = {w.group(0).replace(" ", "") for w in _WEEKDAY_TOKEN.finditer(folded)}
+        marked = bool(_PLURAL_WEEKDAY.search(folded) or len(weekdays) > 1
+                      or _SESSIONS.search(folded) or _RECURRENCE.search(folded))
+        key = " ".join(folded.split())
+        # The same wording repeated (header, card, body) is kept once, even
+        # when a card prefixes it with its city.
+        if (_DAY_LIST.search(folded) or (marked and has_temporal)) and not any(
+                key in other or other in key for other in kept):
+            kept[key] = value
+        if len(kept) == rules.MAX_SCHEDULE_SENTENCES:
+            break
+    return "\n".join(kept.values()) or None
+
+
 def opening_hours_text(found: SignalSet) -> str | None:
     """The line a place uses to state when it is open, unconverted."""
     for signal in found.place_context:
@@ -414,9 +559,15 @@ def place_summary(found: SignalSet) -> str | None:
 
 __all__ = [
     "address",
+    "area_text",
+    "availability_text",
     "category",
     "city",
+    "duration_text",
     "event_format",
+    "is_sold_out",
+    "organizer_name",
+    "source_schedule_text",
     "opening_hours_text",
     "place_category",
     "place_summary",

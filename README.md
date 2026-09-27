@@ -4,7 +4,7 @@
 
 GatherRadar is an early-stage Python project for answering a practical question: **what worthwhile events can a small community attend next?** It replaces repeated browsing across selected public sources with a reviewable pipeline that collects source content, preserves provenance, extracts structured facts, and classifies each observation as an **event**, a **place**, or **other**.
 
-The current implementation includes source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, deterministic rule-based discovery, date/time/price normalization, and conservative in-memory event canonicalization. Canonical persistence and Google Sheets synchronization remain future stages.
+The current implementation includes source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, deterministic rule-based discovery, date/time/price normalization, and conservative in-memory event canonicalization. Stage 9 adds local SQLite canonical/review persistence, a Persian RTL XLSX workspace, portable CSV/JSON, and a manual Gemini handoff bundle. Google Sheets API publishing is optional; its live validation remains pending.
 
 ## Why GatherRadar
 
@@ -29,8 +29,9 @@ The current implementation includes source collection, append-only raw storage, 
 | Explainable deterministic rule engine | ✅ Implemented |
 | Date / time / price normalization | ✅ Implemented; conservative offline review |
 | Duplicate grouping / canonical event drafts | ✅ Implemented; conservative offline review |
-| Canonical persistence (Sheets-first / SQLite decision pending) | 🧭 Planned |
-| Google Sheets review synchronization | 🧭 Planned |
+| SQLite canonical/review history + XLSX/CSV/JSON/Gemini exports | ✅ Implemented; local validation |
+| Optional Google Sheets API adapter | ✅ Retained; live validation pending |
+| Manual refresh, immutable fact snapshots, local review carry-forward | ✅ Implemented; local validation |
 | Scheduling, Telegram publishing, recommendations, public dashboard | ⏸ Deferred |
 
 ## How it works
@@ -56,7 +57,11 @@ Deterministic normalization (opt-in, transient results)
         ↓
 Conservative deduplication → canonical Event drafts (in memory)
         ↓
-[planned] persistence / Google Sheets
+Review-window filtering → SQLite canonical/review repository
+        ↓
+XLSX review workspace + CSV/JSON + manual Gemini bundle
+        ↓
+Optional Google Sheets API adapter
 ~~~
 
 The important boundary is that **collection and discovery are separate operations**. Collection talks to a source and stores observations. Extraction/discovery reads stored data and classifies it. For Instagram, media evidence is also an explicit, separate step.
@@ -83,6 +88,19 @@ python -m pip install -e .
 ~~~
 
 Activate the environment with `.venv\Scripts\activate` on Windows or `source .venv/bin/activate` on macOS/Linux.
+
+Run the normal owner workflow (collection requires source access):
+
+~~~bash
+python -m gatherradar refresh --all-enabled --days 14
+~~~
+
+Open **`data/review/GatherRadar.xlsx`**. Save and close it before the next run; supported
+review decisions/notes import automatically. CSV/JSON are in `data/exports/latest/`;
+the manual Gemini handoff is in `data/exports/gemini/latest/`. No Google account,
+Google Cloud project, API key, database server, or Office installation is required
+for local persistence/export. Instagram collection prerequisites remain separate.
+
 
 Run the test suite:
 
@@ -203,11 +221,122 @@ all default to `needs_review`.
 Event IDs use the earliest observed raw-item anchor (plus an evidence slot for separate
 media events), so later corroborating sources and content edits normally preserve them.
 Composition-based duplicate-group IDs are separate. Persistent split/merge identity is
-deferred to Stage 9. No canonical state is saved.
+not automatically resolved. Stage 9 persists the authoritative anchors without guessing
+aliases. This `canonicalize` command itself remains write-free.
 
 See [the Stage 8 contract](docs/DATA_CONTRACTS.md#conservative-canonicalization-stage-8)
 and [actual validation](docs/STAGE8_VALIDATION.md). The bounded local sample contained
 no sufficiently strong duplicate pair; positive grouping is covered by synthetic fixtures.
+
+### 8. Refresh and review locally (Stage 9)
+
+Local workbook schema 3 opens on the latest Events. Permanent tabs are `تاریخچه اجراها`,
+`بررسی تکراری‌ها`, and `راهنما`; `_meta` is hidden. Only the header row is frozen.
+Centralized compact styling uses Vazir for Persian/mixed content and Poppins for English
+and technical values. Install those fonts for best appearance; fonts are not bundled,
+and fallback depends on the spreadsheet client. Statuses use labelled badges/dropdowns;
+source links use short labels while retaining exact targets. CSV/JSON remain machine
+interchange formats. See [layout and schema-1 recovery](docs/LOCAL_REVIEW.md).
+
+The owner has accepted the Stage 9 architecture and workbook UX. The latest bounded
+run audits source-field completeness for every displayed Event across Vadoostan, Jabama
+Events, Jabama Experiences and one authenticated Instagram source; see
+[the acceptance report](docs/STAGE9_VALIDATION.md) and
+[source field coverage](docs/SOURCE_FIELD_COVERAGE.md).
+
+Reading the Event columns:
+
+| Column | What it holds |
+| --- | --- |
+| `مکان` | The named venue |
+| `منطقه / محله` | The approximate area or neighborhood the source states — not a precise address |
+| `آدرس` | The precise address, only when the source publishes one |
+| `زمان‌بندی اعلام‌شده` | The source's exact schedule wording, shown for multiple sessions, weekly recurrence and daily windows, or whenever the normalized date is incomplete |
+| `توضیحات / معرفی` | The source's own description, complete — not an AI summary |
+| `ظرفیت / وضعیت ثبت‌نام` | The source's availability wording, e.g. `تکمیل ظرفیت` (which also sets the Event status to sold out) |
+| `مدت` / `برگزارکننده` | A stated duration and an explicitly labelled organizer or host |
+
+Listing-card facts (for example a price or sold-out badge shown only in the list) belong
+to that item and are kept with provenance; a listing and detail page that disagree leave
+the field empty and marked `تعارض داده` rather than choosing one.
+
+~~~bash
+python -m gatherradar refresh --all-enabled --days 14
+python -m gatherradar refresh --source davvvat_website --limit 2 --days 14
+python -m gatherradar refresh --all-enabled --skip-instagram-evidence
+python -m gatherradar refresh --all-enabled --stored --days 14
+~~~
+
+The last command uses existing local observations only: no collection, browser, OCR,
+network or Google. Normal refresh instead uses exactly this invocation's observed
+items, including unchanged items. Source failures remain visible as partial/failed runs.
+SQLite commits before exports, so an export failure can be recovered offline.
+
+The Persian RTL workbook includes a guide, run index, persistent duplicate-review
+queue, and independent Event/Place run sheets. Dates are Jalali with computed weekdays;
+IDs, normalized values and provenance are hidden. Source/registration links are clickable.
+Dated Events sort ascending and unknown dates stay last. The default horizon is 14 days.
+
+Event decisions/notes carry by exact stable ID. Duplicate decisions are retained without
+forcing merges. Only supported human fields import; arbitrary title/date/price edits
+remain local visual edits. Place review is run-specific; Place deduplication is absent.
+Corrupt/locked workbooks are never silently replaced. Historical snapshots are preserved.
+
+### 9. Offline recovery and exports
+
+~~~bash
+python -m gatherradar status
+python -m gatherradar review import
+python -m gatherradar export --run latest
+python -m gatherradar export --run <run_id>
+python -m gatherradar export csv --run latest
+python -m gatherradar export json --run latest
+python -m gatherradar export gemini --run latest
+~~~
+
+Defaults: `data/state/gatherradar.sqlite3`, `data/review/GatherRadar.xlsx`,
+`data/exports/`. Override with `--db`, `--workbook`, `--export-dir`, or `--data-dir`.
+Exports have `latest/` and `runs/<run_id>/` versions. CSV uses UTF-8 BOM and protects
+formula-like text; JSON retains exact strings and structured arrays. Re-export reads
+SQLite only. Keep the database local with a single writer; review/export files may
+optionally be kept in a synced folder.
+
+See [local review and recovery](docs/LOCAL_REVIEW.md),
+[the Stage 9 data contract](docs/DATA_CONTRACTS.md#local-review-and-persistence-stage-9),
+and [actual validation](docs/STAGE9_VALIDATION.md).
+
+### 10. Optional Gemini handoff
+
+Want a Google Sheet through your existing Gemini browser workflow?
+
+1. Run GatherRadar.
+2. Open `data/exports/gemini/latest/`.
+3. Open Gemini manually and upload the bundle's CSV, JSON and manifest files.
+4. Give it `GEMINI_INSTRUCTIONS.md` and ask it to create/format the review Sheet,
+   if that capability is available in your account.
+5. Check row counts, IDs and source links before relying on the result.
+
+This is manual, one-way publishing. GatherRadar needs no Gemini API or Google Cloud
+setup for it; you may need a signed-in Gemini/Google browser session. Nothing is uploaded
+or synchronized back automatically. Use the local XLSX for persistent review state.
+See [Gemini workflow and factual-integrity safeguards](docs/GEMINI_HANDOFF.md).
+
+### Optional Google Sheets API integration
+
+~~~bash
+python -m pip install -e ".[google-sheets]"
+python -m gatherradar auth google --credentials "path/to/credentials.json"
+python -m gatherradar sheets setup
+python -m gatherradar sheets status
+python -m gatherradar sheets export --run latest
+python -m gatherradar sheets sync --all-enabled --days 14
+python -m gatherradar sheets refresh --source davvvat_website --limit 2
+~~~
+
+These explicit Google commands retain the prior Desktop OAuth/immutable Sheets adapter.
+They are separate from the default local workflow and still await live validation.
+See [optional setup](docs/GOOGLE_SHEETS_SETUP.md). Missing Google setup does not block
+local Stage 9. No automatic synchronization of Google/Gemini edits into SQLite exists.
 
 ## Discovery model
 
@@ -255,6 +384,13 @@ All approved sources live in [`config/sources.yaml`](config/sources.yaml). The r
 
 For ordinary list/detail websites, the generic website adapter can often be configured without changing orchestration or discovery. Sites with unusual layouts should get a small dedicated `WebsiteAdapter` plus sanitized fixtures and tests.
 
+Website sources currently configured: Davvvat, Vadoostan, Jabama Events and Jabama
+Experiences (`jabama_experiences_website`, the public `تجربه‌ها` listing, sharing the
+Jabama adapter). Davvvat's robots.txt disallows the GatherRadar user agent (re-checked
+2026-09-27), so `davvvat_website` is kept but `enabled: false`; `--all-enabled` skips it
+and it is never bypassed. Davvvat Instagram is unaffected. Commands below that name
+`davvvat_website` illustrate the syntax; use an enabled website source.
+
 GatherRadar is intentionally **not** a general-purpose web crawler. JavaScript-only, authenticated, unsupported, or structurally incompatible websites may require a new adapter or may remain out of scope.
 
 ## Repository structure
@@ -274,7 +410,10 @@ GatherRadar/
 │   ├── deduplication/            # pair decisions, complete-link groups, canonical drafts
 │   ├── ocr/                      # OCR provider boundary + Tesseract implementation
 │   ├── orchestration/            # collection/evidence/discovery run coordination
-│   ├── storage/                  # append-only JSONL and media storage
+│   ├── review/                   # shared schema, interfaces and owner workflow
+│   ├── exports/                  # XLSX, CSV/JSON and manual Gemini bundle
+│   ├── sheets/                   # optional OAuth/API adapter
+│   ├── storage/                  # JSONL audit, media and SQLite canonical/review state
 │   ├── config.py                 # source registry loading/validation
 │   └── cli.py                    # command-line interface
 ├── tests/
@@ -293,7 +432,13 @@ data/
 ├── raw/                          # append-only collected observations
 ├── evidence/                     # append-only evidence/OCR records
 ├── media/                        # content-addressed captured artifacts
-└── browser/instagram-profile/    # dedicated persistent Chrome profile
+├── browser/instagram-profile/    # dedicated persistent Chrome profile
+├── state/gatherradar.sqlite3     # canonical/review state
+├── review/GatherRadar.xlsx       # default human workspace
+├── exports/                      # CSV/JSON and Gemini latest + per-run bundles
+├── auth/google/token.json        # optional personal Google token; never commit
+├── google/sheets_state.json      # private workbook configuration
+└── runs/                         # lightweight run manifests; no raw payloads
 ~~~
 
 Do not commit browser profiles, cookies, sessions, raw private exports, or credentials.
@@ -313,9 +458,9 @@ The intended MVP continuation is:
 
 1. Review Stage 7 date/time/price normalization; category/location normalization remains deferred.
 2. Review Stage 8 conservative event groups and possible-duplicate suggestions; Place deduplication remains deferred.
-3. Evaluate Sheets-first versus a canonical local SQLite repository for stable history and idempotent reruns. In-memory canonicalization supports either future choice.
-4. Synchronize review-ready canonical candidates to Google Sheets while preserving human review fields.
-5. Add scheduling and broader delivery only after the discovery workflow is validated.
+3. Review local Stage 9 persistence/export; optional live Google validation is separate.
+4. Pilot the manual review workflow and refine measured extraction errors.
+5. Evaluate broader delivery only after the owner validates the discovery workflow; no scheduler is implemented.
 
 Telegram publishing, recommendations, community voting, automated booking, a public dashboard, and a multi-user SaaS product are intentionally outside the current implementation.
 
@@ -329,6 +474,10 @@ The project does not need followers, comments, direct messages, private profiles
 
 - [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) — product goals, boundaries, and longer-term MVP architecture
 - [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md) — detailed data, evidence, storage, grouping, and provenance contracts
+- [`docs/LOCAL_REVIEW.md`](docs/LOCAL_REVIEW.md) — local workflow, formats and recovery
+- [`docs/GEMINI_HANDOFF.md`](docs/GEMINI_HANDOFF.md) — optional manual publishing
+- [`docs/SOURCE_FIELD_COVERAGE.md`](docs/SOURCE_FIELD_COVERAGE.md) — which facts each source exposes and the per-Event field audit
+- [`docs/STAGE9_VALIDATION.md`](docs/STAGE9_VALIDATION.md) — Stage 9 acceptance evidence
 - [`config/sources.yaml`](config/sources.yaml) — currently approved sources and adapter configuration
 
 ## License

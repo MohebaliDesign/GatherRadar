@@ -148,6 +148,9 @@ def _token_span(signals: Sequence[Signal]) -> frozenset[int]:
     return frozenset(claimed)
 
 
+_NUMBER_WORDS = frozenset(normalize(word) for word in rules.DURATION_NUMBER_WORDS)
+
+
 def _neighbours_have_a_number(tokens: Sequence[Token], match: PhraseMatch) -> bool:
     for index in (match.first_token - 1, match.last_token + 1):
         if 0 <= index < len(tokens) and tokens[index].text.isdigit():
@@ -171,8 +174,17 @@ def _date_signals(
     return tuple(sorted(found, key=lambda signal: signal.start))
 
 
+def _is_duration(tokens: Sequence[Token], signal: Signal) -> bool:
+    """"۳ ساعت" / "یک ساعت و نیم" states a length, not a clock time ("ساعت ۱۷")."""
+    before, after = signal.first_token - 1, signal.last_token + 1
+    counted = 0 <= before and (tokens[before].text.isdigit() or tokens[before].text in _NUMBER_WORDS)
+    clocked = after < len(tokens) and tokens[after].text.isdigit()
+    return counted and not clocked
+
+
 def _time_signals(text: str, normalized: str, tokens: Sequence[Token], blocked: frozenset[int]) -> tuple[Signal, ...]:
-    found = list(_signals("time", text, tokens, rules.TIME_TERMS, blocked=blocked))
+    found = [signal for signal in _signals("time", text, tokens, rules.TIME_TERMS, blocked=blocked)
+             if not _is_duration(tokens, signal)]
     for pattern in _TIME_RES:
         for match in pattern.finditer(normalized):
             found.append(
@@ -281,7 +293,7 @@ def _label_positions(text: str, normalized: str) -> dict[str, tuple[int, int]]:
     """Where each labelled field starts and ends, e.g. "آدرس:" -> value offsets.
 
     The first occurrence of a label wins, and a label only counts when the operator
-    actually wrote a separator after it, which is what keeps an ordinary sentence
+    actually wrote a separator after it (or a standalone address/venue heading), which keeps an ordinary sentence
     containing "مکان" from being read as a labelled venue.
     """
     positions: dict[str, tuple[int, int]] = {}
@@ -291,6 +303,10 @@ def _label_positions(text: str, normalized: str) -> dict[str, tuple[int, int]]:
         ("date", rules.DATE_LABELS),
         ("price", rules.PRICE_LABELS),
         ("city", rules.CITY_LABELS),
+        ("area", rules.AREA_LABELS),
+        ("duration", rules.DURATION_LABELS),
+        ("organizer", rules.ORGANIZER_LABELS),
+        ("capacity", rules.CAPACITY_LABELS),
     )
     separators = re.escape(rules.LABEL_SEPARATORS)
     for name, labels in groups:
@@ -298,6 +314,11 @@ def _label_positions(text: str, normalized: str) -> dict[str, tuple[int, int]]:
             r"(?:(?<=^)|(?<=\W))(?:" + "|".join(re.escape(normalize(label)) for label in labels) + r")\s*[" + separators + r"]\s*"
         )
         match = pattern.search(normalized)
+        if match is None and name in {'address', 'venue', 'organizer'}:
+            # Website sections often put the explicit label alone on a line,
+            # without a colon. Require the whole line, never a prose mention.
+            match = re.search(r'(?m)^[ \t]*(?:' + '|'.join(re.escape(normalize(label)) for label in labels)
+                              + r')[ \t]*\r?\n', normalized)
         if match:
             positions[name] = (match.start(), match.end())
 
