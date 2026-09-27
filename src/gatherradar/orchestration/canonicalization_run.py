@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..config import load_sources
 from ..deduplication import CandidateContext, CanonicalizationResult, canonicalize
-from ..domain import DiscoveryUnit, EvidenceKind, Source, SourceType
+from ..domain import DiscoveryUnit, EvidenceKind, RawItem, Source, SourceType
 from ..extraction import DiscoveryService, RuleBasedDiscoveryProvider
 from ..storage import JsonlEvidenceStore, JsonlRawItemStore
 from .collection_run import instagram_output_path
@@ -26,6 +26,7 @@ class SourceReview:
     event_candidates: int = 0
     place_candidates: int = 0
     diagnostics: tuple[str, ...] = ()
+    observed_item_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +36,8 @@ class CanonicalReview:
 
 
 def identity_slot(unit: DiscoveryUnit | None) -> str:
-    if unit is None or any(f.kind in {EvidenceKind.CAPTION, EvidenceKind.WEBSITE_TEXT} for f in unit.fragments):
+    if unit is None or any(f.kind in {EvidenceKind.CAPTION, EvidenceKind.WEBSITE_TEXT, EvidenceKind.WEBSITE_LISTING}
+                           for f in unit.fragments):
         return "primary"
     # Stage 5 orders fragments deterministically by kind/position. Using the
     # first slot keeps an edit to its content from changing occurrence identity.
@@ -48,6 +50,7 @@ def run_canonical_review(
     source_ids: Sequence[str] = (), *, all_enabled: bool = False,
     config_path: str | Path = "config/sources.yaml", data_dir: str | Path = "data",
     limit: int = 5, instagram_evidence: bool = False,
+    observed_items: dict[str, tuple[RawItem, ...]] | None = None,
 ) -> CanonicalReview:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 30:
         raise ValueError("limit must be between 1 and 30 per source")
@@ -69,7 +72,13 @@ def run_canonical_review(
             items = tuple(item for item in stored.items if item.source_id == source.id and item.source_type == source.source_type)
             if len(items) != len(stored.items):
                 diagnostics.append("raw:context_mismatch")
-            items = items[:limit] if source.source_type is SourceType.WEBSITE else select_latest(items, limit)
+            if observed_items is None:
+                items = items[:limit] if source.source_type is SourceType.WEBSITE else select_latest(items, limit)
+            else:
+                items = observed_items.get(source.id, ())
+                if (len(items) > limit or len({i.id for i in items}) != len(items)
+                        or any(i.source_id != source.id or i.source_type != source.source_type for i in items)):
+                    raise ValueError("invalid current-run membership")
             if not items:
                 reports.append(SourceReview(source, "no_local_data", diagnostics=tuple(diagnostics)))
                 continue
@@ -87,7 +96,7 @@ def run_canonical_review(
                 if source.source_type is SourceType.WEBSITE:
                     mode = "website_text"
                 else:
-                    used_media = any(f.kind not in {EvidenceKind.CAPTION, EvidenceKind.WEBSITE_TEXT}
+                    used_media = any(f.kind not in {EvidenceKind.CAPTION, EvidenceKind.WEBSITE_TEXT, EvidenceKind.WEBSITE_LISTING}
                                      for unit in units.values() for f in unit.fragments)
                     mode = "evidence_with_caption_fallback" if used_media else "caption_fallback"
             else:
@@ -105,9 +114,10 @@ def run_canonical_review(
             for outcome, discovery in zip(normalized, discoveries):
                 raw = raw_map[outcome.candidate.raw_item_id]
                 source_contexts.append(CandidateContext(outcome, discovery.candidate, raw, source,
-                    first_seen[raw.id], identity_slot(units.get(discovery.discovery_unit_id))))
+                    first_seen.get(raw.id, raw.captured_at), identity_slot(units.get(discovery.discovery_unit_id))))
             contexts.extend(source_contexts)
-            reports.append(SourceReview(source, mode, len(items), summary.events, summary.places, tuple(diagnostics)))
+            reports.append(SourceReview(source, mode, len(items), summary.events, summary.places,
+                                        tuple(diagnostics), tuple(sorted(item.id for item in items))))
         except Exception:
             # Never echo an exception that could contain source payloads or secrets.
             reports.append(SourceReview(source, "source_failed", diagnostics=("offline_source_failed",)))

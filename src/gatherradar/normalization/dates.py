@@ -8,25 +8,26 @@ from datetime import date, timedelta
 from persiantools.jdatetime import JalaliDate
 
 from .models import Diagnostic, Severity
+from .ordinals import DAY_PATTERN, parse_day
 
 MONTHS = {name: number for number, name in enumerate(
     "فروردین اردیبهشت خرداد تیر مرداد شهریور مهر آبان آذر دی بهمن اسفند".split(), 1
 )}
 _MONTH = "(?:" + "|".join(MONTHS) + ")"
-_DAY = r"[0-9]{1,2}"
+_DAY = rf"(?:[0-9]{{1,2}}|{DAY_PATTERN})"
 _YEAR = r"[0-9]{4}"
 _WEEKDAYS = {"دوشنبه": 0, "سه شنبه": 1, "سهشنبه": 1, "چهارشنبه": 2,
              "پنجشنبه": 3, "پنج شنبه": 3, "جمعه": 4, "شنبه": 5, "یکشنبه": 6, "یک شنبه": 6}
 _WEEKDAY_TEXT = "(?:" + "|".join(sorted(_WEEKDAYS, key=len, reverse=True)) + ")"
 _RANGE = re.compile(
-    rf"(?<!\w)(?P<d1>{_DAY})\s+(?:(?P<m1>{_MONTH})(?:\s+ماه)?\s*(?P<y1>{_YEAR})?\s*)?"
-    rf"(?:تا|الی|–|-)\s*(?:(?P<w2>{_WEEKDAY_TEXT})\s+)?(?P<d2>{_DAY})\s+(?P<m2>{_MONTH})(?:\s+ماه)?(?:\s+(?P<y2>{_YEAR}))?(?!\w)"
+    rf"(?<!\w)(?P<d1>{_DAY})\s+(?:(?P<m1>{_MONTH})(?:\s*ماه)?\s*(?P<y1>{_YEAR})?\s*)?"
+    rf"(?:تا|الی|–|-)\s*(?:(?P<w2>{_WEEKDAY_TEXT})\s+)?(?P<d2>{_DAY})\s+(?P<m2>{_MONTH})(?:\s*ماه)?(?:\s+(?P<y2>{_YEAR}))?(?!\w)"
 )
-_SINGLE = re.compile(rf"(?<!\w)(?P<day>{_DAY})\s+(?P<month>{_MONTH})(?:\s+ماه)?(?:\s+(?P<year>{_YEAR}))?(?!\w)")
+_SINGLE = re.compile(rf"(?<!\w)(?P<day>{_DAY})\s+(?P<month>{_MONTH})(?:\s*ماه)?(?:\s+(?P<year>{_YEAR}))?(?!\w)")
 _ISO = re.compile(r"(?<![\w/.-])(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})(?![\w/.-])")
 _RELATIVE = re.compile(r"(?<!\w)(امروز|فردا|today|tomorrow)(?!\w)")
 _BROAD = re.compile(r"این هفته|آخر هفته|هفته آینده|هفته بعد|next week|this week|weekend")
-_DISCRETE = re.compile(rf"[0-9]+\s*(?:و|,|،|and)\s*[0-9]+\s+{_MONTH}")
+_DISCRETE = re.compile(rf"(?<!\w){_DAY}\s*(?:و|,|،|and)\s*{_DAY}\s+{_MONTH}(?:\s*ماه)?(?!\w)")
 _WEEKDAY = re.compile(r"(?<!\w)(" + "|".join(sorted(_WEEKDAYS, key=len, reverse=True)) + r")(?!\w)")
 
 
@@ -49,6 +50,8 @@ def parse_dates(text: str, reference: date) -> ParsedDates:
     Yearless ranges must also be ordered, within one Jalali year, and <=90 days.
     This bounded proximity rule never rolls an old announcement forward a year.
     """
+    # Harakat are optional spelling marks (e.g. سوّم / سی‌اُم), not date facts.
+    text = re.sub(r'[\u064b-\u065f\u0670]', '', text)
     if _BROAD.search(text):
         return ParsedDates(None, None, text, (_diagnostic("broad_relative_date", "Broad relative wording has no single supported day."),), True)
     if _DISCRETE.search(text):
@@ -82,11 +85,11 @@ def parse_dates(text: str, reference: date) -> ParsedDates:
             start, end = date(int(match["year"]), int(match["month"]), int(match["day"])), None
         else:
             if is_range:
-                d1, d2 = int(match["d1"]), int(match["d2"])
+                d1, d2 = parse_day(match["d1"]), parse_day(match["d2"])
                 m1, m2 = MONTHS[match["m1"] or match["m2"]], MONTHS[match["m2"]]
                 y1, y2 = match["y1"] or match["y2"], match["y2"] or match["y1"]
             else:
-                d1, m1, y1 = int(match["day"]), MONTHS[match["month"]], match["year"]
+                d1, m1, y1 = parse_day(match["day"]), MONTHS[match["month"]], match["year"]
                 d2, m2, y2 = d1, m1, y1
             if y1:
                 start = JalaliDate(int(y1), m1, d1).to_gregorian()

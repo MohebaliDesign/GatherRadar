@@ -11,13 +11,15 @@ from .models import EVENT_FORMATS, DiscoveryEvidence, DiscoveryFacts
 _TEXT_FIELDS = tuple(
     field.name
     for field in fields(DiscoveryFacts)
-    if field.name not in ("discovery_type", "extraction_confidence", "evidence")
+    if field.name not in ("discovery_type", "extraction_confidence", "evidence", "field_conflicts")
 )
 
 # Fields that only make sense for one kind of result. A place has no occurrence and
 # no registration; an event has no opening hours. Mixing them would let a provider
 # smuggle invented facts into the wrong record.
-_EVENT_ONLY_FIELDS = ("source_date_text", "event_format", "registration_url")
+_EVENT_ONLY_FIELDS = ("source_date_text", "event_format", "registration_url", "description_text",
+                      "area_text", "duration_text", "organizer_name", "availability_text",
+                      "source_schedule_text", "source_category_text")
 _PLACE_ONLY_FIELDS = ("opening_hours_text",)
 
 
@@ -64,6 +66,14 @@ def validate_discovery_facts(facts: object) -> DiscoveryFacts:
         parsed = urlparse(registration_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise InvalidExtractionOutputError("registration_url must be an http or https URL")
+
+    conflicts = facts.field_conflicts
+    if (not isinstance(conflicts, tuple) or any(name not in _TEXT_FIELDS for name in conflicts)
+            or len(set(conflicts)) != len(conflicts)
+            or any(cleaned[name] is not None for name in conflicts)):
+        raise InvalidExtractionOutputError("field_conflicts must name distinct, unset text fields")
+    if conflicts and facts.discovery_type is not DiscoveryType.EVENT:
+        raise InvalidExtractionOutputError("field_conflicts are only reported for events")
 
     _reject_mismatched_fields(facts.discovery_type, cleaned)
     return replace(facts, **cleaned)

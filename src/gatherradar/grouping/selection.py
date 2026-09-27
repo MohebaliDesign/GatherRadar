@@ -19,7 +19,8 @@ def select_semantic_evidence(
     primary = primary_fragment(raw_item)
     latest: dict[tuple[EvidenceKind, int | str | None], EvidenceFragment] = {}
     for fragment in history:
-        if fragment.raw_item_id != raw_item.id or fragment.kind is EvidenceKind.CAPTION:
+        # Caption and listing card always come from the current observation.
+        if fragment.raw_item_id != raw_item.id or fragment.kind in (EvidenceKind.CAPTION, EvidenceKind.WEBSITE_LISTING):
             continue
         if (primary.kind is EvidenceKind.WEBSITE_TEXT and fragment.kind is primary.kind
                 and fragment.source_url == primary.source_url):

@@ -11,7 +11,7 @@ from gatherradar.config import load_sources
 from gatherradar.storage.jsonl import JsonlRawItemStore
 from test_normalization_temporal import RAW
 
-CONFIG = Path(__file__).resolve().parents[1] / 'config/sources.yaml'
+from repo_config import FIXTURE_CONFIG as CONFIG
 TEXT = 'کارگاه سفالگری\nپنجشنبه ۲ مهر ۱۴۰۵ ساعت ۲۰:۳۰\nورودی ۳۵۰ هزار تومان'
 
 

@@ -1,0 +1,70 @@
+"""Versioned, structured review records; never serialize raw contexts or OCR."""
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, fields, is_dataclass
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
+
+from ..domain import Event
+from ..domain.event import CanonicalDiagnostic, EventStatus, FieldProvenance, ReviewStatus
+from ..domain.temporal import DatePrecision
+from .serialization import WEEKDAYS, jalali, quality
+
+# 2: source-supported description/area/duration/organizer/availability/schedule.
+# Version-1 payloads load with those fields null.
+SCHEMA_VERSION = 2
+
+
+def primitive(value: object) -> object:
+    if is_dataclass(value):
+        return primitive(asdict(value))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: primitive(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [primitive(item) for item in value]
+    return value
+
+
+def dumps(value: object) -> str:
+    return json.dumps(primitive(value), ensure_ascii=False, sort_keys=True,
+                      separators=(',', ':'), allow_nan=False)
+
+
+def event_record(event: Event) -> dict:
+    result = primitive(event)
+    result.update(jalali_start_date=jalali(event.start_date),
+                  jalali_end_date=jalali(event.end_date),
+                  weekday=WEEKDAYS[event.start_date.weekday()] if event.start_date else None,
+                  data_quality=quality(event))
+    return result
+
+
+def event_from_record(record: dict) -> Event:
+    values = {f.name: record[f.name] for f in fields(Event) if f.name in record}
+    for name in ('first_seen_at', 'last_seen_at', 'starts_at', 'ends_at'):
+        if values.get(name) is not None:
+            values[name] = datetime.fromisoformat(values[name])
+    for name in ('start_date', 'end_date'):
+        if values.get(name) is not None:
+            values[name] = date.fromisoformat(values[name])
+    for name in ('start_time', 'end_time'):
+        if values.get(name) is not None:
+            values[name] = time.fromisoformat(values[name])
+    for name in ('tags', 'source_item_ids', 'candidate_ids', 'source_ids', 'publisher_keys', 'evidence_urls'):
+        values[name] = tuple(values.get(name, ()))
+    values['status'] = EventStatus(values['status'])
+    values['review_status'] = ReviewStatus(values['review_status'])
+    values['date_precision'] = DatePrecision(values['date_precision'])
+    if values.get('price_amount') is not None:
+        values['price_amount'] = Decimal(str(values['price_amount']))
+    values['field_provenance'] = tuple(FieldProvenance(p['field'], tuple(p['candidate_ids'])) for p in values['field_provenance'])
+    values['diagnostics'] = tuple(CanonicalDiagnostic(p['code'], p['field'], tuple(p['candidate_ids'])) for p in values['diagnostics'])
+    return Event(**values)

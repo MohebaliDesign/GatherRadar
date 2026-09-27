@@ -8,7 +8,11 @@ sources:
     name: Davvvat Website
     type: website
     url: https://davvvat.ir/
-    enabled: true
+    # Disabled by policy: davvvat.ir/robots.txt has "User-Agent: GatherRadar /
+    # Disallow: /" (re-checked 2026-09-27). Definition and adapter are kept; do
+    # not re-enable or bypass unless that robots rule is lifted. Davvvat
+    # Instagram is unaffected.
+    enabled: false
     website:
       adapter: davvvat
       detail_path_prefixes: [/event/]
@@ -47,6 +51,20 @@ sources:
     name: Jabama Events Website
     type: website
     url: https://jabama.events/all?city=tehran
+    enabled: true
+    website:
+      adapter: jabama-events
+      detail_path_prefixes: [/events/]
+      content_selector: article
+    city_hint: Tehran
+
+  # The public Experiences tab (site navigation "تجربه‌ها"), static SSR. Its
+  # detail pages share the Jabama /events/ detail layout and adapter.
+  - id: jabama_experiences_website
+    publisher_key: jabama_events
+    name: Jabama Experiences Website
+    type: website
+    url: https://jabama.events/all?city=tehran&type=experiences
     enabled: true
     website:
       adapter: jabama-events

@@ -7,7 +7,7 @@ from pathlib import Path
 from ..collectors.base import SourceNotFoundError
 from ..collectors.instagram import DEFAULT_LIMIT, InstagramCollector
 from ..config import load_sources
-from ..domain import Source
+from ..domain import RawItem, Source
 from ..storage.jsonl import JsonlRawItemStore
 
 
@@ -22,6 +22,11 @@ class RunSummary:
     failed: int
     output_path: Path
     failure_reasons: tuple[str, ...] = ()
+    observed_items: tuple[RawItem, ...] = ()
+
+    @property
+    def observed_item_ids(self) -> tuple[str, ...]:
+        return tuple(sorted({item.id for item in self.observed_items}))
 
 
 def find_source(source_id: str, config_path: str | Path) -> Source:
@@ -65,6 +70,7 @@ def run_instagram_collection(
         failed=len(result.failures),
         output_path=outcome.path,
         failure_reasons=tuple(failure.reason for failure in result.failures),
+        observed_items=result.items,
     )
 
 

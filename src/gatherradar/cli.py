@@ -177,6 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     canonical.add_argument('--data-dir', default='data')
     canonical.add_argument('--instagram-evidence', action='store_true', help='Use stored Stage 5 evidence, with caption fallback. No OCR.')
 
+    from .sheets.cli import add_commands
+    add_commands(subcommands, auth_kinds)
+    from .review.cli import add_commands as add_local_commands
+    add_local_commands(subcommands)
     return parser
 
 
@@ -492,6 +496,14 @@ def main(
 ) -> int:
     _use_utf8_output()
     args = build_parser().parse_args(argv)
+
+    if args.command in {'refresh', 'export', 'review', 'status'}:
+        from .review.cli import run
+        return run(args)
+
+    if args.command == 'sheets' or (args.command == 'auth' and args.auth_type == 'google'):
+        from .sheets.cli import run
+        return run(args)
 
     if args.command == "auth":
         if args.legacy_cookie:

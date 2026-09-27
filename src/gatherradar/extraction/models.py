@@ -9,10 +9,24 @@ EVENT_FORMATS = frozenset({"in_person", "online", "hybrid"})
 
 
 @dataclass(frozen=True, slots=True)
+class SourceField:
+    """An adapter-verified structural fact: exact retained text plus where it was seen.
+
+    `origin` is `detail` (the item's page) or `listing` (its own listing card).
+    The value is already proven to be a verbatim slice of that fragment's text.
+    """
+
+    name: str
+    value: str
+    origin: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExtractionInput:
     """The deliberate, auditable evidence a provider may see for one RawItem.
 
-    Adapter `raw_metadata` is intentionally excluded; the RawItem remains the system
+    Adapter `raw_metadata` is intentionally excluded except for a validated explicit
+    website heading passed as `source_title`; the RawItem remains the system
     record. `locale`, `timezone`, and `city_hint` are source configuration context and
     are only set when that configuration is supplied.
     """
@@ -28,6 +42,11 @@ class ExtractionInput:
     locale: str | None = None
     timezone: str | None = None
     city_hint: str | None = None
+    source_title: str | None = None
+    # Website units only: validated structural facts and each fragment's own text
+    # as (origin, text), so listing and detail facts can be compared, not blended.
+    source_fields: tuple[SourceField, ...] = ()
+    segments: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +96,17 @@ class DiscoveryFacts:
     language: str | None = None
     extraction_confidence: float | None = None
     evidence: DiscoveryEvidence | None = None
+    # Source-provided context, never generated prose; `summary` stays separate.
+    description_text: str | None = None
+    area_text: str | None = None
+    duration_text: str | None = None
+    organizer_name: str | None = None
+    availability_text: str | None = None
+    source_schedule_text: str | None = None
+    # Exact source-labelled category wording (e.g. a listing genre chip).
+    source_category_text: str | None = None
+    # Fields left null because listing/detail evidence explicitly disagreed.
+    field_conflicts: tuple[str, ...] = ()
 
 
-__all__ = ["EVENT_FORMATS", "DiscoveryEvidence", "DiscoveryFacts", "ExtractionInput"]
+__all__ = ["EVENT_FORMATS", "DiscoveryEvidence", "DiscoveryFacts", "ExtractionInput", "SourceField"]

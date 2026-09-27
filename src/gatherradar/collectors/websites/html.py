@@ -88,7 +88,11 @@ def content_text(node: Node, skip: Callable[[Node], bool] = excluded) -> str:
         # Keep a neutral separator so a date and its recurrence badge do not
         # become a fabricated single word in static HTML extraction.
         style = re.sub(r'\s', '', part.attrs.get('style', '')).lower()
-        separated = re.search(r'(?:^|;)display:(?:inline-)?flex(?:;|$)', style) and re.search(r'(?:^|;)gap:[1-9]', style)
+        classes = part.attrs.get('class', '').split()
+        separated = ((re.search(r'(?:^|;)display:(?:inline-)?flex(?:;|$)', style) and re.search(r'(?:^|;)gap:[1-9]', style))
+                     # Utility-class layouts express the same visual gap with classes.
+                     or (any(c in ('flex', 'inline-flex') for c in classes)
+                         and any(re.fullmatch(r'gap(?:-[xy])?-(?:\[[1-9][^\]]*\]|[1-9][0-9.]*)', c) for c in classes)))
         text = (' ' if separated else '').join(render(child) for child in part.children)
         return '\n' + text + '\n' if part.tag in _BLOCK else text
     return '\n'.join(line for raw in render(node).splitlines() if (line := ' '.join(raw.split())))

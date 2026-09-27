@@ -28,18 +28,20 @@ next occurrence can still outweigh them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..domain import DiscoveryType
 from . import fields, rules
 from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput
 from .signals import SignalSet, analyze
+from .text import normalize
 
 PROVIDER_NAME = "rule-based/1"
 
 REASON_EVENT_PATH_A = "event: terminology with date, time, or registration evidence"
 REASON_EVENT_PATH_B = "event: event terminology with attendance and venue context"
-REASON_PLACE = "place: place vocabulary with descriptive or visit context"
+REASON_EVENT_STRUCTURED = "event: verified detail date/time slot with attendance or price evidence"
+REASON_PLACE ="place: place vocabulary with descriptive or visit context"
 REASON_NO_EVENT_PATH = "other: no event or place path was satisfied"
 REASON_BELOW_THRESHOLD = "other: evidence did not outweigh the score threshold"
 
@@ -154,6 +156,10 @@ def _event_facts(found: SignalSet, evidence: DiscoveryEvidence) -> DiscoveryFact
         registration_url=fields.registration_url(found),
         language=found.language,
         evidence=evidence,
+        area_text=fields.area_text(found),
+        duration_text=fields.duration_text(found),
+        organizer_name=fields.organizer_name(found),
+        availability_text=fields.availability_text(found),
     )
 
 
@@ -172,6 +178,84 @@ def _place_facts(found: SignalSet, evidence: DiscoveryEvidence) -> DiscoveryFact
     )
 
 
+# Simple facts read from each evidence fragment separately and compared. Temporal
+# wording, titles and categories are read from the whole unit, as before.
+MERGED_FIELDS = {
+    "price_text": fields.price_text, "venue_name": fields.venue_name, "address": fields.address,
+    "city": fields.city, "area_text": fields.area_text, "duration_text": fields.duration_text,
+    "organizer_name": fields.organizer_name, "availability_text": fields.availability_text,
+}
+_ORIGIN_ORDER = {"detail": 0, "listing": 1}
+
+
+def _agreement_key(value: str) -> str:
+    # Wording-level comparison only: spacing and digit script never disagree.
+    return "".join(normalize(value).split())
+
+
+def _merge_evidence(facts: DiscoveryFacts, extraction_input: ExtractionInput) -> DiscoveryFacts:
+    """Combine a page with its own listing card and adapter-verified structure.
+
+    Precedence contract: an adapter-verified structural value (a dedicated price
+    badge, a fixed header slot, a labelled card/section field) outranks a value
+    read from free text, which may be a prose mention (e.g. a breakfast cost in
+    a description). Values of the same tier from several places must agree:
+    identical facts keep one exact wording (detail first); explicitly different
+    values are never chosen between — the field stays null and is named in
+    `field_conflicts`. A fact only one place states (a list-only price) is kept.
+    """
+    structural: dict[str, list[tuple[str, str]]] = {}
+    for source_field in extraction_input.source_fields:
+        structural.setdefault(source_field.name, []).append((source_field.origin, source_field.value))
+    textual: dict[str, list[tuple[str, str]]] = {}
+    if extraction_input.segments:
+        for origin, text in extraction_input.segments:
+            found = analyze(text)
+            for name, reader in MERGED_FIELDS.items():
+                if value := reader(found):
+                    textual.setdefault(name, []).append((origin, value))
+    else:
+        for name in MERGED_FIELDS:
+            if value := getattr(facts, name):
+                textual.setdefault(name, []).append(("text", value))
+
+    updates: dict[str, str | None] = {name: None for name in MERGED_FIELDS}
+    conflicts = []
+    for name in {*structural, *textual}:
+        found_values = structural.get(name) or textual[name]
+        if len({_agreement_key(value) for _, value in found_values}) > 1:
+            updates[name] = None
+            conflicts.append(name)
+            continue
+        updates[name] = min(found_values, key=lambda item: _ORIGIN_ORDER.get(item[0], 2))[1]
+    if "source_category_text" in structural:
+        # An explicit source category label outranks free-text keyword inference:
+        # the canonical category is only its supported exact mapping, else null.
+        label = updates.get("source_category_text")
+        updates["category"] = rules.EVENT_CATEGORIES.get(normalize(label).strip()) if label else None
+    return replace(facts, **updates, field_conflicts=tuple(sorted(conflicts)))
+
+
+def structured_occurrence(found: SignalSet, extraction_input: ExtractionInput) -> bool:
+    """Concrete attendable occurrence stated in adapter-verified detail structure.
+
+    Requires the item's own detail page to state a fixed date slot holding both a
+    date and a clock time, plus price, registration or attendance evidence, with
+    the event evidence outweighing retrospective wording. Listing/source context
+    alone, a date without a time, or free-text dates never qualify.
+    """
+    dates = [f.value for f in extraction_input.source_fields
+             if f.name == "source_date_text" and f.origin == "detail"]
+    if len(dates) != 1:
+        return False
+    slot = analyze(dates[0])
+    if not (slot.dates and slot.times):
+        return False
+    attendable = bool(found.prices or found.registration or found.attendance) or any(
+        f.name == "price_text" for f in extraction_input.source_fields)
+    return attendable and score(found).net_event > 0
+
+
 class RuleBasedDiscoveryProvider:
     """A DiscoveryProvider that classifies and extracts with deterministic rules only.
 
@@ -186,10 +270,22 @@ class RuleBasedDiscoveryProvider:
     def discover(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         found = analyze(extraction_input.raw_text)
         discovery_type, scores, reason = classify(found)
+        if discovery_type is DiscoveryType.OTHER and structured_occurrence(found, extraction_input):
+            discovery_type, reason = DiscoveryType.EVENT, REASON_EVENT_STRUCTURED
         evidence = _evidence(found, scores, reason)
 
         if discovery_type is DiscoveryType.EVENT:
-            return _event_facts(found, evidence)
+            facts = _event_facts(found, evidence)
+            # Classification is unchanged. An explicit retained heading can name
+            # an already-classified Event; arbitrary first lines cannot.
+            title = extraction_input.source_title
+            if (isinstance(title,str) and 0 < len(title.strip()) <= 500
+                    and title in extraction_input.raw_text):
+                facts = replace(facts,title=title)
+            else:
+                title = None
+            facts = replace(facts, source_schedule_text=fields.source_schedule_text(found, exclude=title))
+            return _merge_evidence(facts, extraction_input)
         if discovery_type is DiscoveryType.PLACE:
             return _place_facts(found, evidence)
         # "Other" means analyzed and found unrelated, so it carries no facts.
@@ -201,10 +297,12 @@ __all__ = [
     "REASON_BELOW_THRESHOLD",
     "REASON_EVENT_PATH_A",
     "REASON_EVENT_PATH_B",
+    "REASON_EVENT_STRUCTURED",
     "REASON_NO_EVENT_PATH",
     "REASON_PLACE",
     "RuleBasedDiscoveryProvider",
     "Scores",
     "classify",
     "score",
+    "structured_occurrence",
 ]

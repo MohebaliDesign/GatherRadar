@@ -5,7 +5,8 @@ This document defines the records used by the MVP pipeline. Collectors may chang
 ```text
 Source → RawItem / Evidence → DiscoveryUnit → DiscoveryService
        → EventCandidate | PlaceCandidate → NormalizationOutcome
-       → conservative canonicalization → Event drafts → later persistence/export
+       → conservative canonicalization → review window → SQLite → XLSX / CSV / JSON
+       → optional manual Gemini bundle / Google Sheets API adapter
 ```
 
 ## Source
@@ -100,9 +101,13 @@ recency-ordered sequence. Items from the Reels feed are labeled `reel`, since th
 ### Website raw items (Stage 6)
 
 `data/raw/website/<source_id>.jsonl` uses the same append-only store. One permitted detail
-page is one RawItem; listing directories are URL-discovery inputs only. The adapter protocol
-owns URL discovery, detail text selection, and external identity; transport owns public HTTP,
-robots, request limits, and redirect checks. Shared orchestration has no source-ID switches.
+page is one RawItem. The listing page discovers URLs **and** contributes each item's own
+listing card: exactly the visible text of the anchor that links to that detail URL, never
+the concatenated directory, day headers, filters or neighbouring cards. A URL linked by
+differing card texts, or by an oversized wrapper, gets no card. The adapter protocol owns
+URL discovery, cards, detail text selection, structural fields and external identity;
+transport owns public HTTP, robots, request limits, and redirect checks. Shared
+orchestration has no source-ID switches.
 
 | Field | Website value |
 | --- | --- |
@@ -114,13 +119,27 @@ robots, request limits, and redirect checks. Shared orchestration has no source-
 | `published_at` | `null`: the current adapters do not have a verified publication timestamp |
 | `captured_at` | Aware UTC collection timestamp; excluded from the hash |
 | `author`, `image_url` | `null`; current adapters do not infer these |
-| `raw_metadata` | Adapter/version, listing/detail URLs, source title, optional native ID, structured-data presence, transport, retained content links (including registration hrefs when present) |
+| `raw_metadata` | Adapter/version, listing/detail URLs, source title, optional native ID, structured-data presence, transport, retained content links (including registration hrefs when present), `listing_card_text` (this run's own card or null), `source_fields` (adapter-verified `{name, value, origin}` facts) |
 
-Metadata is provenance, not rule-engine input. Full HTML and review/profile text are not
+`source_fields` are facts an adapter reads from explicit page structure — a dedicated
+price/status badge, a fixed header slot, a labelled card field, a labelled description or
+organizer section. `origin` is `detail` or `listing`; names are limited to
+`source_date_text`, `area_text`, `duration_text`, `organizer_name`, `availability_text`,
+`price_text`, `description_text` and `source_category_text` (for example the Vadoostan
+card genre chip `بازی`/`ورزش`). Every value must be an exact slice of the detail
+text or card text it came from; anything else is dropped at collection and again at the
+discovery boundary. The detail text, a verified heading, the card text and these fields
+all join the content hash, so a changed card (for example newly sold out) appends a
+Changed revision and an unchanged rerun stays Existing.
+
+Other metadata is provenance, not rule-engine input. Full HTML and review/profile text are not
 stored in RawItems. A metadata-only change does not alter the existing content hash and
 therefore does not append a new observation; this Stage 6 limitation preserves the shared
 storage contract. CSS visibility beyond known exclusions, inline hidden/display attributes,
 and Davvvat's mobile duplicate is not generally evaluated by the static parser.
+Utility-class flex containers with a gap class (`flex`/`inline-flex` plus `gap-*`) are
+rendered with a separating space, as inline-style gaps already were, so visually separate
+spans never become fabricated words (`هیلان۲`).
 The Davvvat adapter explicitly selects its known streamed detail panel even when the server
 places it in a hidden staging wrapper for later relocation. The generic adapter rejects
 content beneath hidden/excluded ancestors. Jabama only attaches price from one sibling
@@ -132,6 +151,7 @@ in first-seen storage order; no capture-run manifest reconstructs later live lis
 Missing/deleted events are not tombstoned. Recurring/multi-session pages are not split into
 individual occurrences. Related content must be excluded structurally by the adapter;
 arbitrary page segmentation and cross-page event merging are not implemented.
+See [source field coverage](SOURCE_FIELD_COVERAGE.md) for the per-adapter fact inventory.
 
 ## EvidenceFragment, EvidenceBundle, and DiscoveryUnit
 
@@ -140,7 +160,13 @@ overwrites it. One raw observation instead owns an `EvidenceBundle` containing i
 deterministically identified `EvidenceFragment` records.
 
 `EvidenceKind` is source-neutral: `caption`, `image_ocr`, `carousel_slide_ocr`,
-`reel_frame_ocr`, and `website_text`. A fragment preserves its raw item id, observed text,
+`reel_frame_ocr`, `website_text` and `website_listing`. A `website_listing` fragment is
+built only from the current observation's `listing_card_text` (source URL = the listing
+page); stored history never supplies a listing card, so a price absent from the current
+listing is never borrowed from an older one. `conservative/1` joins it to the item's
+single website-text unit unconditionally — the card was selected by the exact detail
+link — and never decides field disagreements; discovery does. A unit containing website
+text or its listing card keeps the `primary` identity slot. A fragment preserves its raw item id, observed text,
 source URL, optional local artifact path and SHA-256, optional slide index or frame timestamp,
 OCR engine/version/configuration, exact raw OCR output, and an optional failure reason. Empty
 and failed OCR observations are auditable evidence records, not semantic facts.
@@ -293,7 +319,8 @@ key, no network access, no cost. See "Rule-based discovery" below.
 `ExtractionInput` is the only evidence a provider sees: `raw_item_id`, `source_id`,
 `source_type`, `raw_text`, `content_url`, `content_type`, `published_at`, `author`, and, when
 source configuration is supplied, `locale`, `timezone`, and `city_hint`. Adapter
-`raw_metadata` is not passed.
+`raw_metadata` is not passed. Stage 9 adds optional `source_title`: only an explicitly
+verified website heading validated against the raw text, as detailed below.
 
 `DiscoveryFacts` carries `discovery_type`, `title`, `summary`, `category`, `source_date_text`,
 `venue_name`, `address`, `city`, `event_format`, `price_text`, `opening_hours_text`,
@@ -357,6 +384,13 @@ evidence:
 * **Path B** — strong event terminology, or a validated named event, together with an
   invitation to attend, plus venue or location context when the terminology alone is not
   specific enough.
+* **Structured occurrence** — only when Paths A/B and the place path fail: the item's own
+  detail page has exactly one adapter-verified `source_date_text` slot (origin `detail`)
+  containing both a date and a clock time, the text or structure carries price,
+  registration or attendance evidence, and net event evidence stays positive. A card-only
+  date, a date without a clock, a trusted listing alone, or free-text dates never qualify,
+  so an Experiences listing is never promoted wholesale. Reason:
+  `event: verified detail date/time slot with attendance or price evidence`.
 
 Path B exists because requiring a date made the first version of this engine too strict for a
 real and common shape: a post that says where to come and that they are waiting for you,
@@ -389,6 +423,53 @@ neighborhood never implies one. `event_format` is only set on explicit wording; 
 never taken as proof that an event is in person. `price_text` keeps the source wording and no
 numeric amount is produced.
 
+### Source-supported review facts
+
+`DiscoveryFacts`, `EventCandidate` and `Event` carry six optional, source-worded facts.
+Each is exact source text or null; none is generated, summarized or inferred.
+
+| Field | Meaning | Never |
+| --- | --- | --- |
+| `description_text` | The source's own description section, whitespace-normalized per line | a generated summary; `summary` stays reserved for a future summary contract |
+| `area_text` | Neighborhood/district/approximate locality (`ایرانشهر - سمیه`) | a venue, a precise address, a city, or geocoded |
+| `duration_text` | An explicitly stated length (`۳ ساعت`, `۹۰ دقیقه`) | derived from start/end clocks, or read as a clock time |
+| `organizer_name` | A name behind an explicit organizer/host label or caption | an author, publisher, account or arbitrary person name |
+| `availability_text` | Explicit capacity/registration-state wording (`تکمیل ظرفیت`, `ظرفیت: ۲۰ نفر`) | inferred from a missing price or booking control; no invented capacity |
+| `source_schedule_text` | Exact multi-session/recurring/daily-window sentences (≤3, deduplicated) | expanded into occurrences or a continuous range |
+| `source_category_text` | An explicit source category label (adapter-verified structural field) | inferred from prose; mapped to a category the taxonomy lacks |
+
+**Category precedence.** When `source_category_text` exists it outranks free-text keyword
+inference: `category` is its exact supported mapping in the controlled vocabulary
+(`کارگاه` → `workshop`) or null (`بازی`, `ورزش`, `موسیقی`, `آشپزی` have no entry). A word
+in a description (`کلاس‌های جادو`) can then never set `کارگاه`. Without a source label,
+text inference is unchanged. The workbook category cell shows the mapped category, else
+the exact source label; no workbook schema change. Captures made before this field
+existed keep their old inference until re-acquired.
+
+Text rules are source-neutral and also apply to Instagram captions: labels `محله/منطقه/محدوده`,
+`مدت/مدت زمان/مدت برگزاری/مدت زمان برنامه`, `برگزارکننده/میزبان/organizer` (colon, or a
+standalone section heading for the organizer), `ظرفیت/capacity`, and availability only as
+a whole standalone status line — prose such as «قبل از تکمیل ظرفیت ثبت‌نام کنید» is not.
+A schedule sentence needs explicit wording (plural weekday, two or more weekdays, two or
+more sessions, recurrence vocabulary, or a day list before a month such as `5،12،19 و 26 مهر`)
+plus a clock, number or date other than the weekday itself; a title such as `(۴ جلسه)` and
+prose such as «چهارشنبه‌ها تجریش شلوغ است» do not qualify. A number written before
+`ساعت` with none after it (`۲ ساعت`, `یک ساعت و نیم`) is a length, never a time signal. A
+labelled venue whose whole value is a known city (`محل برگزاری: تهران`) is reported as city only.
+
+**Listing/detail precedence.** For price, venue, address, city, area, duration, organizer
+and availability, discovery reads each fragment of a website unit separately. An
+adapter-verified structural value outranks a text-derived reading, which may be a prose
+mention (for example a breakfast cost inside a description). Values of the same tier from
+the card and the page must agree up to spacing and digit script; one exact wording is kept,
+detail first. Explicitly different values are never chosen between: the field stays null
+and `field_conflicts` names it, which Stage 8 reports as `source_field_conflict` (data quality
+`تعارض داده`). A fact only one place states — a list-only price or sold-out badge, a
+detail-only description — is kept. A structural detail header date (`source_date_text`)
+outranks a labelled recurrence phrase elsewhere on the page. Temporal wording otherwise uses
+the existing ranking over the whole unit; card/detail clock disagreement is not separately
+detected (documented limitation). No new field participates in classification.
+
 ## Event
 
 The normalized canonical record used for filtering, deduplication, review, and later Google Sheets export.
@@ -400,8 +481,11 @@ default; date/time components, `DatePrecision`, Decimal-compatible prices, canon
 field provenance and membership are explicit. Timestamps must be timezone-aware.
 `source_item_ids` continues to mean raw-item IDs. Lifecycle status remains `unknown` and
 review status defaults to `needs_review`; grouping never means verified. Stage 8 creates
-this model in memory only. Tags, reviewer notes and status remain domain fields but are
-not fabricated from candidates. Registration deadlines are still outside the implemented
+this model in memory only. Tags and reviewer notes remain domain fields but are not
+fabricated from candidates. Lifecycle status becomes `sold_out` only when the resolved
+`availability_text` is explicit sold-out wording (`تکمیل ظرفیت`, `ظرفیت تکمیل شد`, `sold out`,
+…); `ظرفیت محدود` or a missing price never does. Cancelled/postponed wording was not observed
+in current sources and is not mapped. Availability is never an identity or matching input. Registration deadlines are still outside the implemented
 candidate contract. Discovery keeps `candidate_id` and `evidence_url` unchanged.
 
 ## Deterministic normalization (Stage 7)
@@ -454,6 +538,15 @@ are checked individually. Gregorian support is limited to `YYYY-MM-DD` with year
 ambiguous numeric dates and other calendars remain unresolved regardless of locale. No
 locale-based day/month guessing is currently implemented.
 
+Explicit Persian day ordinals (`اول`/`یکم` through `سی و یکم`) share the numeric
+date grammar. Safe whitespace/ZWNJ/harakat variants are parsing-only changes. Month
+names accept attached or separate `ماه`. Clear same-month ranges such as
+`یکم تا سوم مهرماه` resolve through the existing reference policy. `۱ و ۲ مهر` and
+textual discrete sessions remain unresolved. Calendar validation rejects impossible
+month days. For `یکم تا سوم مهرماه از ساعت ۱۰ تا ۲۲`, date and time components are
+retained with range precision and `multi_day_hours`; `starts_at`/`ends_at` remain null
+because daily attendance hours do not establish a continuous multi-day interval.
+
 The reference is `RawItem.published_at`, else `captured_at`, converted to the source timezone
 before obtaining the local reference date. `reference_at` and `reference_basis` are exposed.
 No wall clock is consulted. `امروز`/`فردا` and `today`/`tomorrow` can resolve against it.
@@ -504,7 +597,7 @@ diagnostics, not invalid facts. Temporal and price statuses are also exposed ind
 
 `extract website ... --normalize` and `extract instagram ... [--evidence] --normalize`
 append review output to unchanged discovery output. All results stay in memory and can be
-used by either a later Sheets-first or SQLite-backed strategy. Neither is implemented here.
+used by the separate Stage 9 local persistence/export service. Normalization itself remains write-free.
 
 ## Conservative canonicalization (Stage 8)
 
@@ -539,6 +632,12 @@ date-only agreement can suffice; the publisher alone never does. Across publishe
 pair additionally needs equal start clocks and either matching venue/address or an exact
 non-homepage registration key. Same city alone is insufficient across publishers.
 
+One narrow same-page rule (`same_source_page`): two candidates from **different sources of
+the same publisher**, both in the `primary` identity slot, whose RawItems have the identical
+canonical detail URL, are the same public page listed twice (for example Jabama's Events and
+Experiences listings). With a strong/exact title and no recognized conflict they group even
+when the page has no single reliable date. Media slots of one post never qualify.
+
 Explicit unequal dates, reliable unequal clocks, and differing populated city, venue,
 address or timezone veto automatic grouping. Location comparison is literal folded text,
 not geocoding: aliases/translations can cause conservative false negatives. Missing values
@@ -567,7 +666,8 @@ pair decision as well.
 `duplicate_group_id = duplicate:<SHA-256(sorted candidate IDs)>` describes current
 composition, including singleton composition. Event/group/decision/member ordering is
 explicit. This greedy complete-link policy is deterministic, not a maximum-clique search.
-New members can affect future partitions; persisted split/merge review belongs to Stage 9.
+New members can affect future partitions. Stage 9 records stable anchors but does not
+automatically reconcile split/merge aliases or transfer human state between IDs.
 
 Context identity, dates, timestamps, precision, prices, URLs and normalization consistency
 are checked at the batch boundary. Invalid contexts remain in `rejected`; duplicate IDs
@@ -596,7 +696,8 @@ evidence URL, falling back to that RawItem's content URL. No URL is constructed.
 
 Importing an earlier observation, losing an anchor, moving slides, changing evidence
 selection, or future group splits/merges may change identity. In-memory identity cannot
-replace Stage 9's persistent canonical mappings and review of identity evolution.
+replace identity-evolution review. Stage 9 persists authoritative ID/anchor mappings
+and rejects contradictory mappings; split/merge alias resolution remains deferred.
 
 ### Canonical fields and provenance
 
@@ -625,6 +726,14 @@ candidate IDs, raw IDs (`source_item_ids`), source IDs, publisher keys and evide
 Every Event defaults to `needs_review`. Domain records do not import scraping, normalization,
 database or Google clients. `CandidateContext` belongs to the orchestration/matching layer.
 
+`area_text`, `duration_text`, `organizer_name`, `availability_text` and
+`source_schedule_text` resolve like other text facts (folded agreement, conflicts become
+null with `field_conflict`). `description_text` is narrative context, not an occurrence fact:
+the earliest-anchored source description is kept exactly, with provenance listing the
+candidates that supplied the same text, and differing descriptions from several sources
+are not a conflict. Descriptions, areas and availability never feed title similarity or
+matching. Candidate-level `field_conflicts` become `source_field_conflict` diagnostics.
+
 ### Offline review and limitations
 
 `canonicalize --source <id> --source <id>` or `canonicalize --all-enabled` reads local
@@ -638,7 +747,7 @@ Unrecognized title aliases, multilingual names, location variants, multi-locatio
 missing titles, recurring/session ambiguity, inferred dates, contradictions and future
 source updates remain limitations. Places pass through; Place deduplication is deferred.
 Pair enumeration is quadratic and intended for bounded private-source review. Stage 9
-will choose Sheets-first or SQLite-backed persistence; Stage 8 selects neither.
+uses these results for SQLite persistence and local review snapshots; matching remains independent of persistence.
 See [Stage 8 validation](STAGE8_VALIDATION.md) for measured results and coverage gaps.
 
 ## Storage boundary
@@ -646,8 +755,10 @@ See [Stage 8 validation](STAGE8_VALIDATION.md) for measured results and coverage
 ```text
 RawItem                         → JSONL
 EventCandidate / PlaceCandidate → transient / processing boundary
-Event                           → in-memory draft; persistence deferred to Stage 9
-Google Sheets                   → planned daily review/management surface
+Event                           → in-memory canonical draft → SQLite current/history state
+SQLite                          → canonical/review history, human decisions and notes
+XLSX / CSV / JSON                → local review workspace / portable exports
+Gemini / Google Sheets          → optional publishing adapters
 ```
 
 Media artifacts live below `data/media/` and source-neutral evidence fragments use append-only
@@ -686,3 +797,278 @@ breaks every tie with storage order, so the same file and the same `--limit` alw
 same items.
 
 Unknown values remain null. GatherRadar must not invent missing dates, venues, prices, or registration details. Every material event fact must remain traceable to source evidence.
+
+## Local review and persistence (Stage 9)
+
+JSONL is source/evidence audit. SQLite is durable canonical/review state. XLSX is the
+default human interface. CSV is portable tabular export; JSON is structured interchange.
+Gemini bundles are manual one-way publishing; Google Sheets API is an optional adapter.
+Neither cloud account nor Office is required for default persistence/export.
+Human edits never modify source facts, normalization, matching or raw/evidence stores.
+
+### Application and run membership
+
+`RunSummary.observed_items` contains the exact immutable RawItems returned by a
+collector, including New, Changed and Existing unchanged observations. Its sorted
+`observed_item_ids` is the deterministic membership set. No extra unchanged rows
+are appended to raw storage. Current capture timestamps are retained in memory,
+so refresh Event `last_seen_at` advances even when an unchanged observation is not
+appended; `first_seen_at` still comes from stored history.
+
+`run_canonical_review(..., observed_items={source_id: tuple[RawItem, ...]})` bypasses
+historical selection only for explicit current-run input. Source/type/unique-ID/limit
+checks apply; an omitted source in that map contributes no items. Legacy offline
+selection remains unchanged. `SourceReview.observed_item_ids` exposes the exact
+selection for stored-data sync as well.
+
+`RefreshService.run` is reusable outside the CLI. It validates persistence and imports local XLSX human edits first, selects
+approved enabled sources, isolates source failures, optionally acquires evidence for
+exact current Instagram members, and invokes the existing discovery → normalization
+→ canonicalization path. Stored-data sync uses the same application service with
+`collect=False`: no collector, source browser, OCR, or raw/evidence writes.
+
+A lightweight ignored `RunManifest` stores run ID, aware start/finish timestamps,
+selected sources, exact observed IDs, per-source New/Changed/Existing counts and safe
+failure codes, limits, review horizon/timezone, evidence mode and completion state.
+It contains no canonical fields, raw text, credentials or browser state. Retry reuses
+the original run start; a different option set requires a different run ID. Failed
+or ambiguous persistence is marked `failed_or_unconfirmed` in the manifest; SQLite
+is the local completion authority. A completed retry skips collection and retries exports.
+Exporter failures do not roll back canonical state.
+
+Stage 9 adds OCR reuse for matching artifact hash, raw ID, semantic position, engine,
+validated version and configuration when prior OCR succeeded or was empty. Failed
+OCR retries. Providers without an explicit version do not use the cache. Existing
+append-only evidence identity and Stage 5 latest-known-slot limitations remain:
+stale removed media slots and A → B → A fragment recency are not solved here.
+
+### Review window and display
+
+Window: run-start date in `--review-timezone` (default Asia/Tehran) through that date
+plus `--days` (default 14; 1–90), inclusive. Normalized dates/ranges are retained on
+overlap, including known ongoing ranges. Dated Events outside the window are excluded
+only from the new snapshot. Inferred dates use their normalized interpretation and
+retain review diagnostics. Missing dates/unknown precision are included after dated
+Events. Sorting uses date, known time first, time, title, stable Event ID. Review
+reference timezone does not overwrite event timezone or source interpretation.
+
+Visible dates are explicit Persian Jalali text using `persiantools`; weekdays come
+from the normalized Gregorian date. Hidden ISO components remain machine-safe.
+Source `price_text` takes precedence; fallback Decimal text preserves stated TOMAN,
+IRR or other currency without conversion. Explicit zero may display `رایگان`;
+missing price is blank. Canonical status is translated without inventing cancellation,
+sold-out or postponement. Quality labels reflect missing data/diagnostics, not ranking.
+
+### SQLite schema version 1 (records schema 2)
+
+`CanonicalRepository` extends the reusable snapshot persistence seam;
+`SqliteCanonicalRepository` implements it using standard-library sqlite3. SQL is
+isolated in storage modules. `RefreshService` injects repository, collectors/evidence,
+analysis and import/export callbacks; CLI owns argument routing and reporting only.
+
+Default DB: `data/state/gatherradar.sqlite3`, configurable with `--db`/`--data-dir`.
+`PRAGMA user_version=1`; empty DB initializes via a transactional migration list,
+current version does nothing, unsupported newer/unversioned nonempty DB is refused.
+Foreign keys, busy timeout 5000 ms, WAL and FULL synchronous writes are enabled.
+`BEGIN IMMEDIATE` commits a complete run or rolls it back. Constraints protect identity,
+run/snapshot membership and duplicate pair uniqueness. No delete/recreate migration.
+
+| Table | Responsibility / key |
+| --- | --- |
+| `runs` | `run_id`; aware timestamps/status plus versioned metadata JSON containing selected sources, exact observed IDs, horizon/timezone, failures, counts, diagnostics |
+| `events` | Stage 8 `event_id`, latest run and structured current canonical payload |
+| `event_identity_map` | exact Event ID/anchor raw ID/slot, first/last run; conflicting anchor rejected |
+| `event_snapshots` | `(run_id,event_id)`, immutable facts, visibility and review sort ordinal; filtered facts retained |
+| `event_review` | Event ID, Persian decision, notes, update timestamp; separate from facts |
+| `place_snapshots` | `(run_id,candidate_id)` and source-supported Place payload; no fake canonical Place ID |
+| `place_review` | same run/candidate key, decision/notes/update timestamp; no cross-run carry-forward |
+| `duplicate_review` | stable sorted Event-ID pair key; decisions/notes, first/last run, Event FKs |
+| `duplicate_snapshots` | `(run_id,pair_key)` and run-specific context/reasons |
+| `review_exports` | opaque token binding kind/ID/run to exported human baseline for safe import |
+
+No full raw captions, OCR content, contexts, browser profiles, tokens or credentials
+are serialized into SQLite. Facts retain original source date/price wording, structured
+field provenance, membership, source URLs and diagnostics. Raw audit history supplies
+the underlying evidence. Stage 8 Event IDs remain authoritative; no title-based alias,
+merge/split repair or cross-ID review inheritance is introduced. New runs can contain the
+same Event; repeating a committed run ID creates no new rows. Exact run timestamps
+are stored in ISO form; no OS-specific provenance paths are required.
+
+The source-completeness pass required no DDL change: Event payloads are versioned JSON
+records (records/export schema 2 adds the six source-supported facts). A Stage 9 database
+written before them opens unchanged (`user_version` stays 1, reopen is a no-op, newer
+versions are still refused) and older payloads load with those fields null. No database is
+recreated.
+
+Keep SQLite local with one active writer. The workflow lock is an exclusive local file,
+not a distributed lock. Network/synced-folder multi-writer databases are unsupported.
+Exports may live in synced folders. See [recovery and backup policy](LOCAL_REVIEW.md).
+
+### Workbook schema version 3
+
+Default: `data/review/GatherRadar.xlsx`. Permanent sheets: `راهنما`, `تاریخچه اجراها`,
+`بررسی تکراری‌ها`; hidden `_meta` contains schema version, latest generated run,
+and generation timestamp. Database tables are not exposed as tabs.
+
+Event visible columns in order (shared with the optional Sheets row serializer):
+
+`تصمیم من`, `عنوان`, `دسته‌بندی`, `وضعیت رویداد`, `تاریخ شمسی شروع`, `روز`, `ساعت شروع`,
+`تاریخ شمسی پایان`, `ساعت پایان`, `زمان‌بندی اعلام‌شده`, `مکان`, `منطقه / محله`, `شهر`,
+`آدرس`, `مدت`, `هزینه`, `ظرفیت / وضعیت ثبت‌نام`, `فرمت`, `توضیحات / معرفی`, `برگزارکننده`,
+`ثبت‌نام / خرید`, `منبع اصلی`, `همه منابع`, `تعداد منابع`, `کیفیت داده`, `یادداشت من`.
+
+`خلاصه` is no longer shown: `summary` is a reserved, normally empty machine field.
+`زمان‌بندی اعلام‌شده` shows `source_schedule_text` when present; otherwise it shows
+`source_date_text` only when the normalized date is missing, unknown/inferred or diagnosed,
+so a fully modelled single date is not repeated. `ظرفیت / وضعیت ثبت‌نام` uses the badge
+treatment and stays separate from `وضعیت رویداد`. `توضیحات / معرفی` holds the complete
+source description, wrapped, in a bounded-width column with the usual 60-point row cap;
+open the cell to read it all. Only a description over the 32,767-character XLSX cell limit
+is cut, with an explicit `… [متن کامل در review.json و events.csv]` marker; SQLite, JSON and
+CSV keep it whole. Only link columns become hyperlinks, so text starting with a URL stays text.
+
+Where several supporting URLs exist, extra `پیوند منبع N` columns make each URL
+clickable with ordinary hyperlinks. No generated hyperlink formulas or macros.
+
+Hidden Event columns:
+
+`event_id`, `run_id`, `start_date_iso`, `end_date_iso`, `timezone`, `date_precision`,
+`starts_at_iso`, `ends_at_iso`, `price_amount`, `currency`, `source_date_text`,
+`source_schedule_text`, `source_ids`, `publisher_keys`, `candidate_ids`, `source_item_ids`, `evidence_urls`,
+`canonical_source_url`, `diagnostics`, `first_seen_at`, `last_seen_at`,
+`duplicate_group_id`, `field_provenance`, `extraction_confidence`, `category`,
+`event_format`, `status`, `registration_url`, `review_token`.
+
+Place visible columns: `تصمیم من`, `نام مکان`, `دسته‌بندی`, `شهر`, `آدرس`,
+`ساعات فعالیت`, `هزینه`, `خلاصه`, `منبع`, `یادداشت من`. Hidden: `candidate_id`,
+`raw_item_id`, `source_id`, `run_id`, `evidence_url`, `review_token`.
+
+Snapshot names use `رویدادها <Jalali-date> <HHMM>` and optional
+`مکان‌ها <Jalali-date> <HHMM>`, shortened with deterministic suffixes on collision.
+RTL, freeze panes, filters, wrapped cells, useful widths and Persian dropdowns support
+review. Technical columns are hidden, not security-protected. No full raw/OCR columns.
+Historical sheets remain untouched; permanent navigation/duplicate queue is rebuildable.
+
+The newest Event tab is active and first; latest Place, history, duplicate queue,
+older snapshots, guide, then hidden metadata follow. Every review table freezes `A2`.
+`exports/excel_design.py` owns semantic bounded dimensions, 30-point bold dark headers,
+24–60 point body rows, calm banding/separators and semantic text badges. Editable decisions
+have conditional formatting and dropdown validation. Persian/mixed content uses Vazir;
+English/technical content uses Poppins. Fonts are not bundled; install them for best
+appearance or accept client-specific fallback. Hyperlink labels do not alter targets.
+Known category keys are translated only for presentation; unknown keys fall back unchanged.
+Duplicate rows link to a primary source and retain both complete URL lists hidden;
+Event snapshots provide individually clickable cells for supporting URLs.
+
+Prerelease XLSX schema 1 is refused intact. Schema 2 workbooks (earlier Stage 9) differ
+only in new snapshot columns and are accepted: imports read by header name, historical
+snapshots are never rewritten, and the next export upgrades `_meta` to 3. Schemas newer
+than 3 are refused intact. The optional Google layout keeps its permanent-tab schema 1
+(new Event snapshot columns only; human state is read by header name).
+
+### Supported-field extraction hardening
+
+An optional `ExtractionInput.source_title` carries only an adapter-verified retained
+heading (`raw_metadata.title_origin = heading`), length 1–500, occurring exactly in
+the raw text. Generic/Davvvat/Jabama use a retained h1; Vadoostan owns its explicit
+`.font-black` heading selection. First-line fallbacks and arbitrary raw metadata are
+excluded. The rule provider uses the heading only after existing Event classification.
+The verified heading participates in website content hashing, causing one Changed
+revision for an unchanged older capture lacking this context, then stable reruns.
+Existing raw JSONL is never rewritten. Recollect to add heading context to old captures.
+
+Standalone exact address/venue section labels now work without a colon; prose mentions
+do not become labels. The Persian `ها` connector preserves a recurring weekday and clock
+as one source temporal fragment. Normalization still flags unsupported recurrence rather
+than inventing a date. Original date/price text and field provenance remain intact.
+Event summary generation is not implemented; descriptions are not turned into prose.
+Metadata-only content links/JSON-LD remain outside semantic extraction. Explicit supported
+registration URLs in text retain the existing path; no page URL is invented as a booking
+URL. Unlabelled venue/neighborhood strings do not become inferred locations.
+An unlabelled venue can be retained only when a separate short name, explicit
+event-at-that-name wording and a labelled street address all corroborate the same
+complete name. Organizer identity, prose alone and the last address token are
+insufficient. The full source address remains separate and unchanged.
+Attendance format requires direct participation/holding wording or a standalone
+format label. Ticket purchase, registration, historical mentions and an address
+do not establish attendance mode. Both direct attendance modes support `hybrid`.
+Explicit directional wording (`روبروی` / `روبه روی`) in an ambiguous location field is
+address evidence, not a venue name; no venue is inferred from the remainder.
+
+Event decision options: `بررسی نشده`, `علاقه‌مندم`, `می‌خوام برم`, `رفتم`, `رد شد`.
+Duplicate options: `بررسی نشده`, `یکی هستند`, `جدا هستند`. Notes remain literal text.
+Only these human fields import. Arbitrary fact edits stay visual. The newest workbook
+snapshot per Event is eligible; Places use exact run/candidate identity. Baseline tokens
+reject changed IDs and conflicting stale edits; invalid/formula/duplicate rows are
+isolated with counts. Corrupt/incompatible schemas fail without replacement. A malformed
+or conflicting automatic import holds XLSX export to preserve those edits while allowing
+canonical persistence and portable exports. The source engine never consumes human review.
+
+Save in memory to a temporary sibling, reopen/verify cells, then replace atomically.
+A file lock/replacement failure leaves old bytes and committed SQLite intact. Unsupported
+schemas are never reset. XLSX text limits fail visibly rather than truncate source values,
+except the explicitly marked description cell above. Edits to area, description, duration,
+organizer, availability or schedule cells are visual only and never imported.
+
+### Portable export schema version 2
+
+`ReviewExporter.export(document)` consumes persisted structured review data. Exporters
+are isolated from collection, matching and SQL. `ExcelReviewExporter` additionally uses
+the repository's review-token/queue methods; CSV/JSON do not import openpyxl.
+
+JSON top level: `schema_version`, `run`, `events`, `places`, `possible_duplicates`.
+Version 2 adds `description_text`, `area_text`, `duration_text`, `organizer_name`,
+`availability_text` and `source_schedule_text` (appended CSV columns, stable English keys).
+Event records contain canonical domain fields, Jalali dates/weekday/data-quality labels,
+and separate `review_decision`, `review_notes`, `review_updated_at`. Place records contain
+candidate fields, source ID and review state. Duplicate records contain stable pair and
+Event IDs, source URLs, original reason-code arrays, Persian reason text and human state.
+Lists remain structured, null stays null, dates/times/datetimes use ISO, enum keys remain
+stable, Decimal is exact text. UTF-8 and sorted JSON keys make output deterministic.
+Historical fact snapshots overlay current human review at export time.
+
+CSV uses stable English keys from the same records, UTF-8 BOM, empty for null, compact
+JSON for arrays/objects. Leading `= + - @`, whitespace-concealed formula prefixes and
+leading tab/newline get an apostrophe. JSON keeps the original string. XLSX uses literal
+string cell types for untrusted content. Empty CSV tables still include headers.
+
+Default paths: `data/exports/{latest,runs/<run_id>}/{events.csv,places.csv,possible_duplicates.csv,review.json}`.
+The `latest` directory is the last explicitly exported selection. Each file replaces
+atomically; a multi-file export is not a filesystem transaction. SQLite is authoritative
+and partial exports can be regenerated. Gemini manifests include checksums to detect
+mixed files and are written last.
+
+### Gemini bundle version 1
+
+`data/exports/gemini/{latest,runs/<run_id>}/` reuses the identical CSV/JSON bytes and
+adds `manifest.json` plus `GEMINI_INSTRUCTIONS.md`. Manifest: bundle/export versions,
+run ID/timestamp/horizon/timezone, filenames, counts, file roles and SHA-256 digests.
+No absolute private paths or authentication state. Instructions require Persian RTL,
+exact values/IDs/URLs, unknowns left unknown, separate Event/Place/duplicate tables,
+clickable sources, filters, frozen headers and the same human dropdowns. They forbid
+fact invention, factual rewriting, silent row removal and automatic duplicate merges.
+JSON owns structured IDs/arrays; CSV is a table convenience. Source text is untrusted data.
+They also require: description kept whole as untrusted content (never instructions, never
+shortened or moved into `summary`), area kept separate from venue/address and never turned
+into an address, schedule wording kept visible and never expanded, availability kept as
+source wording with no invented capacity, and duration/organizer never derived.
+
+The bundle is generated locally by default and with `export gemini`. No API, upload,
+Gemini browser automation, credentials or automatic reverse synchronization exists.
+Local XLSX is the supported review round-trip; see [manual workflow](GEMINI_HANDOFF.md).
+
+### Optional Google adapter
+
+Google dependencies live in `.[google-sheets]` and import lazily only on explicit
+Google commands. The retained `SheetRepository` keeps its atomic temporary-tab
+publication, readback, run-ID reconciliation, remote human-state preservation and
+identity map. Its schema remains separate from XLSX (`_event_map`/`_sync_state` remain
+remote only). Shared Persian serializers/constants live in `review/`; old imports
+remain compatibility shims. Mocked adapter coverage is retained.
+
+`sheets export --run latest` publishes an existing SQLite run without collection or
+analysis. Existing Google-owned review wins; local Event and duplicate decisions seed
+new remote identities. Google edits do not flow back into SQLite. Legacy explicit
+`sheets sync`/`sheets refresh` remain available as direct Google workflows, separate
+from normal local refresh. Desktop OAuth and live validation remain optional/pending.
+See [optional setup](GOOGLE_SHEETS_SETUP.md).

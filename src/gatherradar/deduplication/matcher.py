@@ -78,11 +78,19 @@ def match_pair(left: CandidateContext, right: CandidateContext) -> DuplicateDeci
     publisher = left.source.publisher_key == right.source.publisher_key
     if publisher:
         reasons.append("same_publisher")
+    # One publisher listing the identical detail page from two approved
+    # listings (e.g. its events and experiences sections) is one page, not two
+    # occurrences. Same-source slots (several events in one post) never qualify.
+    same_page = (publisher and left.source.id != right.source.id
+                 and left.identity_slot == right.identity_slot == "primary"
+                 and left.raw_item.content_url == right.raw_item.content_url)
+    if same_page:
+        reasons.append("same_source_page")
     if conflicts:
         return DuplicateDecision(ids, MatchKind.DISTINCT, tuple(sorted(conflicts + reasons)))
     strong_title = title in {"exact", "strong"}
-    if (strong_title and same_date and reliable and zone_match
-            and (publisher or (same_time and (matched_location or same_registration)))):
+    if strong_title and (same_page or (same_date and reliable and zone_match
+            and (publisher or (same_time and (matched_location or same_registration))))):
         return DuplicateDecision(ids, MatchKind.SAME_EVENT, tuple(sorted(reasons)))
     possible = (strong_title or same_registration
                 or (same_date and (matched_location or "city_match" in reasons)))

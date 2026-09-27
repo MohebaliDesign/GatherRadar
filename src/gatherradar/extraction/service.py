@@ -5,12 +5,16 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from ..domain import (
-    DiscoveryType, DiscoveryUnit, EventCandidate, PlaceCandidate,
+    DiscoveryType, DiscoveryUnit, EventCandidate, EvidenceKind, PlaceCandidate,
     RawItem, Source,
 )
 from ..domain.evidence import primary_discovery_units
+from ..domain.website import FIELD_ORIGINS, STRUCTURED_FIELDS
 from .base import DiscoveryProvider, InvalidExtractionOutputError, ProviderExtractionError
-from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput
+from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput, SourceField
+
+_SEGMENT_ORIGINS = {EvidenceKind.WEBSITE_TEXT: 'detail', EvidenceKind.WEBSITE_LISTING: 'listing'}
+_MAX_FIELD = {'description_text': 50_000}
 from .signals import has_meaningful_content
 from .validation import validate_discovery_facts
 
@@ -58,11 +62,44 @@ def build_candidate_id(raw_item: RawItem) -> str:
     return f"candidate:{hashlib.sha256(observation).hexdigest()}"
 
 
-def build_extraction_input(raw_item: RawItem, source: Source | None = None) -> ExtractionInput:
+def _segments(raw_item: RawItem, unit: DiscoveryUnit | None) -> tuple[tuple[str, str], ...]:
+    if raw_item.source_type.value != 'website':
+        return ()
+    if unit is None:
+        return (('detail', raw_item.raw_text),)
+    return tuple((_SEGMENT_ORIGINS[f.kind], f.text) for f in unit.fragments if f.kind in _SEGMENT_ORIGINS)
+
+
+def _source_fields(raw_item: RawItem, segments: tuple[tuple[str, str], ...]) -> tuple[SourceField, ...]:
+    """Adapter facts admitted only as exact slices of a fragment in this unit."""
+    values = raw_item.raw_metadata.get('source_fields')
+    if not segments or not isinstance(values, list):
+        return ()
+    texts = {origin: [text for o, text in segments if o == origin] for origin in FIELD_ORIGINS}
+    admitted = []
+    for entry in values:
+        if not isinstance(entry, dict):
+            continue
+        name, value, origin = entry.get('name'), entry.get('value'), entry.get('origin')
+        if (name in STRUCTURED_FIELDS and origin in FIELD_ORIGINS and isinstance(value, str)
+                and value.strip() and len(value) <= _MAX_FIELD.get(name, 500)
+                and any(value in text for text in texts[origin])):
+            admitted.append(SourceField(name, value, origin))
+    return tuple(dict.fromkeys(admitted))
+
+
+def build_extraction_input(raw_item: RawItem, source: Source | None = None,
+                           unit: DiscoveryUnit | None = None) -> ExtractionInput:
     if source is not None and source.id != raw_item.source_id:
         raise ValueError(
             f"source {source.id} does not match raw item source {raw_item.source_id}"
         )
+    title = raw_item.raw_metadata.get('page_title')
+    source_title = (title if raw_item.source_type.value == 'website'
+                    and raw_item.raw_metadata.get('title_origin') == 'heading'
+                    and isinstance(title,str) and 0 < len(title.strip()) <= 500
+                    and title in raw_item.raw_text else None)
+    segments = _segments(raw_item, unit)
     return ExtractionInput(
         raw_item_id=raw_item.id,
         source_id=raw_item.source_id,
@@ -75,6 +112,9 @@ def build_extraction_input(raw_item: RawItem, source: Source | None = None) -> E
         locale=source.locale if source is not None else None,
         timezone=source.timezone if source is not None else None,
         city_hint=source.city_hint if source is not None else None,
+        source_title=source_title,
+        source_fields=_source_fields(raw_item, segments),
+        segments=segments,
     )
 
 
@@ -117,13 +157,13 @@ class DiscoveryService:
             (raw_item.content_hash + '\x1f' + unit.unit_id).encode('utf-8')
         ).hexdigest()
         unit_item = replace(raw_item, raw_text=unit.text, content_hash=unit_hash)
-        outcome = self._discover_raw(unit_item, source)
+        outcome = self._discover_raw(unit_item, source, unit)
         return replace(outcome, discovery_unit_id=unit.unit_id)
 
     def _discover_raw(
-        self, raw_item: RawItem, source: Source | None = None
+        self, raw_item: RawItem, source: Source | None = None, unit: DiscoveryUnit | None = None,
     ) -> DiscoveryOutcome:
-        extraction_input = build_extraction_input(raw_item, source)
+        extraction_input = build_extraction_input(raw_item, source, unit)
         if not raw_item.raw_text.strip():
             # No text is not evidence of anything, so this is not classified at all.
             return self._outcome(raw_item, DiscoveryStatus.SKIPPED, reason=SKIP_EMPTY_TEXT)
@@ -196,6 +236,14 @@ def _event_candidate(raw_item: RawItem, facts: DiscoveryFacts) -> EventCandidate
         language=facts.language,
         extraction_confidence=facts.extraction_confidence,
         evidence_url=raw_item.content_url,
+        description_text=facts.description_text,
+        area_text=facts.area_text,
+        duration_text=facts.duration_text,
+        organizer_name=facts.organizer_name,
+        availability_text=facts.availability_text,
+        source_schedule_text=facts.source_schedule_text,
+        source_category_text=facts.source_category_text,
+        field_conflicts=facts.field_conflicts,
     )
 
 

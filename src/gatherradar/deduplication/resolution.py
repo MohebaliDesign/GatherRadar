@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from ..domain import Event
-from ..domain.event import CanonicalDiagnostic, FieldProvenance
+from ..domain.event import CanonicalDiagnostic, EventStatus, FieldProvenance
 from ..domain.temporal import DatePrecision
+from ..extraction.fields import is_sold_out
 from .keys import stable_id, text_key
 from .matcher import temporal_reliable
 from .models import CandidateContext
@@ -11,8 +12,15 @@ from .models import CandidateContext
 TEMPORAL_FIELDS = ("start_date", "end_date", "start_time", "end_time", "timezone",
                    "starts_at", "ends_at", "date_precision")
 TEXT_FIELDS = ("title", "summary", "category", "source_date_text", "venue_name", "address",
-               "city", "event_format", "price_text", "registration_url", "language")
-FOLDED_FIELDS = frozenset({"title", "venue_name", "address", "city", "category", "language"})
+               "city", "event_format", "price_text", "registration_url", "language",
+               "area_text", "duration_text", "organizer_name", "availability_text", "source_schedule_text",
+               "source_category_text")
+FOLDED_FIELDS = frozenset({"title", "venue_name", "address", "city", "category", "language",
+                           "area_text", "duration_text", "organizer_name", "availability_text",
+                           "source_schedule_text", "source_category_text"})
+# Narrative source context, not an occurrence fact: never matched on, and
+# differing descriptions from several sources are not a factual conflict.
+CONTEXT_FIELDS = ("description_text",)
 
 
 def anchor_order(context: CandidateContext) -> tuple:
@@ -47,6 +55,19 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
     for field in TEXT_FIELDS:
         values[field] = resolve(field, ordered)
     values["extraction_confidence"] = resolve("extraction_confidence", ordered)
+    for field in CONTEXT_FIELDS:
+        # Earliest-anchored source description, exactly as written; other
+        # sources' descriptions remain in their own raw evidence.
+        populated = [c for c in ordered if getattr(c.candidate, field) is not None]
+        values[field] = getattr(populated[0].candidate, field) if populated else None
+        if populated:
+            provenance.append(FieldProvenance(field, tuple(sorted(
+                c.candidate_id for c in populated
+                if getattr(c.candidate, field) == values[field]))))
+    for context in ordered:
+        for field in getattr(context.candidate, "field_conflicts", ()):
+            # Listing and detail explicitly disagreed inside one observation.
+            diagnostics.append(CanonicalDiagnostic("source_field_conflict", field, (context.candidate_id,)))
 
     # Monetary amount and stated unit are inseparable: never combine a free
     # amount from one source with a paid currency from another.
@@ -108,7 +129,11 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
         diagnostics.append(CanonicalDiagnostic("missing_canonical_title", "title", ids))
     url = anchor.candidate.evidence_url or anchor.raw_item.content_url
     provenance.append(FieldProvenance("canonical_source_url", (anchor.candidate_id,)))
+    # Lifecycle status only from explicit sold-out wording; availability itself
+    # never participates in matching or identity.
+    status = EventStatus.SOLD_OUT if is_sold_out(values["availability_text"]) else EventStatus.UNKNOWN
     return Event(
+        status=status,
         event_id=stable_id("event:", (anchor.raw_item.id, anchor.identity_slot)),
         canonical_source_url=url,
         first_seen_at=min(c.first_seen_at for c in members),

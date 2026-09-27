@@ -35,6 +35,14 @@ class EventCandidate:
     end_time: time | None = None
     timezone: str | None = None
     date_precision: DatePrecision = DatePrecision.UNKNOWN
+    description_text: str | None = None
+    area_text: str | None = None
+    duration_text: str | None = None
+    organizer_name: str | None = None
+    availability_text: str | None = None
+    source_schedule_text: str | None = None
+    source_category_text: str | None = None
+    field_conflicts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.candidate_id.strip() or not self.raw_item_id.strip():

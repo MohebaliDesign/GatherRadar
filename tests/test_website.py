@@ -55,8 +55,14 @@ def collect(transport=None, limit=1):
 
 
 class WebsiteConfigTests(unittest.TestCase):
-    def test_registry_has_three_configured_websites(self):
-        self.assertEqual(sum(s.website is not None for s in load_sources()), 3)
+    def test_registry_has_four_configured_websites(self):
+        self.assertEqual(sum(s.website is not None for s in load_sources()), 4)
+
+    def test_robots_disallowed_davvvat_website_is_disabled_but_kept(self):
+        sources = {s.id: s for s in load_sources()}
+        self.assertFalse(sources['davvvat_website'].enabled)  # robots.txt disallows GatherRadar
+        self.assertEqual(sources['davvvat_website'].website.adapter, 'davvvat')
+        self.assertTrue(sources['davvvat_instagram'].enabled)
 
     def test_instagram_configuration_remains_optional(self):
         self.assertTrue(all(s.website is None for s in load_sources() if s.source_type is SourceType.INSTAGRAM))
@@ -156,8 +162,9 @@ class WebsiteAdapterTests(unittest.TestCase):
         self.assertEqual(a, adapter.extract(Page(BASE+'events/a?day=1', html('generic-detail.html')), BASE))
 
     def test_specialized_adapters_match_registered_keys(self):
-        for key in ('davvvat', 'vadoostan', 'jabama-events'):
-            self.assertEqual(build_adapter(replace(CONFIG, adapter=key)).name, key+'/1')
+        # Vadoostan/Jabama retain listing cards and structural fields (version 2).
+        for key, version in (('davvvat', 1), ('vadoostan', 2), ('jabama-events', 2)):
+            self.assertEqual(build_adapter(replace(CONFIG, adapter=key)).name, f'{key}/{version}')
 
     def test_davvvat_excludes_duplicates_and_comment_overlay(self):
         adapter = build_adapter(WebsiteConfig('davvvat', ('/event/',), '.event-detail-right', drop_query_params=('from',)))
@@ -467,14 +474,15 @@ class WebsitePipelineTests(unittest.TestCase):
             self.assertEqual(main(['collect','website','davvvat_website','--limit','0']), 2)
 
     def test_offline_discovery_isolates_malformed_and_other_source_records(self):
-        source = next(s for s in load_sources() if s.id == 'davvvat_website')
+        from repo_config import FIXTURE_CONFIG
+        source = next(s for s in load_sources(FIXTURE_CONFIG) if s.id == 'davvvat_website')
         item, = collect().items
         with TemporaryDirectory() as directory:
             store = JsonlRawItemStore(website_output_path(source, directory))
             store.append_new((item, replace(item, id='website:davvvat_website:a', source_id=source.id)))
             with store.path.open('a', encoding='utf-8') as stream:
                 stream.write('not json\n')
-            result = run_website_discovery(source.id, data_dir=directory)
+            result = run_website_discovery(source.id, data_dir=directory, config_path=FIXTURE_CONFIG)
             self.assertEqual(result.observed, 1)
             self.assertEqual(len(result.malformed), 1)
 

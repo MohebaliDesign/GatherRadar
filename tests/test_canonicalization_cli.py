@@ -17,7 +17,7 @@ from gatherradar.storage import JsonlEvidenceStore, JsonlRawItemStore
 from gatherradar.storage.jsonl import raw_item_to_dict
 from deduplication_fakes import context
 
-CONFIG = Path(__file__).resolve().parents[1] / 'config/sources.yaml'
+from repo_config import FIXTURE_CONFIG as CONFIG
 TEXT = 'کارگاه «سفال مهتاب»\n۲ مهر ۱۴۰۵ ساعت ۱۸\nمکان: گالری آبی\nشهر: تهران\nورودی ۳۰۰ تومان'
 
 

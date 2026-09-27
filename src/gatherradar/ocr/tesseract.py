@@ -33,6 +33,10 @@ class TesseractOcrProvider:
         self._version: str | None = None
 
     @property
+    def version(self) -> str | None:
+        return self._version
+
+    @property
     def config(self) -> str:
         return 'languages=' + '+'.join(self.languages) + f';psm={self.psm}'
 

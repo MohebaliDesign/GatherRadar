@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from collections.abc import Callable
 
 from ..domain import RawItem, Source, SourceType, compute_content_hash
-from .base import (CollectionResult, ItemFailure, SourceAccessRestrictedError, SourceDisabledError,
+from ..domain.website import STRUCTURED_FIELDS
+from .base import (CollectionResult, ItemFailure, SourceAccessRestrictedError, SourceDisabledError, safe_failure,
                    SourceTypeMismatchError, SourceUnavailableError)
 from .websites.adapters import WebsiteAdapter, build_adapter
 from .websites.transport import HttpTransport, Page, PageTransport
@@ -29,7 +31,9 @@ class WebsiteCollector:
         canonical_url(listing.url, source.url)
         urls = adapter.discover(listing, source.url)
         if not urls:
-            raise SourceUnavailableError('no supported detail links in public listing')
+            raise SourceUnavailableError('no supported detail links in public listing', category='layout', operation='listing')
+        # This run's own listing cards only; never a stored/historical listing.
+        cards = adapter.cards(listing, source.url)
         items: list[RawItem] = []
         failures: list[ItemFailure] = []
         seen: set[str] = set()
@@ -47,17 +51,31 @@ class WebsiteCollector:
                 identity = f'website:{source.id}:{detail.external_id}'
                 if identity in seen:
                     continue
+                card = cards.get(url)
+                fields = [{'name': name, 'value': value, 'origin': origin}
+                          for origin, pairs, text in (('detail', detail.fields, detail.text),
+                                                      ('listing', card.fields if card else (), card.text if card else ''))
+                          for name, value in pairs if name in STRUCTURED_FIELDS and value in text]
+                # A verified heading, the item's own listing card and structural
+                # fields are material extraction evidence. They join observation
+                # identity so a changed card (e.g. now sold out) is a new revision.
+                material = (detail.text + ('\x1fheading:' + detail.title if detail.title_is_heading else '')
+                            + ('\x1flisting:' + card.text if card else '')
+                            + ('\x1ffields:' + json.dumps(fields, ensure_ascii=False, sort_keys=True) if fields else ''))
                 item = RawItem(
                     id=identity, source_id=source.id, source_type=SourceType.WEBSITE,
                     external_id=detail.external_id, content_type='webpage',
                     content_url=canonical, raw_text=detail.text, captured_at=self._now(),
                     published_at=None,
-                    content_hash=compute_content_hash(raw_text=detail.text, published_at=None, content_url=canonical),
+                    content_hash=compute_content_hash(raw_text=material, published_at=None, content_url=canonical),
                     raw_metadata={
                         'adapter': adapter.name, 'list_url': listing.url, 'detail_url': canonical,
                         'page_title': detail.title, 'native_id': detail.native_id,
+                        'title_origin': 'heading' if detail.title_is_heading else 'fallback',
                         'structured_data_present': detail.structured_data_present,
                         'content_links': list(detail.links), 'transport': page.transport,
+                        'listing_card_text': card.text if card else None,
+                        'source_fields': fields,
                     },
                 )
                 items.append(item)
@@ -65,7 +83,7 @@ class WebsiteCollector:
                 if len(items) == limit:
                     break
             except Exception as exc:
-                failures.append(ItemFailure(f'detail {index}: collection failed ({type(exc).__name__})'))
+                failures.append(ItemFailure(f'detail {index}: collection failed ({type(exc).__name__}; {safe_failure(exc)})'))
                 if isinstance(exc, SourceAccessRestrictedError):
                     # Stop this source on rate limits/access refusals; preserve
                     # earlier successes without probing additional pages.

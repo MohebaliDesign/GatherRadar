@@ -23,7 +23,8 @@ class EvidenceFragmentTests(unittest.TestCase):
     def test_evidence_kind_is_closed_and_website_ready(self):
         self.assertEqual(
             {item.value for item in EvidenceKind},
-            {'caption', 'image_ocr', 'carousel_slide_ocr', 'reel_frame_ocr', 'website_text'},
+            {'caption', 'image_ocr', 'carousel_slide_ocr', 'reel_frame_ocr', 'website_text',
+             'website_listing'},
         )
 
     def test_fragment_identity_is_deterministic(self):

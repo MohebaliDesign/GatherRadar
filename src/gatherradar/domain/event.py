@@ -79,6 +79,16 @@ class Event:
     evidence_urls: tuple[str, ...] = ()
     field_provenance: tuple[FieldProvenance, ...] = ()
     diagnostics: tuple[CanonicalDiagnostic, ...] = ()
+    # Source-supported review context (appended for stable portable columns).
+    # `summary` remains reserved for a future dedicated summary contract.
+    description_text: str | None = None
+    area_text: str | None = None
+    duration_text: str | None = None
+    organizer_name: str | None = None
+    availability_text: str | None = None
+    source_schedule_text: str | None = None
+    # Exact source-labelled category; `category` is only its supported mapping.
+    source_category_text: str | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id.strip() or not self.canonical_source_url.strip():

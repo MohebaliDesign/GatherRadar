@@ -221,6 +221,10 @@ DATE_TERMS: tuple[str, ...] = (
 MONTHS_NEEDING_A_NUMBER: frozenset[str] = frozenset({"دی", "may", "march"})
 
 TIME_TERMS: tuple[str, ...] = ("ساعت", "از ساعت", "تا ساعت")
+# A number written before "ساعت" (and none after) is a length, never a clock time.
+DURATION_NUMBER_WORDS: tuple[str, ...] = (
+    "یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده", "نیم", "چند",
+)
 
 # Time expressions are shaped, not vocabulary, so they are regexes over the folded
 # text: "18:30", "ساعت ۱۸", "از ساعت ۱۶ تا ۲۲", "7 pm".
@@ -441,7 +445,7 @@ PRICE_LABELS: tuple[str, ...] = (
     "fee",
 )
 
-ONLINE_TERMS: tuple[str, ...] = ("آنلاین", "آن لاین", "انلاین", "online", "virtual")
+ONLINE_TERMS: tuple[str, ...] = ("آنلاین", "آن لاین", "انلاین", "مجازی", "online", "virtual")
 IN_PERSON_TERMS: tuple[str, ...] = ("حضوری", "in person", "onsite", "on site")
 HYBRID_TERMS: tuple[str, ...] = ("حضوری و آنلاین", "آنلاین و حضوری", "hybrid")
 
@@ -473,6 +477,8 @@ KNOWN_CITIES: tuple[str, ...] = (
 # A map-pin line is accepted as a structured location only when the following
 # text contains explicit geographic/address wording (or a written known city).
 LOCATION_DETAIL_TERMS: tuple[str, ...] = (
+    "روبروی",
+    "روبه روی",
     "خیابان",
     "خ",
     "بلوار",
@@ -515,6 +521,40 @@ AMBIGUOUS_VENUE_LABELS: frozenset[str] = frozenset(
 )
 DATE_LABELS: tuple[str, ...] = ("زمان برگزاری", "تاریخ", "زمان", "date", "time", "when")
 CITY_LABELS: tuple[str, ...] = ("شهر", "city")
+# Approximate locality, never a venue or street address: "محله: ایرانشهر - سمیه".
+AREA_LABELS: tuple[str, ...] = ("محله", "منطقه", "محدوده", "neighborhood", "neighbourhood", "area")
+# An explicit stated length, never derived from start/end clocks.
+DURATION_LABELS: tuple[str, ...] = (
+    "مدت زمان برنامه", "مدت زمان برگزاری", "مدت زمان", "مدت برگزاری", "مدت", "duration",
+)
+# Only an explicitly labelled organizer; authors and publishers are not organizers.
+ORGANIZER_LABELS: tuple[str, ...] = (
+    "برگزارکنندگان", "برگزار کنندگان", "برگزارکننده", "برگزار کننده", "میزبان",
+    "organized by", "organizer", "hosted by",
+)
+CAPACITY_LABELS: tuple[str, ...] = ("ظرفیت باقی مانده", "ظرفیت باقیمانده", "ظرفیت", "capacity", "availability")
+
+# Availability wording accepted only as a whole standalone line (a status badge),
+# never as a phrase inside prose such as "قبل از تکمیل ظرفیت ثبت‌نام کنید".
+AVAILABILITY_PHRASES: tuple[str, ...] = (
+    "تکمیل ظرفیت", "ظرفیت تکمیل", "ظرفیت تکمیل شد", "ظرفیت تکمیل است", "اتمام ظرفیت",
+    "ظرفیت محدود", "بلیت ها تمام شد", "بلیط ها تمام شد", "sold out", "fully booked", "limited capacity",
+)
+# The only availability wording that maps canonical Event status to SOLD_OUT.
+SOLD_OUT_PHRASES: frozenset[str] = frozenset({
+    "تکمیل ظرفیت", "ظرفیت تکمیل", "ظرفیت تکمیل شد", "ظرفیت تکمیل است", "اتمام ظرفیت",
+    "بلیت ها تمام شد", "بلیط ها تمام شد", "sold out", "fully booked",
+})
+
+# Multi-session / recurring schedule wording. The sentence is preserved verbatim;
+# no occurrence is generated from it.
+RECURRENCE_TERMS: tuple[str, ...] = (
+    "هر هفته", "هفتگی", "هر روز", "همه روزه", "روزانه", "هر ماه", "جلسات",
+    "every", "weekly", "daily", "weekdays", "weekends",
+)
+# Two or more sessions; a single session is not a multi-session schedule.
+SESSION_COUNT_WORDS: tuple[str, ...] = ("دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده")
+MAX_SCHEDULE_SENTENCES = 3
 
 # Characters an operator writes between a label and its value.
 LABEL_SEPARATORS: str = ":：–—-="

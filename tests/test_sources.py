@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class SourceConfigTests(unittest.TestCase):
     def test_initial_registry_loads_all_sources(self) -> None:
         sources = load_sources(ROOT / "config" / "sources.yaml")
-        self.assertEqual(len(sources), 8)
-        self.assertEqual(len({source.id for source in sources}), 8)
+        self.assertEqual(len(sources), 9)
+        self.assertEqual(len({source.id for source in sources}), 9)
 
     def test_instagram_urls_are_canonical_and_have_usernames(self) -> None:
         sources = load_sources(ROOT / "config" / "sources.yaml")
