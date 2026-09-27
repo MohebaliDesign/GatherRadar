@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import Enum
 
 from ..domain import Event
-from ..domain.event import CanonicalDiagnostic, EventStatus, FieldProvenance, ReviewStatus
+from ..domain.event import CanonicalDiagnostic, ChannelProvenance, EventStatus, FieldProvenance, ReviewStatus
 from ..domain.temporal import DatePrecision
 from .serialization import WEEKDAYS, jalali, quality
 
@@ -58,7 +58,8 @@ def event_from_record(record: dict) -> Event:
     for name in ('start_time', 'end_time'):
         if values.get(name) is not None:
             values[name] = time.fromisoformat(values[name])
-    for name in ('tags', 'source_item_ids', 'candidate_ids', 'source_ids', 'publisher_keys', 'evidence_urls'):
+    for name in ('tags', 'source_item_ids', 'candidate_ids', 'source_ids', 'publisher_keys', 'evidence_urls',
+                 'reference_urls', 'channel_gaps'):
         values[name] = tuple(values.get(name, ()))
     values['status'] = EventStatus(values['status'])
     values['review_status'] = ReviewStatus(values['review_status'])
@@ -67,4 +68,6 @@ def event_from_record(record: dict) -> Event:
         values['price_amount'] = Decimal(str(values['price_amount']))
     values['field_provenance'] = tuple(FieldProvenance(p['field'], tuple(p['candidate_ids'])) for p in values['field_provenance'])
     values['diagnostics'] = tuple(CanonicalDiagnostic(p['code'], p['field'], tuple(p['candidate_ids'])) for p in values['diagnostics'])
+    # Absent in records persisted before channel provenance existed.
+    values['channel_provenance'] = tuple(ChannelProvenance(**p) for p in values.get('channel_provenance', ()))
     return Event(**values)

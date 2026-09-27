@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..domain import Event
-from ..domain.event import CanonicalDiagnostic, EventStatus, FieldProvenance
+from ..domain.event import CanonicalDiagnostic, ChannelProvenance, EventStatus, FieldProvenance
 from ..domain.temporal import DatePrecision
 from ..extraction.fields import is_sold_out
 from .keys import stable_id, text_key
@@ -21,6 +21,22 @@ FOLDED_FIELDS = frozenset({"title", "venue_name", "address", "city", "category",
 # Narrative source context, not an occurrence fact: never matched on, and
 # differing descriptions from several sources are not a factual conflict.
 CONTEXT_FIELDS = ("description_text",)
+
+
+# Strategy of an observation without an explicit acquisition marker: the
+# channel's ordinary collection path.
+DEFAULT_STRATEGIES = {"website": "website_listing", "instagram": "instagram_profile"}
+
+
+def channel_provenance(context: CandidateContext) -> ChannelProvenance:
+    """The channel that really observed this candidate; never another channel's."""
+    channel = context.source.source_type.value
+    strategy = context.raw_item.raw_metadata.get("acquisition_strategy")
+    return ChannelProvenance(
+        candidate_id=context.candidate_id, raw_item_id=context.raw_item.id,
+        source_id=context.source.id, publisher_key=context.source.publisher_key, channel=channel,
+        strategy=strategy if isinstance(strategy, str) and strategy else DEFAULT_STRATEGIES.get(channel, channel),
+        content_url=context.raw_item.content_url, evidence_slot=context.identity_slot)
 
 
 def anchor_order(context: CandidateContext) -> tuple:
@@ -148,5 +164,7 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
         duplicate_group_id=group_id,
         field_provenance=tuple(sorted(provenance, key=lambda p: p.field)),
         diagnostics=tuple(sorted(set(diagnostics), key=lambda d: (d.code, d.field, d.candidate_ids))),
+        reference_urls=tuple(dict.fromkeys(u for c in ordered for u in getattr(c.candidate, "reference_urls", ()))),
+        channel_provenance=tuple(sorted({channel_provenance(c) for c in members}, key=lambda p: p.candidate_id)),
         **values,
     )

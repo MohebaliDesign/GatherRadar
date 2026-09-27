@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from . import rules
 from .signals import CITY_TOKENS, Signal, SignalSet, has_address_detail
@@ -418,6 +419,20 @@ def price_text(found: SignalSet) -> str | None:
     return None
 
 
+# Platform hosts whose links are navigation/self-references, not Event pages.
+_SELF_REFERENCE_HOSTS = ("instagram.com", "instagr.am")
+
+
+def reference_urls(found: SignalSet) -> tuple[str, ...]:
+    """Every public http(s) URL written in the evidence, verbatim and deduplicated."""
+    urls: list[str] = []
+    for url in found.urls:
+        host = (urlsplit(url.text).hostname or "").lower()
+        if host and not any(host == h or host.endswith("." + h) for h in _SELF_REFERENCE_HOSTS)                 and url.text not in urls:
+            urls.append(url.text)
+    return tuple(urls[:5])
+
+
 def registration_url(found: SignalSet) -> str | None:
     """A URL explicitly associated with registration wording on its source line."""
     candidates: list[tuple[int, int, str]] = []
@@ -572,6 +587,7 @@ __all__ = [
     "place_category",
     "place_summary",
     "price_text",
+    "reference_urls",
     "registration_url",
     "source_date_text",
     "title",

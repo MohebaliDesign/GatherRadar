@@ -798,6 +798,32 @@ same items.
 
 Unknown values remain null. GatherRadar must not invent missing dates, venues, prices, or registration details. Every material event fact must remain traceable to source evidence.
 
+## Publisher channels and acquisition
+
+A Source is one **channel** of a publisher (`publisher_key`). `disabled_reason`
+(`robots`, `terms`, `owner`) is allowed only on a disabled Source. Each refresh records,
+in run metadata (`review.json` → `run.channels`, `run.publisher_coverage`,
+`run.policy_checks`):
+
+| Record | Fields |
+| --- | --- |
+| Channel result | `source_id`, `publisher_key`, `channel`, `strategy` (`website_listing`, `instagram_profile`, `linked_page`, `stored`), `status`, `observed`, safe `diagnostic` |
+| Publisher coverage | `publisher`, `covered`, `all_channels_healthy`, `channels`, `covered_by`, `unavailable_channels`, `potentially_unavailable_fields` |
+| Policy check | `source_id`, `state` (`still_blocked`, `now_allowed`, `check_failed`), `checked_at`, `fresh`, `detail` |
+
+Event fields appended for this contract (older records load with empty values):
+
+| Field | Meaning |
+| --- | --- |
+| `reference_urls` | Public URLs written verbatim in the evidence (platform self-links excluded); references only, content not collected |
+| `channel_provenance` | Per candidate: `candidate_id`, `raw_item_id`, `source_id`, `publisher_key`, `channel`, `strategy`, `content_url`, `evidence_slot` |
+| `channel_gaps` | Null fields that an unavailable channel of the Event's publisher usually states structurally |
+
+Linked-page RawItems are stored under the target website Source with
+`raw_metadata.acquisition_strategy = linked_page` and `linked_from` (referring
+observation IDs). A website channel's current-run membership may hold `limit` listing
+items plus up to `limit` linked items. See [publisher recovery](PUBLISHER_RECOVERY.md).
+
 ## Local review and persistence (Stage 9)
 
 JSONL is source/evidence audit. SQLite is durable canonical/review state. XLSX is the

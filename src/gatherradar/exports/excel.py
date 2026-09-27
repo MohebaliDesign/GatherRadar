@@ -143,7 +143,11 @@ class ExcelReviewExporter:
             if run_id not in ids:
                 event_name = _name('رویدادها', run, workbook)
                 event_rows = []
-                all_links = [sorted(set(item['evidence_urls'] + [item['canonical_source_url']])) for item in document['events']]
+                # Evidence first, then public reference URLs stated in the evidence
+                # (clickable for the owner; their unseen page content is not claimed).
+                all_links = [(lambda seen: seen + [u for u in dict.fromkeys(item.get('reference_urls') or ())
+                                                   if u not in seen])(sorted(set(item['evidence_urls'] + [item['canonical_source_url']])))
+                             for item in document['events']]
                 link_count = max((len(links) for links in all_links), default=0)
                 # OOXML allows one hyperlink per cell. Extra supporting-source columns
                 # keep every URL clickable without formulas or invented links.

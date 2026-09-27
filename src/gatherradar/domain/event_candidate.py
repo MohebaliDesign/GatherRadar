@@ -42,6 +42,7 @@ class EventCandidate:
     availability_text: str | None = None
     source_schedule_text: str | None = None
     source_category_text: str | None = None
+    reference_urls: tuple[str, ...] = ()
     field_conflicts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:

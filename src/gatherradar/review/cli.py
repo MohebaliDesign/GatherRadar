@@ -44,6 +44,38 @@ def _print_import(result) -> None:
     print(f'Review import: imported={result.imported}; skipped={result.skipped}; malformed={result.malformed}; conflicts={result.conflicts}')
 
 
+CHANNEL_LABELS = {'website_listing': 'Website', 'instagram_profile': 'Instagram', 'linked_page': 'Linked pages'}
+FIELD_LABELS = {'description_text': 'full description', 'address': 'exact address', 'area_text': 'area',
+                'duration_text': 'duration', 'organizer_name': 'organizer', 'availability_text': 'availability',
+                'registration_url': 'registration metadata', 'source_category_text': 'source category'}
+
+
+def print_publishers(result, names: dict[str, str]) -> None:
+    """Publisher coverage first; channel health is reported separately."""
+    for coverage in result.publishers:
+        print(names.get(coverage.publisher_key, coverage.publisher_key))
+        for channel in (c for c in result.channels if c.publisher_key == coverage.publisher_key):
+            label = CHANNEL_LABELS.get(channel.strategy, channel.strategy)
+            if channel.strategy == 'stored':
+                label = channel.channel.capitalize() + ' [stored, offline]'
+            detail = f' — {channel.observed} observed' if channel.observed else ''
+            print(f'  {label} ({channel.source_id}): {channel.status.value}{detail}')
+        state = 'covered' if coverage.covered else 'NOT covered'
+        via = f" through {', '.join(coverage.covered_by)}" if coverage.covered_by else ''
+        print(f'  publisher_coverage: {state}{via}; all channels healthy: {coverage.all_channels_healthy}')
+        if coverage.covered and coverage.potentially_unavailable_fields:
+            print('  Coverage may be reduced; potentially unavailable fields: '
+                  + ', '.join(FIELD_LABELS.get(f, f) for f in coverage.potentially_unavailable_fields))
+    for notice in result.policy_notices:
+        if notice.state == 'now_allowed':
+            print(f'Policy notice: {notice.source_id} robots now permits GatherRadar; '
+                  'set enabled: true in the source registry to resume it (not changed automatically).')
+        elif notice.state == 'check_failed':
+            print(f'Policy notice: {notice.source_id} policy re-check failed ({notice.detail}); state unchanged.')
+    covered = sum(c.covered for c in result.publishers)
+    print(f'Publisher coverage: {covered}/{len(result.publishers)} publishers represented')
+
+
 def run(args: argparse.Namespace) -> int:
     from ..storage.sqlite_repository import SqliteCanonicalRepository
     from .workspace import local_workspace
@@ -81,8 +113,12 @@ def run(args: argparse.Namespace) -> int:
             from ..orchestration.refresh import RefreshService
             run_id = args.run_id or uuid4().hex
             print(f'Run id: {run_id}', flush=True)
+            from ..acquisition.policy import recheck_policies
+            from ..acquisition.strategies import LinkedPageStrategy
+            from ..config import load_sources
             result = RefreshService(repository, import_reviews=workspace.import_reviews,
-                export_reviews=workspace.export).run(tuple(args.sources or ()), all_enabled=args.all_enabled,
+                export_reviews=workspace.export, linked=LinkedPageStrategy(),
+                policy_check=recheck_policies).run(tuple(args.sources or ()), all_enabled=args.all_enabled,
                 config_path=args.config, data_dir=root, limit=args.limit, days=args.days,
                 review_timezone=args.review_timezone, skip_instagram_evidence=args.skip_instagram_evidence,
                 collect=not args.stored, run_id=run_id)
@@ -93,6 +129,8 @@ def run(args: argparse.Namespace) -> int:
                 _print_import(result.import_summary)
             for source in result.sources:
                 print(f'{source.source_id}: {source.status}; observed={len(source.observed_item_ids)}; failures={",".join(source.failures)}')
+            print_publishers(result, {s.publisher_key: s.name.rsplit(' ', 1)[0] for s in load_sources(args.config)})
+            print(f'Canonical Events: {snapshot.events + snapshot.filtered}; Displayed Events: {snapshot.events}')
             print(f'Database: {database}\nWorkbook: {workbook}\nExports: {exports}\nGemini: {exports / "gemini/latest"}')
             for error in result.export_failures:
                 print(f'Export error (canonical state committed): {error}', file=sys.stderr)

@@ -13,6 +13,7 @@ sources:
     # not re-enable or bypass unless that robots rule is lifted. Davvvat
     # Instagram is unaffected.
     enabled: false
+    disabled_reason: robots
     website:
       adapter: davvvat
       detail_path_prefixes: [/event/]

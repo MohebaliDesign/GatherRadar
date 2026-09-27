@@ -74,8 +74,12 @@ evidence and is not copied into `description_text` (U).
 `User-Agent: GatherRadar` / `Disallow: /` group. The transport refuses every request,
 the source fails in isolation (`robots:robots`), and no bypass is attempted. Earlier stored
 Davvvat website observations and the sanitized Davvvat fixture remain; the Davvvat
-venue/address/organizer pattern is covered offline. The owner should decide whether to
-disable `davvvat_website`; until then each run reports it as a failed source.
+venue/address/organizer pattern is covered offline. `davvvat_website` is now disabled
+with `disabled_reason: robots`; each run reports it as `policy_blocked` without contacting
+it, and Davvvat stays covered through Instagram. Website-only structural fields
+(description section, address, area, duration, organizer, availability, registration
+metadata, source category) are listed as potentially unavailable and marked per Event in
+`channel_gaps`. See [publisher recovery](PUBLISHER_RECOVERY.md).
 
 ## Jabama Experiences
 
