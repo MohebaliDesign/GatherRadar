@@ -160,6 +160,7 @@ def _event_facts(found: SignalSet, evidence: DiscoveryEvidence) -> DiscoveryFact
         duration_text=fields.duration_text(found),
         organizer_name=fields.organizer_name(found),
         availability_text=fields.availability_text(found),
+        reference_urls=fields.reference_urls(found),
     )
 
 

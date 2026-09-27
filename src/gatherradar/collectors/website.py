@@ -34,10 +34,31 @@ class WebsiteCollector:
             raise SourceUnavailableError('no supported detail links in public listing', category='layout', operation='listing')
         # This run's own listing cards only; never a stored/historical listing.
         cards = adapter.cards(listing, source.url)
+        return self._details(source, urls[:min(limit * 3, 30)], limit=limit, transport=transport,
+                             adapter=adapter, cards=cards, list_url=listing.url)
+
+    def collect_linked(self, source: Source, urls: tuple[str, ...], *, limit: int,
+                       linked_from: dict[str, tuple[str, ...]]) -> CollectionResult:
+        """Approved detail URLs named by another channel's evidence.
+
+        Same bounded path as listing details — robots, redirect and origin checks,
+        this source's adapter and layout — with no listing fetch, no link following
+        and no recursion. `linked_from` maps each URL to the referring observations.
+        """
+        validate_website_source(source, limit)
+        adapter = self._adapter or build_adapter(source.website)
+        if any(not adapter.accepts(url, source.url) for url in urls):
+            raise SourceUnavailableError('linked URL is not a supported detail of this source', category='layout')
+        return self._details(source, urls[:limit], limit=limit, transport=self._transport or HttpTransport(source.url),
+                             adapter=adapter, cards={}, list_url=None, linked_from=linked_from)
+
+    def _details(self, source: Source, urls, *, limit: int, transport: PageTransport, adapter: WebsiteAdapter,
+                 cards: dict, list_url: str | None,
+                 linked_from: dict[str, tuple[str, ...]] | None = None) -> CollectionResult:
         items: list[RawItem] = []
         failures: list[ItemFailure] = []
         seen: set[str] = set()
-        for index, url in enumerate(urls[:min(limit * 3, 30)], 1):
+        for index, url in enumerate(urls, 1):
             try:
                 canonical_url(url, source.url)
                 if not adapter.accepts(url, source.url):
@@ -69,13 +90,15 @@ class WebsiteCollector:
                     published_at=None,
                     content_hash=compute_content_hash(raw_text=material, published_at=None, content_url=canonical),
                     raw_metadata={
-                        'adapter': adapter.name, 'list_url': listing.url, 'detail_url': canonical,
+                        'adapter': adapter.name, 'list_url': list_url, 'detail_url': canonical,
                         'page_title': detail.title, 'native_id': detail.native_id,
                         'title_origin': 'heading' if detail.title_is_heading else 'fallback',
                         'structured_data_present': detail.structured_data_present,
                         'content_links': list(detail.links), 'transport': page.transport,
                         'listing_card_text': card.text if card else None,
                         'source_fields': fields,
+                        **({'acquisition_strategy': 'linked_page', 'linked_from': list(linked_from.get(url, ()))}
+                           if linked_from is not None else {}),
                     },
                 )
                 items.append(item)

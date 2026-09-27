@@ -230,6 +230,15 @@ no sufficiently strong duplicate pair; positive grouping is covered by synthetic
 
 ### 8. Refresh and review locally (Stage 9)
 
+The owner workflow is one non-interactive command:
+
+```bash
+python -m gatherradar refresh --all-enabled --days 14
+```
+
+It ends with a publisher/channel summary (channel statuses, publisher coverage and any
+potentially reduced fields), then canonical and displayed Event counts.
+
 Local workbook schema 3 opens on the latest Events. Permanent tabs are `تاریخچه اجراها`,
 `بررسی تکراری‌ها`, and `راهنما`; `_meta` is hidden. Only the header row is frozen.
 Centralized compact styling uses Vazir for Persian/mixed content and Poppins for English
@@ -391,6 +400,15 @@ Jabama adapter). Davvvat's robots.txt disallows the GatherRadar user agent (re-c
 and it is never bypassed. Davvvat Instagram is unaffected. Commands below that name
 `davvvat_website` illustrate the syntax; use an enabled website source.
 
+Sources are **channels** of a publisher (`publisher_key`). `refresh` reports every
+channel's status (`success`, `empty`, `unavailable`, `policy_blocked`,
+`access_restricted`, `temporary_failure`, `parse_failure`, `stored`) and a separate
+`publisher_coverage`: a publisher is covered when any channel contributed this run.
+**Publisher coverage ≠ every channel available.** Davvvat is covered through Instagram;
+its website channel is `policy_blocked` and the run lists the fields that may therefore
+be missing. Disabled channels take `disabled_reason: robots | terms | owner`. See
+[publisher channels and recovery](docs/PUBLISHER_RECOVERY.md).
+
 GatherRadar is intentionally **not** a general-purpose web crawler. JavaScript-only, authenticated, unsupported, or structurally incompatible websites may require a new adapter or may remain out of scope.
 
 ## Repository structure
@@ -478,6 +496,7 @@ The project does not need followers, comments, direct messages, private profiles
 - [`docs/GEMINI_HANDOFF.md`](docs/GEMINI_HANDOFF.md) — optional manual publishing
 - [`docs/SOURCE_FIELD_COVERAGE.md`](docs/SOURCE_FIELD_COVERAGE.md) — which facts each source exposes and the per-Event field audit
 - [`docs/STAGE9_VALIDATION.md`](docs/STAGE9_VALIDATION.md) — Stage 9 acceptance evidence
+- [`docs/PUBLISHER_RECOVERY.md`](docs/PUBLISHER_RECOVERY.md) — publisher/channel/strategy model, coverage and Davvvat channel investigation
 - [`config/sources.yaml`](config/sources.yaml) — currently approved sources and adapter configuration
 
 ## License

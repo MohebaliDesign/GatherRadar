@@ -16,6 +16,19 @@ class FieldProvenance:
 
 
 @dataclass(frozen=True, slots=True)
+class ChannelProvenance:
+    """Which publisher channel and acquisition strategy supplied one candidate."""
+    candidate_id: str
+    raw_item_id: str
+    source_id: str
+    publisher_key: str
+    channel: str
+    strategy: str
+    content_url: str
+    evidence_slot: str = "primary"
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalDiagnostic:
     code: str
     field: str
@@ -89,6 +102,13 @@ class Event:
     source_schedule_text: str | None = None
     # Exact source-labelled category; `category` is only its supported mapping.
     source_category_text: str | None = None
+    # Public URLs stated verbatim in source evidence (e.g. an Event page named in a
+    # caption). References for the owner only; their unseen content is not extracted.
+    reference_urls: tuple[str, ...] = ()
+    channel_provenance: tuple[ChannelProvenance, ...] = ()
+    # Null fields a currently unavailable publisher channel usually supplies:
+    # "missing because the channel was unavailable", not "the source omitted it".
+    channel_gaps: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.event_id.strip() or not self.canonical_source_url.strip():

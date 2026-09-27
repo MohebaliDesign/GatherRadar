@@ -25,7 +25,8 @@ def _fixture_config() -> Path:
     directory = Path(tempfile.mkdtemp(prefix='gatherradar-config-'))
     atexit.register(shutil.rmtree, directory, True)
     path = directory / 'sources.yaml'
-    path.write_text(text[:start] + block.replace(_DISABLED, '    enabled: true\n') + text[end:], encoding='utf-8')
+    path.write_text(text[:start] + block.replace(_DISABLED, '    enabled: true\n').replace('    disabled_reason: robots\n', '')
+                    + text[end:], encoding='utf-8')
     return path
 
 

@@ -243,6 +243,7 @@ def _event_candidate(raw_item: RawItem, facts: DiscoveryFacts) -> EventCandidate
         availability_text=facts.availability_text,
         source_schedule_text=facts.source_schedule_text,
         source_category_text=facts.source_category_text,
+        reference_urls=facts.reference_urls,
         field_conflicts=facts.field_conflicts,
     )
 

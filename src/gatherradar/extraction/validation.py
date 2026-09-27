@@ -11,7 +11,8 @@ from .models import EVENT_FORMATS, DiscoveryEvidence, DiscoveryFacts
 _TEXT_FIELDS = tuple(
     field.name
     for field in fields(DiscoveryFacts)
-    if field.name not in ("discovery_type", "extraction_confidence", "evidence", "field_conflicts")
+    if field.name not in ("discovery_type", "extraction_confidence", "evidence", "field_conflicts",
+                          "reference_urls")
 )
 
 # Fields that only make sense for one kind of result. A place has no occurrence and
@@ -66,6 +67,14 @@ def validate_discovery_facts(facts: object) -> DiscoveryFacts:
         parsed = urlparse(registration_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise InvalidExtractionOutputError("registration_url must be an http or https URL")
+
+    references = facts.reference_urls
+    if not isinstance(references, tuple) or len(set(references)) != len(references) or any(
+            not isinstance(url, str) or urlparse(url).scheme not in ("http", "https") or not urlparse(url).netloc
+            for url in references):
+        raise InvalidExtractionOutputError("reference_urls must be distinct http or https URLs")
+    if references and facts.discovery_type is not DiscoveryType.EVENT:
+        raise InvalidExtractionOutputError("reference_urls are only reported for events")
 
     conflicts = facts.field_conflicts
     if (not isinstance(conflicts, tuple) or any(name not in _TEXT_FIELDS for name in conflicts)

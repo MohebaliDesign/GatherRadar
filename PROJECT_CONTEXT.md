@@ -253,6 +253,7 @@ Create this structure incrementally as implementation begins:
 src/gatherradar/
   domain/           # records, enums, and validation contracts
   collectors/       # source adapter interface and implementations
+  acquisition/      # publisher channels: strategies, channel status, coverage, policy re-check
   ocr/              # provider boundary and local Tesseract implementation
   grouping/         # semantic snapshot selection and conservative discovery units
   extraction/       # discovery: classification, rule engine, and field extraction
@@ -550,7 +551,21 @@ depends on knowing.
 Resolve these through small end-to-end experiments. Update this document when a
 decision changes the product boundary, data contract, or architecture.
 
-## 12. Stage 9 manual application service
+## 12. Publisher channels (post-Stage 9)
+
+A publisher (`publisher_key`) is represented by one or more channels (Sources), each
+acquired by a strategy chosen by capability (`acquisition/`). Channel status uses a
+fixed vocabulary; `publisher_coverage` reports whether any channel contributed this run,
+separately from channel health. Publisher coverage ≠ every channel available. A
+policy-blocked channel of a covered publisher does not make a run partial. Depth-one
+linked detail pages may be collected only on configured website-channel origins through
+the normal Website boundary. Events keep `channel_provenance`, `reference_urls` and
+`channel_gaps`; channels combine only through Stage 8 identity, never by publisher alone.
+Robots-disabled website channels get a cached, robots-only re-check at most weekly and are
+never re-enabled automatically. Davvvat's website is `policy_blocked`; Davvvat is covered
+through Instagram. See `docs/PUBLISHER_RECOVERY.md`.
+
+## 13. Stage 9 manual application service
 
 `RefreshService.run` imports supported local workbook edits before acquisition,
 observes exact current RawItems (including unchanged items), optionally acquires

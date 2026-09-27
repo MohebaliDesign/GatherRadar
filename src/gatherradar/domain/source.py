@@ -8,6 +8,11 @@ from urllib.parse import urlparse
 from .website import WebsiteConfig
 
 
+# Why an automatic channel is switched off. `robots`/`terms`: the publisher's
+# access policy excludes GatherRadar; `owner`: the owner paused it.
+DISABLED_REASONS = frozenset({"robots", "terms", "owner"})
+
+
 class SourceType(StrEnum):
     INSTAGRAM = "instagram"
     WEBSITE = "website"
@@ -26,6 +31,7 @@ class Source:
     timezone: str = "Asia/Tehran"
     locale: str = "fa-IR"
     website: WebsiteConfig | None = None
+    disabled_reason: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("id", "publisher_key", "name", "url"):
@@ -45,6 +51,8 @@ class Source:
             raise ValueError('source id must be safe for a storage filename')
         if not isinstance(self.enabled, bool):
             raise ValueError('enabled must be a boolean')
+        if self.disabled_reason is not None and (self.enabled or self.disabled_reason not in DISABLED_REASONS):
+            raise ValueError('disabled_reason requires a disabled source and one of robots, terms, owner')
         if self.website is not None and (
             self.source_type is not SourceType.WEBSITE or not isinstance(self.website, WebsiteConfig)
         ):

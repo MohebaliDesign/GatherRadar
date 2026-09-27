@@ -43,6 +43,7 @@ def load_sources(path: str | Path = "config/sources.yaml") -> list[Source]:
             timezone=raw.get("timezone", defaults.get("timezone", "Asia/Tehran")),
             locale=raw.get("locale", defaults.get("locale", "fa-IR")),
             website=WebsiteConfig.from_mapping(raw['website']) if 'website' in raw else None,
+            disabled_reason=raw.get('disabled_reason'),
         )
         if source.id in seen_ids:
             raise ValueError(f"duplicate source id: {source.id}")

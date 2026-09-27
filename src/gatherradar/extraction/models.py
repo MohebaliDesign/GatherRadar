@@ -105,6 +105,8 @@ class DiscoveryFacts:
     source_schedule_text: str | None = None
     # Exact source-labelled category wording (e.g. a listing genre chip).
     source_category_text: str | None = None
+    # Public http(s) URLs written verbatim in the evidence text (Events only).
+    reference_urls: tuple[str, ...] = ()
     # Fields left null because listing/detail evidence explicitly disagreed.
     field_conflicts: tuple[str, ...] = ()
 

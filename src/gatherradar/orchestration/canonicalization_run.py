@@ -76,7 +76,10 @@ def run_canonical_review(
                 items = items[:limit] if source.source_type is SourceType.WEBSITE else select_latest(items, limit)
             else:
                 items = observed_items.get(source.id, ())
-                if (len(items) > limit or len({i.id for i in items}) != len(items)
+                # A website channel may also hold up to `limit` approved linked
+                # detail pages named by another channel this run.
+                bound = limit * 2 if source.source_type is SourceType.WEBSITE else limit
+                if (len(items) > bound or len({i.id for i in items}) != len(items)
                         or any(i.source_id != source.id or i.source_type != source.source_type for i in items)):
                     raise ValueError("invalid current-run membership")
             if not items:
