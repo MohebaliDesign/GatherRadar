@@ -337,6 +337,14 @@ def _normalized_review(summary: DiscoveryRunSummary) -> str:
     ))
 
 
+def _fragment_label(fragment) -> str:
+    if fragment.kind is EvidenceKind.CAROUSEL_SLIDE_OCR:
+        return f'slide {fragment.slide_index}'
+    if fragment.kind is EvidenceKind.REEL_FRAME_OCR:
+        return f'frame {fragment.frame_timestamp_ms}ms'
+    return fragment.kind.value
+
+
 def format_evidence_discovery_summary(summary: EvidenceDiscoveryRunSummary) -> str:
     lines = [
         'GatherRadar evidence-aware discovery run', '', f'Run id: {summary.run_id}',
@@ -353,15 +361,12 @@ def format_evidence_discovery_summary(summary: EvidenceDiscoveryRunSummary) -> s
         if item.ignored_fragments:
             lines.append(f'    Nonsemantic fragments ignored: {item.ignored_fragments}')
         for number, (unit, outcome) in enumerate(zip(item.units, item.outcomes), 1):
-            labels = []
-            for fragment in unit.fragments:
-                if fragment.kind is EvidenceKind.CAROUSEL_SLIDE_OCR:
-                    labels.append(f'slide {fragment.slide_index}')
-                elif fragment.kind is EvidenceKind.REEL_FRAME_OCR:
-                    labels.append(f'frame {fragment.frame_timestamp_ms}ms')
-                else:
-                    labels.append(fragment.kind.value)
+            labels = [_fragment_label(fragment) for fragment in unit.fragments]
             lines.append(f'    Unit {number} ({unit.unit_id[:17]}): {" + ".join(labels)}')
+            notes = dict(unit.notes)
+            for fragment in unit.collapsed:
+                # Grouping explanation only: the fragment joined as provenance, not text.
+                lines.append(f'      Collapsed {_fragment_label(fragment)}: {notes.get(fragment.fragment_id, "-")}')
             lines.extend('    ' + line for line in _format_outcome(number, outcome)[1:])
     if summary.malformed:
         lines.extend(('', 'Unreadable stored lines:', *(f'  - {reason}' for reason in summary.malformed)))

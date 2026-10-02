@@ -163,7 +163,7 @@ deterministically identified `EvidenceFragment` records.
 `reel_frame_ocr`, `website_text` and `website_listing`. A `website_listing` fragment is
 built only from the current observation's `listing_card_text` (source URL = the listing
 page); stored history never supplies a listing card, so a price absent from the current
-listing is never borrowed from an older one. `conservative/1` joins it to the item's
+listing is never borrowed from an older one. `conservative/2` joins it to the item's
 single website-text unit unconditionally — the card was selected by the exact detail
 link — and never decides field disagreements; discovery does. A unit containing website
 text or its listing card keeps the `primary` identity slot. A fragment preserves its raw item id, observed text,
@@ -188,9 +188,13 @@ maps Instagram raw text to `CAPTION` and website raw text to `WEBSITE_TEXT`.
 only the original caption unit with unchanged identity. The website CLI uses the Stage 5
 grouping path over its fresh primary text, without separate evidence persistence.
 
-`DiscoveryUnit.from_fragments(..., strategy='conservative/1')` sorts fragments by their
+`DiscoveryUnit.from_fragments(..., strategy='conservative/2')` sorts fragments by their
 domain sort key, retains their exact wording joined by a newline, and hashes an unambiguous
-JSON encoding of raw item id, strategy/version, and ordered fragment ids. Mixed raw item ids,
+JSON encoding of raw item id, strategy/version, and ordered fragment ids. Optional
+`collapsed` fragments (repetitions of the unit's anchor, see below) are sorted the same way,
+appended to that identity as a separate list, and never contribute to `text`. Optional
+`notes` pair a member fragment id with a grouping explanation for debug output only; they
+are never persisted or exported. Mixed raw item ids,
 duplicate fragment ids, empty groups, and empty strategy names are rejected. Changed OCR
 fragment identity or strategy version changes unit identity. `from_fragment` and the legacy
 caption route retain their existing behavior.
@@ -218,7 +222,7 @@ and cannot reliably identify a slot to invalidate. These limitations require a f
 acquisition/persistence decision; Stage 5 does not rewrite history or infer missing runs.
 
 `GroupingStrategy.group(EvidenceBundle)` is the source-neutral boundary.
-`ConservativeGrouping` (`conservative/1`) uses existing signal analysis on each fragment
+`ConservativeGrouping` (`conservative/2`) uses existing signal analysis on each fragment
 independently. Grouping never classifies concatenations to decide whether to merge:
 
 - A validated named event/place or independent Event/Place classification is an anchor.
@@ -235,8 +239,9 @@ independently. Grouping never classifies concatenations to decide whether to mer
   prose disqualify support-only fragments. This deliberately misses some valid continuations.
 - Conflicting recognized date/time, address, venue, city, price, registration URL, or opening
   hours wording prevents attachment. Comparisons use folded source wording, not semantic
-  normalization. Even complementary date/time wording may be split when both fragments
-  already carry temporal evidence. Conflicts are checked against every member of the group.
+  normalization. Date-only wording and clock-only wording are complementary, not a conflict;
+  any other unequal temporal pair (two dates, two clocks, date+clock vs clock) abstains.
+  Conflicts are checked against every member of the group.
 - Consecutive Reel samples with identical whole text after existing script/digit/case folding
   and whitespace collapse share a unit, keeping **all** participating fragment provenance
   and wording. No token-overlap threshold, fuzzy matching, or cross-unit deduplication is
@@ -245,12 +250,32 @@ independently. Grouping never classifies concatenations to decide whether to mer
   one side is an anchor and the other entirely supporting facts, with no recognized
   conflicts/ambiguity, or all complete texts are equivalent. A single image is one group,
   but competing anchors or unrelated generic caption text still remain separate.
+- **Repeated anchors (v2).** A media fragment whose single named title has the same
+  `title_equivalence_key` as an anchor of the same RawItem (folded spelling, punctuation,
+  spacing, ZWNJ and digit script only; every word and directly following number stays
+  significant, so `کارگاه سفال ۱` ≠ `کارگاه سفال ۲`), or whose meaningful lines include an
+  exact contiguous run of at least two title words, is compared with that anchor — the
+  caption first, otherwise the most recent earlier media anchor. If every other line states
+  no readable fact (no signal, label, URL, named title, city or venue) or is an isolated
+  unlabelled clock/numeric date (`3 am`, `18:30`, `9/25`), the fragment is **collapsed**:
+  provenance only, outside the unit text (`repeated_anchor_collapsed`, or
+  `ocr_fragment_insufficient_for_independent_event` when such a clock/date was present). If
+  every other line is a support line and nothing conflicts, its text joins the anchor
+  (`support_attached_to_anchor`); its following support chain moves with it. Otherwise it
+  stays separate. A media group led by a repetition of the caption title joins the caption
+  unit all-or-nothing. Same post alone, a different or ambiguous title, or any conflict is
+  never enough. Website text is never collapsed.
+- A media fragment made only of isolated unlabelled clock/numeric-date lines is never
+  support text. Beside an adjacent anchor it is collapsed as
+  `ocr_fragment_insufficient_for_independent_event`; otherwise it is its own unit.
 - Failed/empty fragments and text rejected by the existing meaningful-content guard never
   supply unit text. They are not removed from storage. Unrecognized content words remain
   separate and may classify as Other; noise is not reliably detectable. No eligible text
   produces zero units.
 
-Adjacency plus structured support is a heuristic, not verified co-reference. Missed OCR
+Adjacency plus structured support, and exact title repetition, are heuristics, not verified
+co-reference. A media-only fragment whose only occurrence evidence is an isolated noisy clock
+can still classify as an Event when no anchor of the same title exists. Missed OCR
 names, several occurrences on one line or poster, implicit venue references, and semantic
 contradictions remain unsolved. Precision is preferred over recall, but perfect separation
 is not claimed.
@@ -542,7 +567,18 @@ Explicit Persian day ordinals (`اول`/`یکم` through `سی و یکم`) share
 date grammar. Safe whitespace/ZWNJ/harakat variants are parsing-only changes. Month
 names accept attached or separate `ماه`. Clear same-month ranges such as
 `یکم تا سوم مهرماه` resolve through the existing reference policy. `۱ و ۲ مهر` and
-textual discrete sessions remain unresolved. Calendar validation rejects impossible
+textual discrete sessions remain unresolved.
+
+Discovery preserves these shapes for every Jalali month, so normalization receives them
+intact: the attached (`مهرماه`, `دیماه`) and separate (`مهر ماه`, `مهر‌ماه`) month forms are
+one date signal; leading days may be Persian or ASCII numbers or ordinals joined by
+`و`, `تا`, `الی`, `-`, `,` or `،` (`۹ و ۱۰ مهرماه`, `۸ تا ۱۰ مهر ماه`, `۵، ۱۲، ۱۹ و ۲۶ مهر`,
+`یکم تا سوم مهرماه`); a weekday, date and clock on one line stay one fragment; and a
+four-digit year directly after the month is kept. An ordinal run directly after an ordinary
+word (`هفته اول مهر`, `نیمه دوم مهر`) names part of a month, not a day, and is not attached.
+Comma day lists also populate `source_schedule_text`; listed days are never collapsed into a
+range or expanded into occurrences. When both appear, a concrete calendar fragment outranks
+an isolated clock in the existing fragment ranking. Calendar validation rejects impossible
 month days. For `یکم تا سوم مهرماه از ساعت ۱۰ تا ۲۲`, date and time components are
 retained with range precision and `multi_day_hours`; `starts_at`/`ends_at` remain null
 because daily attendance hours do not establish a continuous multi-day interval.
@@ -1010,11 +1046,27 @@ than inventing a date. Original date/price text and field provenance remain inta
 Event summary generation is not implemented; descriptions are not turned into prose.
 Metadata-only content links/JSON-LD remain outside semantic extraction. Explicit supported
 registration URLs in text retain the existing path; no page URL is invented as a booking
-URL. Unlabelled venue/neighborhood strings do not become inferred locations.
+URL. Unlabelled neighborhood strings do not become inferred locations. An unlabelled venue
+is read only through the corroborated rule below or the natural-venue rule after it.
 An unlabelled venue can be retained only when a separate short name, explicit
 event-at-that-name wording and a labelled street address all corroborate the same
 complete name. Organizer identity, prose alone and the last address token are
 insufficient. The full source address remains separate and unchanged.
+**Natural venue phrasing.** When no labelled or corroborated venue exists, a venue can be
+read from ordinary event wording: an introducer (`در`, `توی`, `تو`, `میزبان شما`) or a
+line-initial branch, then a recognized venue head (`کافه`, `کافه گالری`, `گالری`, `نگارخانه`,
+`موزه`, `فرهنگسرا`, `تالار`, `تماشاخانه`, `فضای هنری`, `مرکز فرهنگی`) followed by 1–3 name
+words. The clause must carry attendance wording (`منتظرتونیم`, `منتظر شما`), the line must be
+only the branch construction, or holding wording (`برگزار …`) must follow the name directly.
+Generic heads (`مجموعه`, `سالن`, `خانه`, `مرکز`, `باغ`, `عمارت`) need that holding wording or a
+branch. Branch wording (`شعبه`/`شعبه‌ی` + up to two words, before or after the venue) stays
+inside `venue_name`: `توی شعبه‌ی لواسان کافه رئیس` yields `شعبه‌ی لواسان کافه رئیس` with
+`area_text`, `city` and `address` null — a branch name is not proven to be a locality and is
+never geocoded. Names stop at stopwords, signal words, numbers, cities, punctuation and
+`شهر`/`اصلی`-style words; an over-long name, a listed alternative (`… و گالری …`), several
+different names, retrospective or past clauses (`قبلا`, `گذشته`) yield null. `در این رویداد`,
+`در صفحه/لینک/سایت/اینستاگرام`, a bare city, organizer/brand mentions without an introducer
+never qualify. Labelled and corroborated venues keep precedence.
 Attendance format requires direct participation/holding wording or a standalone
 format label. Ticket purchase, registration, historical mentions and an address
 do not establish attendance mode. Both direct attendance modes support `hybrid`.

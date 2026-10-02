@@ -323,7 +323,7 @@ engine unchanged. Media OCR is stored as separate `IMAGE_OCR`, `CAROUSEL_SLIDE_O
 `REEL_FRAME_OCR` fragments; website adapters use `WEBSITE_TEXT` through the same layer.
 `RawItem.raw_text` is never replaced with OCR. Default Instagram extraction still creates only the
 caption unit. Stage 5 adds explicit `extract --evidence`: `grouping/` selects the current
-caption plus the latest stored fragment per semantic media position, then `conservative/1`
+caption plus the latest stored fragment per semantic media position, then `conservative/2`
 builds zero or more units. Failed/empty latest versions suppress older OCR without changing
 storage. Unit identity includes raw item id, strategy version, and ordered fragment ids;
 unit text joins only deliberately grouped source fragments, unchanged, with newlines.
@@ -336,6 +336,18 @@ never copied to multiple groups, and a single media group joins a caption only w
 roles are complementary and nonconflicting, or their complete texts are equivalent.
 Uncertain relationships remain separate. This does not reliably segment multiple events
 inside one image or resolve noisy OCR, implicit references, or semantic contradictions.
+
+`conservative/2` adds same-occurrence handling inside one RawItem. A media fragment that
+repeats an anchor's exact folded title (numbers significant, no fuzzy matching) joins that
+anchor — the caption first, else the earlier media anchor — when it adds nothing that
+conflicts. A repetition carrying no readable fact, or only an isolated unlabelled
+clock/numeric-date OCR line (`3 am`, `9/25`), is kept as collapsed provenance outside the
+unit text; one carrying compatible support lines contributes its text. Same post alone, a
+different title, or a conflicting date/venue/address/price/registration keeps units apart.
+Date-only and clock-only wording are complementary rather than conflicting. Media-only
+Events are unchanged. Grouping explanations (`support_attached_to_anchor`,
+`repeated_anchor_collapsed`, `ocr_fragment_insufficient_for_independent_event`) appear only
+in `extract --evidence` output.
 
 `orchestration/evidence_discovery_run.py` reads local raw/evidence stores, selects items with
 the existing recency policy, isolates malformed records and per-item/unit failures, and
@@ -402,7 +414,7 @@ sold-out card appends a revision); other metadata-only edits still do not append
 `collect website <source_id> --limit N` checks robots and every redirect, isolates failed
 details, and takes first valid listing-order items, up to 30 and `min(3*N,30)` attempts.
 It does not paginate. `extract website` reads latest stored observations in first-seen order,
-rebuilds fresh `WEBSITE_TEXT`, and calls unchanged `conservative/1` and `DiscoveryService`.
+rebuilds fresh `WEBSITE_TEXT`, and calls the shared conservative grouping and `DiscoveryService`.
 It opens no browser, runs no OCR, contacts no source, and writes no candidates. Instagram
 caption-only semantics and Stage 5 grouping/classification policy are unchanged.
 
@@ -444,6 +456,10 @@ Explicit Persian day ordinals through 31 and attached/separate `ماه` month su
 are supported in single dates and clear ranges. Discrete sessions stay unresolved;
 date ranges with daily hours retain date/time components and `multi_day_hours`, with
 no continuous `starts_at`/`ends_at` interval. Existing reference/year bounds still apply.
+Discovery keeps the full wording of these shapes in `source_date_text` for every Jalali
+month: attached `مهرماه` and separate `مهر ماه` suffixes, ordinal and numeric leading days
+(`۹ و ۱۰`, `۸ تا ۱۰`, `۵، ۱۲، ۱۹ و ۲۶`), and an explicit trailing year. An ordinal that
+names part of a month (`هفته اول مهر`) is not a day.
 
 `extract ... --normalize` appends an offline, write-free review of the exact discovery
 snapshot. Recurrences, discrete sessions, broad weeks/weekends, overnight ambiguity, and
@@ -605,8 +621,13 @@ Standalone address/venue section labels and the Persian recurring-weekday connec
 preserve source wording. Unresolved recurrence/date interpretation remains explicit.
 Event summaries remain null: there is no deterministic Event summary contract yet.
 
-Unlabelled locations and metadata-only links/structured data remain outside semantic
-extraction; source URLs and raw evidence remain available for owner verification.
+Metadata-only links/structured data remain outside semantic extraction; source URLs and
+raw evidence remain available for owner verification. Unlabelled locations are read only
+through a conservative natural-venue path: a recognized venue head (`کافه`, `گالری`, …)
+after `در`/`توی`/`میزبان شما` or in a branch line, with attendance wording, a standalone
+branch line, or — for generic heads such as `خانه`/`مرکز` — holding wording
+(`برگزار …`) right after the name. Branch wording stays inside `venue_name`
+(`شعبه‌ی لواسان کافه رئیس`); no area, city or address is derived from it.
 
 The release gate adds two narrow, source-neutral discovery rules. An adapter-verified
 source category label (`source_category_text`) outranks free-text category inference;
