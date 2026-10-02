@@ -170,6 +170,24 @@ JALALI_MONTHS: tuple[str, ...] = (
     "اسفند",
 )
 
+# The same months written with their "ماه" suffix, attached ("مهرماه") or separate
+# ("مهر ماه", "مهر‌ماه"). Longest-first matching makes the suffixed form one date
+# signal, so the suffix is kept in the source wording instead of being dropped.
+JALALI_MONTH_FORMS: tuple[str, ...] = tuple(
+    form for month in JALALI_MONTHS for form in (month + "ماه", month + " ماه")
+)
+
+# Persian day ordinals that may stand where a day number stands ("یکم تا سوم مهر").
+# Detection only: the normalizer owns their numeric meaning. Multi-word forms are
+# written with spaces; ZWNJ folds to a space before matching.
+PERSIAN_DAY_ORDINALS: tuple[str, ...] = (
+    "یکم", "اول", "دوم", "سوم", "چهارم", "پنجم", "ششم", "هفتم", "هشتم", "نهم", "دهم",
+    "یازدهم", "دوازدهم", "سیزدهم", "چهاردهم", "پانزدهم", "شانزدهم", "هفدهم", "هجدهم",
+    "نوزدهم", "بیستم",
+    *("بیست و " + unit for unit in ("یکم", "اول", "دوم", "سوم", "چهارم", "پنجم", "ششم", "هفتم", "هشتم", "نهم")),
+    "سی ام", "سی و یکم", "سی و اول",
+)
+
 GREGORIAN_MONTHS: tuple[str, ...] = (
     "january",
     "february",
@@ -212,6 +230,7 @@ RELATIVE_DATES: tuple[str, ...] = (
 DATE_TERMS: tuple[str, ...] = (
     *PERSIAN_WEEKDAYS,
     *ENGLISH_WEEKDAYS,
+    *JALALI_MONTH_FORMS,
     *JALALI_MONTHS,
     *GREGORIAN_MONTHS,
     *RELATIVE_DATES,
@@ -334,6 +353,7 @@ DAILY_SCHEDULE_TERMS: frozenset[str] = frozenset(
 # Being invited to show up. Never enough on its own to create an event.
 ATTENDANCE_TERMS: tuple[str, ...] = (
     "منتظرتونن",
+    "منتظرتونیم",
     "منتظرتون هستیم",
     "منتظر شما",
     "منتظر شماییم",
@@ -527,6 +547,28 @@ AREA_LABELS: tuple[str, ...] = ("محله", "منطقه", "محدوده", "neigh
 DURATION_LABELS: tuple[str, ...] = (
     "مدت زمان برنامه", "مدت زمان برگزاری", "مدت زمان", "مدت برگزاری", "مدت", "duration",
 )
+# Natural (unlabelled) venue constructions: "در گالری نگاه برگزار می‌شود",
+# "توی شعبه‌ی لواسان کافه رئیس". A venue head is always required, so "در این
+# رویداد", "در صفحه", "در لینک بیو" or a bare city never become a venue.
+NATURAL_VENUE_INTRODUCERS: tuple[str, ...] = ("در", "توی", "تو", "میزبان شما", "میزبانتون", "میزبانتان")
+# Heads that name a physical venue on their own; accepted with attendance wording
+# in the same clause, a branch, or a whole standalone location line.
+NATURAL_VENUE_HEADS: tuple[str, ...] = (
+    "کافه گالری", "کافه", "گالری", "نگارخانه", "موزه", "فرهنگسرا", "تالار", "تماشاخانه",
+    "فضای هنری", "مرکز فرهنگی",
+)
+# Ordinary nouns that also head venue names ("در خانه بمانید", "در مرکز شهر").
+# Accepted only directly before holding wording ("... برگزار می‌شود") or with a branch.
+GENERIC_VENUE_HEADS: tuple[str, ...] = ("مجموعه", "سالن", "خانه", "مرکز", "باغ", "عمارت")
+VENUE_HOLDING_TERMS: tuple[str, ...] = ("برگزار",)
+# "شعبه‌ی لواسان کافه رئیس": the branch stays inside the venue wording; it is not
+# turned into an area or a city.
+VENUE_BRANCH_TERMS: tuple[str, ...] = ("شعبه",)
+# Words that end a natural venue name rather than continue it.
+VENUE_NAME_STOPWORDS: frozenset[str] = frozenset({"شهر", "خود", "اصلی", "بعدی", "قبلی", "جدید"})
+MAX_VENUE_NAME_TOKENS: int = 3
+MAX_VENUE_BRANCH_TOKENS: int = 2
+
 # Only an explicitly labelled organizer; authors and publishers are not organizers.
 ORGANIZER_LABELS: tuple[str, ...] = (
     "برگزارکنندگان", "برگزار کنندگان", "برگزارکننده", "برگزار کننده", "میزبان",

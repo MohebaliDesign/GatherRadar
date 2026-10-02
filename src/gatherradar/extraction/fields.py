@@ -15,15 +15,25 @@ from urllib.parse import urlsplit
 
 from . import rules
 from .signals import CITY_TOKENS, Signal, SignalSet, has_address_detail
-from .text import line_bounds, normalize, tokenize
+from .text import line_bounds, normalize, phrase_tokens, tokenize
 
 _MAX_PLACE_SUMMARY = 200
 _TRIM = " \t\r‌؛،,;:-–—•*_\u2066\u2067\u2068\u2069\ufeff"
 
-# A leading day number that belongs with the month term it precedes: "۱۹ و ۲۰ شهریور".
-_LEADING_NUMBERS = re.compile(r"(\d{1,4}(?:\s*(?:و|,|-|–|تا)\s*\d{1,4})*\s*)$")
+# A day written as a number or a Persian ordinal ("۹", "یکم", "سی و یکم").
+_DAY_WORD = (r"(?:\d{1,4}|" + "|".join(
+    re.escape(normalize(word)).replace(r"\ ", r"\s*")
+    for word in sorted(rules.PERSIAN_DAY_ORDINALS, key=len, reverse=True)) + r")")
+# Leading days that belong with the month term they precede: "۱۹ و ۲۰ شهریور",
+# "۸ تا ۱۰ مهرماه", "۵، ۱۲، ۱۹ و ۲۶ مهر", "یکم تا سوم مهرماه".
+_LEADING_NUMBERS = re.compile(
+    r"((?<!\w)" + _DAY_WORD + r"(?:\s*(?:و|,|،|-|–|تا|الی)\s*" + _DAY_WORD + r")*\s*)$"
+)
 # A trailing range that belongs with the time it follows: "از ساعت ۱۶ تا ۲۲".
 _TRAILING_RANGE = re.compile(r"^(\s*(?:تا|to|-|–|—)\s*\d{1,2}(?::\d{2})?)")
+# An explicit year written right after the month it belongs to: "۱۷ مهر ۱۴۰۵".
+_TRAILING_YEAR = re.compile(r"^([ \t\u200c]+\d{4})(?![\d:/\-])")
+_MONTH_TERMS = frozenset(rules.JALALI_MONTHS + rules.JALALI_MONTH_FORMS + rules.GREGORIAN_MONTHS)
 _EXPLICIT_FREE = re.compile(r"(?<!\w)(?:رایگان|بدون\s+هزینه|free|no\s+fee)(?!\w)")
 _AMOUNT_WITH_CURRENCY = re.compile(
     r"(?:[$€£]\s*\d[\d\s,٬،.]*)|"
@@ -32,6 +42,7 @@ _AMOUNT_WITH_CURRENCY = re.compile(
 )
 _ANY_AMOUNT = re.compile(r"(?<!\w)\d[\d\s,٬،.]*(?!\w)")
 _TEMPORAL_CONNECTORS = frozenset({"و", "تا", "الی", "از", "ماه", "ها", "and", "to", "at"})
+_ORDINAL_WORDS = frozenset(token.text for word in rules.PERSIAN_DAY_ORDINALS for token in tokenize(normalize(word)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +136,27 @@ def _temporal_gap_is_related(gap: str) -> bool:
     if len(gap) > 40 or any(char in gap for char in "؟?!؛;"):
         return False
     tokens = tuple(token.text for token in tokenize(normalize(gap)))
-    return all(token.isdigit() or token in _TEMPORAL_CONNECTORS for token in tokens)
+    return all(token.isdigit() or token in _TEMPORAL_CONNECTORS or token in _ORDINAL_WORDS for token in tokens)
+
+
+_ORDINAL_PREFIXES = frozenset(
+    normalize(word) for word in (*rules.PERSIAN_WEEKDAYS, "از", "تاریخ", "زمان", "روز", "روزهای")
+) | frozenset(token for day in rules.PERSIAN_WEEKDAYS for token in tokenize(normalize(day)))
+
+
+def _leading_day_context(prefix: str, days: str) -> bool:
+    """Whether a run of ordinal days really is the day of the following month.
+
+    "هفته اول مهر" or "نیمه دوم مهر" name part of a month, not its first or second
+    day. An ordinal run therefore needs a line start, punctuation, or a weekday /
+    date word ("از", "روز") right before it. Numeric days keep the existing rule.
+    """
+    if days.strip()[:1].isdigit():
+        return True
+    words = tokenize(prefix)
+    if not words or prefix[words[-1].end:].strip():
+        return True
+    return words[-1].text in _ORDINAL_PREFIXES
 
 
 def _temporal_fragments(found: SignalSet) -> list[_TemporalFragment]:
@@ -152,11 +183,16 @@ def _temporal_fragments(found: SignalSet) -> list[_TemporalFragment]:
             start = min(signal.start for signal in cluster)
             end = max(signal.end for signal in cluster)
             leading = _LEADING_NUMBERS.search(found.normalized[line_start:start])
-            if leading:
+            if leading and _leading_day_context(found.normalized[line_start:line_start + leading.start(1)],
+                                                leading.group(1)):
                 start = line_start + leading.start(1)
             trailing = _TRAILING_RANGE.match(found.normalized[end:line_end])
             if trailing:
                 end += trailing.end(1)
+            elif max(cluster, key=lambda item: item.end).term in _MONTH_TERMS:
+                year = _TRAILING_YEAR.match(found.normalized[end:line_end])
+                if year:
+                    end += year.end(1)
             trimmed = _trimmed_span(found.text, start, end)
             if trimmed is not None:
                 fragments.append(
@@ -293,7 +329,151 @@ def venue_name(found: SignalSet) -> str | None:
         # "محل برگزاری: تهران" names a city, which `city` already reports.
         if labelled and " ".join(normalize(labelled).split()) not in CITY_TOKENS:
             return labelled
-    return _corroborated_venue(found)
+    return _corroborated_venue(found) or _natural_venue(found)
+
+
+def _folded_tokens(phrases: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    return tuple(sorted({tuple(t.text for t in tokenize(normalize(p))) for p in phrases}, key=len, reverse=True))
+
+
+_VENUE_INTRODUCERS = _folded_tokens(rules.NATURAL_VENUE_INTRODUCERS)
+_VENUE_HEADS = _folded_tokens(rules.NATURAL_VENUE_HEADS)
+_GENERIC_VENUE_HEADS = _folded_tokens(rules.GENERIC_VENUE_HEADS)
+_VENUE_BRANCHES = _folded_tokens(rules.VENUE_BRANCH_TERMS)
+_VENUE_HOLDING = frozenset(normalize(term) for term in rules.VENUE_HOLDING_TERMS)
+_NOT_A_NAME = (frozenset(normalize(word) for word in rules.NAME_STOPWORDS | rules.VENUE_NAME_STOPWORDS)
+               | frozenset(t for phrase in rules.DATE_TERMS for t in phrase_tokens(phrase)) | CITY_TOKENS)
+_PAST_CLAUSE = re.compile(r"(?<!\w)(?:قبلی|گذشته|پیشین|قبلا|بودیم|previous|last)(?!\w)")
+
+
+def _phrase_at(tokens, index: int, phrases: tuple[tuple[str, ...], ...], text: str) -> int:
+    """Token length of the first phrase starting at `index` without crossing punctuation."""
+    for phrase in phrases:
+        end = index + len(phrase)
+        if end <= len(tokens) and all(tokens[index + k].text == phrase[k] for k in range(len(phrase))) and not any(
+                _crosses(text, tokens[k - 1].end, tokens[k].start) for k in range(index + 1, end)):
+            return len(phrase)
+    return 0
+
+
+def _crosses(text: str, previous_end: int, next_start: int) -> bool:
+    return any(char not in " \t‌" for char in text[previous_end:next_start])
+
+
+def _venue_span(found: SignalSet, start: int, busy: frozenset[int]) -> tuple[int, int, bool, bool] | None:
+    """`[branch area] head name [branch area]` from token `start`, or None.
+
+    Returns (first token, end token exclusive, generic head, has branch).
+    """
+    tokens, text = found.tokens, found.text
+
+    def joined(index: int) -> bool:
+        return index < len(tokens) and not _crosses(text, tokens[index - 1].end, tokens[index].start)
+
+    def name_run(index: int, limit: int) -> int:
+        count = 0
+        while (count < limit and joined(index + count) and index + count not in busy
+               and len(tokens[index + count].text) >= rules.MIN_NAME_TOKEN_LENGTH
+               and not tokens[index + count].text.isdigit()
+               and tokens[index + count].text not in _NOT_A_NAME
+               and not _phrase_at(tokens, index + count, _VENUE_HEADS + _GENERIC_VENUE_HEADS + _VENUE_BRANCHES, text)):
+            count += 1
+        return count
+
+    def branch(index: int) -> int:
+        size = _phrase_at(tokens, index, _VENUE_BRANCHES, text)
+        if not size:
+            return 0
+        if joined(index + size) and tokens[index + size].text == "ی":  # شعبه‌ی
+            size += 1
+        area = name_run(index + size, rules.MAX_VENUE_BRANCH_TOKENS)
+        return size + area if area else 0
+
+    cursor = start
+    leading = branch(cursor)
+    cursor += leading
+    if leading and not joined(cursor):
+        return None
+    head = _phrase_at(tokens, cursor, _VENUE_HEADS, text)
+    generic = not head
+    head = head or _phrase_at(tokens, cursor, _GENERIC_VENUE_HEADS, text)
+    if not head:
+        return None
+    cursor += head
+    name = name_run(cursor, rules.MAX_VENUE_NAME_TOKENS)
+    if not name:
+        return None
+    cursor += name
+    trailing = 0 if leading or not joined(cursor) else branch(cursor)
+    cursor += trailing
+    # A name still running past the limit has no defensible end.
+    if joined(cursor) and cursor not in busy and name_run(cursor, 1) and not trailing:
+        return None
+    return start, cursor, generic, bool(leading or trailing)
+
+
+def _natural_venue(found: SignalSet) -> str | None:
+    """A venue written in ordinary event phrasing, kept in the source's own words.
+
+    Requires a recognized venue head after an introducer ("در", "توی", "میزبان شما")
+    or a branch line, plus event context: attendance wording in the same clause, a
+    standalone location line, or — for generic heads such as "خانه" or "مرکز" —
+    holding wording ("برگزار ...") directly after the name. Retrospective or past
+    clauses never qualify. Several different names yield None.
+    """
+    tokens, text = found.tokens, found.text
+    busy = set()
+    for signal in (found.attendance + found.dates + found.times + found.prices
+                   + found.registration + found.retrospective):
+        if signal.first_token >= 0:
+            busy.update(range(signal.first_token, signal.last_token + 1))
+    busy = frozenset(busy)
+    attendance = found.attendance
+    names: dict[str, str] = {}
+    for index in range(len(tokens)):
+        intro = _phrase_at(tokens, index, _VENUE_INTRODUCERS, text)
+        line_start, line_end = line_bounds(text, tokens[index].start)
+        line_initial = index == 0 or tokens[index - 1].end <= line_start
+        if not intro and not (line_initial and _phrase_at(
+                tokens, index, _VENUE_BRANCHES + _VENUE_HEADS + _GENERIC_VENUE_HEADS, text)):
+            continue
+        if intro and (index + intro >= len(tokens) or _crosses(text, tokens[index + intro - 1].end, tokens[index + intro].start)):
+            continue
+        span = _venue_span(found, index + intro, busy)
+        if span is None:
+            continue
+        first, last, generic, has_branch = span
+        start, end = tokens[first].start, tokens[last - 1].end
+        clause = _clause_bounds(text, start)
+        folded_clause = found.normalized[slice(*clause)]
+        if _PAST_CLAUSE.search(folded_clause) or any(clause[0] <= s.start < clause[1] for s in found.retrospective):
+            continue
+        # "در کافه الف و گالری ب": a listed alternative is not one venue.
+        if (last + 1 < len(tokens) and tokens[last].text in {"و", "یا", "and", "or"}
+                and _phrase_at(tokens, last + 1, _VENUE_HEADS + _GENERIC_VENUE_HEADS + _VENUE_BRANCHES, text)):
+            return None
+        after = last < len(tokens) and tokens[last].text in _VENUE_HOLDING and not _crosses(text, end, tokens[last].start)
+        hosted = intro and tokens[index].text.startswith("میزبان")
+        in_clause = hosted or any(clause[0] <= s.start < clause[1] for s in attendance)
+        rest = (text[line_start:tokens[index].start] + " " + text[end:line_end])
+        standalone = not any(
+            t.text not in {a.text for a in tokenize(normalize(" ".join(s.text for s in attendance)))}
+            for t in tokenize(normalize(rest)))
+        if generic and not (after or has_branch):
+            continue
+        if not (after or in_clause or (has_branch and standalone)):
+            continue
+        if not intro and not (has_branch and standalone):
+            continue
+        value = text[start:end]
+        names.setdefault(" ".join(phrase_tokens(value)), value)
+    return next(iter(names.values())) if len(names) == 1 else None
+
+
+def _clause_bounds(text: str, position: int) -> tuple[int, int]:
+    start = max(text.rfind(mark, 0, position) for mark in "\n.!?؟؛;") + 1
+    ends = [found for mark in "\n.!?؟؛;" if (found := text.find(mark, position)) != -1]
+    return start, min(ends) if ends else len(text)
 
 
 def _corroborated_venue(found: SignalSet) -> str | None:
@@ -490,7 +670,7 @@ _MONTH = "|".join(sorted((re.escape(normalize(m)) for m in rules.JALALI_MONTHS +
 _PLURAL_WEEKDAY = re.compile(r"(?<!\w)(?:" + _WEEKDAY + r")\s?ها(?!\w)")
 _WEEKDAY_TOKEN = re.compile(r"(?<!\w)(?:" + _WEEKDAY + r")(?!\w)")
 _SESSIONS = re.compile(r"(?<!\w)(?:[2-9]|[1-9]\d+|" + "|".join(rules.SESSION_COUNT_WORDS) + r")\s*جلسه(?!\w)")
-_DAY_LIST = re.compile(r"(?<!\d)\d{1,2}(?:\s*[،,]\s*\d{1,2})+(?:\s*و\s*\d{1,2})?\s*(?:" + _MONTH + r")(?!\w)")
+_DAY_LIST = re.compile(r"(?<!\d)\d{1,2}(?:\s*[،,]\s*\d{1,2})+(?:\s*و\s*\d{1,2})?\s*(?:" + _MONTH + r")(?:\s*ماه)?(?!\w)")
 _RECURRENCE = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(normalize(t)) for t in rules.RECURRENCE_TERMS) + r")(?!\w)")
 _SENTENCE = re.compile(r"[^\n.!?؟؛;]+")
 _ONLY_WEEKDAYS = re.compile(r"(?:\s|[،,\-–]|و|(?:" + _WEEKDAY + r")(?:\s?ها)?)+")

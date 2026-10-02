@@ -29,7 +29,7 @@ class EvidenceItemDiscovery:
 @dataclass(frozen=True, slots=True)
 class EvidenceDiscoveryRunSummary(DiscoveryRunSummary):
     items: tuple[EvidenceItemDiscovery, ...] = ()
-    grouping_strategy: str = 'conservative/1'
+    grouping_strategy: str = 'conservative/2'
 
     @property
     def observed(self) -> int:
@@ -85,7 +85,8 @@ def run_evidence_discovery(
             outcomes.append(outcome)
         items.append(EvidenceItemDiscovery(
             raw_item.id, units, tuple(outcomes),
-            ignored_fragments=len(bundle.fragments) - sum(len(unit.fragments) for unit in units),
+            ignored_fragments=len(bundle.fragments) - sum(
+                len(unit.fragments) + len(unit.collapsed) for unit in units),
             reason='no_meaningful_evidence' if not units else None,
         ))
         all_outcomes.extend(outcomes)

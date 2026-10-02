@@ -385,7 +385,7 @@ GatherRadar keeps original source text separate from visual evidence:
 
 `RawItem.raw_text` is never replaced with OCR output. Evidence is stored separately with artifact and OCR provenance.
 
-The current grouping strategy, `conservative/1`, prefers false negatives over unsafe merges. New anchors split groups; only adjacent structured supporting evidence can attach when there is no competing topic or recognized conflict. Ambiguous fragments remain separate.
+The current grouping strategy, `conservative/2`, prefers false negatives over unsafe merges. New anchors split groups; only adjacent structured supporting evidence can attach when there is no competing topic or recognized conflict. A media fragment that only repeats an anchor's exact title within the same post joins that anchor instead of becoming a parallel candidate. Ambiguous fragments remain separate.
 
 ## Source registry
 

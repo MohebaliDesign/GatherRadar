@@ -100,7 +100,7 @@ def run_canonical_review(
                     mode = "website_text"
                 else:
                     used_media = any(f.kind not in {EvidenceKind.CAPTION, EvidenceKind.WEBSITE_TEXT, EvidenceKind.WEBSITE_LISTING}
-                                     for unit in units.values() for f in unit.fragments)
+                                     for unit in units.values() for f in unit.fragments + unit.collapsed)
                     mode = "evidence_with_caption_fallback" if used_media else "caption_fallback"
             else:
                 summary = run_discovery(items, service, sources={source.id: source})

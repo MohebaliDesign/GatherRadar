@@ -1,6 +1,53 @@
 # Stage 9 — acceptance evidence
 
-## Release gate (current)
+## Instagram evidence hardening (current)
+
+Branch `fix/instagram-evidence-hardening`, base `67fb44f`. Baseline: 1,108 tests
+(9 skipped) passed. Final: 1,154 passed (9 skipped); `compileall`, `pip check` and
+`git diff --check` clean.
+
+**Regression target.** The reviewed public Davvvat Reel `instagram:davvvat:Dd9K9nYxACp`
+produced a caption Event `رویداد باریستا تویی` with no date or venue, plus a second Event
+with the same title and `source_date_text` ≈ `3 am` from a noisy Reel frame. Raw captures
+are not committed; `tests/fixtures/evidence_grouping/persian_reel_repeated_anchor.json` is
+a sanitized synthetic model of that shape (caption + six noisy frames).
+
+**Loss points.**
+
+| Fact | Lost at | Cause | Fix |
+| --- | --- | --- | --- |
+| `۹ و ۱۰ مهرماه` | signals | attached `مهرماه` was not a date term, so no temporal fragment existed | month + `ماه` forms are date terms for all months |
+| leading days | fields | Arabic comma and ordinal days were not leading days; a year after the month was dropped | grammar extended; ordinal guard for `هفته اول مهر` |
+| `شعبه‌ی لواسان کافه رئیس` | fields | only labelled/corroborated venues were read | conservative natural-venue path |
+| duplicate Event | grouping | a frame repeating the caption title was its own unit; whole-wording date comparison treated `3 am` as a conflict | repeated-anchor handling in `conservative/2` |
+
+Normalization was not changed: it already accepted suffixed months, ordinals and ranges
+when given the wording.
+
+**Before/after (fixture, `extract instagram … --evidence --normalize` on a scratch data dir).**
+
+| | Before (`conservative/1`) | After (`conservative/2`) |
+| --- | --- | --- |
+| DiscoveryUnits / Events / Other | 6 / 3 / 3 | 3 / 1 / 2 |
+| title | `رویداد باریستا تویی` ×3 | `رویداد باریستا تویی` |
+| `source_date_text` | null, `3 am`, `9/25` | `۹ و ۱۰ مهرماه` |
+| normalized date | none | none — listed days stay unresolved (`multiple_dates`), per contract |
+| venue / area | null / null | `شعبه‌ی لواسان کافه رئیس` / null |
+| duplicate status | three same-title candidates | one candidate; Stage 8 yields 1 Event, 0 possible duplicates; 4 frames kept as collapsed provenance |
+
+**Live validation.** Not performed in this pass: the execution environment had no
+local `data/` (no raw/evidence history and no authenticated browser profile), so the
+bounded `refresh --source davvvat_instagram --limit 5 --days 14` run and the real
+`Dd9K9nYxACp` re-extraction remain for the owner. No runtime data was created or changed.
+
+**Remaining limitations.** Two listed days (`۹ و ۱۰ مهرماه`) are kept as wording but not
+normalized; recurring/multi-session schedules are not expanded; a media-only fragment
+whose only occurrence evidence is a noisy clock can still be an Event; title repetition
+needs an exact folded title (OCR-misspelled titles stay separate); branch localities are
+not split into `area_text`; a lone unlabelled OCR clock next to a caption is no longer
+attached as support text.
+
+## Release gate (previous)
 
 Validated on 2026-09-27 on branch `feat/google-sheets`, HEAD `258286d`, over the
 uncommitted Stage 9 tree. Baseline: 1,066 tests passed. Final: 1,075 passed (9 new).
