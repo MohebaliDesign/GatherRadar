@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 # Facts an adapter may read from explicit page structure (a labelled section,
 # a fixed header slot, a caption label). Values are exact retained source text.
@@ -13,6 +15,79 @@ STRUCTURED_FIELDS = frozenset({
 # listing card on the approved listing page.
 FIELD_ORIGINS = ('detail', 'listing')
 MAX_CARD_TEXT = 1500
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSession:
+    """Whitelisted facts from one public website session, before normalization.
+
+    The source's ISO spelling and separate price keys are retained. No currency,
+    end time, event-level price or availability is inferred by the collector.
+    ``source_locator`` identifies the precise embedded-data path on the detail URL.
+    """
+
+    source_session_id: str
+    source_event_id: str
+    start_iso: str
+    source_locator: str
+    duration_hours: str | None = None
+    price_per_person: str | None = None
+    unit_price: str | None = None
+    host_discount_pct: str | None = None
+    platform_discount_pct: str | None = None
+    remaining_seats: int | None = None
+    enabled: bool | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.source_session_id, self.source_event_id):
+            if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value):
+                raise ValueError('invalid source session identity')
+        if (not isinstance(self.source_locator, str)
+                or not re.fullmatch(r'react-router:loaderData/routes/events\.\$id/sessions/[0-9]{1,3}',
+                                    self.source_locator)):
+            raise ValueError('invalid source session locator')
+        if (not isinstance(self.start_iso, str) or len(self.start_iso) > 40
+                or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})',
+                                    self.start_iso)):
+            raise ValueError('invalid source session timestamp')
+        try:
+            instant = datetime.fromisoformat(self.start_iso.replace('Z', '+00:00'))
+        except ValueError as exc:
+            raise ValueError('invalid source session timestamp') from exc
+        if instant.utcoffset() is None:
+            raise ValueError('source session timestamp requires an offset')
+        for name in ('duration_hours', 'price_per_person', 'unit_price',
+                     'host_discount_pct', 'platform_discount_pct'):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not re.fullmatch(r'[0-9]{1,15}(?:\.[0-9]{1,6})?', value):
+                raise ValueError('invalid source session numeric fact')
+            try:
+                amount = Decimal(value)
+            except InvalidOperation as exc:
+                raise ValueError('invalid source session numeric fact') from exc
+            if name == 'duration_hours' and not Decimal(0) < amount <= Decimal(744):
+                raise ValueError('invalid source session duration')
+            if name.endswith('_discount_pct') and amount > 100:
+                raise ValueError('invalid source session discount')
+        if (self.remaining_seats is not None
+                and (type(self.remaining_seats) is not int or not 0 <= self.remaining_seats <= 1_000_000)):
+            raise ValueError('invalid source session remaining seats')
+        if self.enabled is not None and type(self.enabled) is not bool:
+            raise ValueError('invalid source session enabled flag')
+
+    def to_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_mapping(cls, value: object) -> SourceSession:
+        if not isinstance(value, dict) or set(value) - cls.__dataclass_fields__.keys():
+            raise ValueError('invalid source session mapping')
+        try:
+            return cls(**value)
+        except TypeError as exc:
+            raise ValueError('invalid source session mapping') from exc
 
 
 @dataclass(frozen=True, slots=True)

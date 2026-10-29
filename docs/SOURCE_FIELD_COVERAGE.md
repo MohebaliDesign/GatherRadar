@@ -1,8 +1,97 @@
 # Source field coverage
 
-Stage 9 source-completeness pass, 2026-09-26. This document records which review facts
+The historical Stage 9 source-completeness pass below is dated 2026-09-26. It records which review facts
 each approved source family publicly exposes, where GatherRadar reads them, and a
-field-by-field audit of every Event in the final fresh acceptance workbook.
+field-by-field audit of every Event in that run's acceptance workbook. Its counts are
+not a current claim of zero extraction defects. The current hardening addendum follows;
+historical observations and metrics are retained for comparison.
+
+## 2026-10-20 hardening: public session evidence
+
+The Jabama audit used the already saved public HTML
+`data/website-inspection/jabama-event-detail.html` read-only. No new HTTP request,
+authenticated browser session, checkout or private API was used. This file contains
+one supported `/events/` route with one explicit session, repeated as `firstSession`.
+The current parser recovers **one session**, with no parser diagnostics, from that
+same stored page. Its source ISO start is `2026-09-24T17:00:00.000Z`, duration is
+2 hours, remaining seats 45 and enabled flag true; session price keys are null.
+These observations do not establish current availability.
+The same saved page's visible wording names two days (`۱ و ۲ مهر ماه ساعت ۲۰:۳۰`).
+Offline pipeline replay preserves two occurrences: the first has only its visible
+date/clock, and the overlapping second combines that wording with the native
+session's duration/seat evidence. It does not create a third duplicate occurrence or
+lend the second session's price/availability to the first. The first date's inferred
+year remains flagged; the visible starting-price interpretation remains unresolved.
+
+Earliest loss point: `jabama-events/2` excluded scripts and retained only a boolean
+structured-data marker. Consequently the collector discarded supported session
+facts before discovery or normalization could see them. `jabama-events/3` retains
+whitelisted `SourceSession` evidence and diagnoses absent, malformed, conflicting
+or unsupported session data. Existing JSONL observations that discarded scripts
+cannot recover them through stored-only reanalysis; their unknowns stay unknown.
+
+| Sampled fact | Before | After | Evidence / restriction |
+| --- | --- | --- | --- |
+| One bookable session and identity | `INTENTIONALLY_UNSUPPORTED` under the old contract | `MATCHED` | Own route's `sessions`; repeated `firstSession` is ignored |
+| Session date and clock | `INTENTIONALLY_UNSUPPORTED` | `MATCHED` | Original aware `startIso`; converted to configured source timezone |
+| Session duration and end instant | `INTENTIONALLY_UNSUPPORTED` | `MATCHED` | Explicit `durationHours`; elapsed-time derivation is traceable |
+| Session remaining seats / enabled | `INTENTIONALLY_UNSUPPORTED` | `MATCHED` | Session's own numeric/boolean values; not Event status |
+| Session price | `SOURCE_MISSING` | `SOURCE_MISSING` | Both session price keys null; event starting price is never borrowed |
+| Session currency | `AMBIGUOUS` | `AMBIGUOUS` | No session currency field; page JSON-LD and visible price units are not safely interchangeable |
+| Nonempty timeslots / different stream shapes | `INTENTIONALLY_UNSUPPORTED` | `INTENTIONALLY_UNSUPPORTED` | Unsupported shapes emit schema diagnostics rather than fabricated dates |
+
+The sanitized fixture is
+[`jabama-sessions-detail.html`](../tests/fixtures/websites/jabama-sessions-detail.html);
+[its note](../tests/fixtures/websites/jabama-sessions-README.txt) separates verified
+source structure from synthetic regression variations. Tests additionally cover
+multiple sessions, separate prices/availability, discounts, cross-event IDs, repeated
+and conflicting session identities, malformed clocks, unsafe script arguments and
+schema drift. They do not claim broader live source coverage.
+
+Session-only details with a retained heading now become Events even when visible
+prose is classified as Place/Other. Offline integration tests verify the same session
+facts through discovery, normalization, canonicalization, SQLite, CSV, JSON, Gemini
+and reopened XLSX. Per-session provenance is retained, parent dates stay null for
+multiple sessions, and malformed siblings prevent a fully ready classification.
+Price modifiers remain structured source facts; no discounted final price or source
+currency is invented.
+
+Current field audits use the following vocabulary consistently. Each extraction bug
+must identify the earliest stage that dropped a supported fact; missing optional
+facts are not defects:
+
+| Classification | Meaning |
+| --- | --- |
+| `MATCHED` | Supported value preserved with its own evidence |
+| `SOURCE_MISSING` | Inspected source does not publish the fact |
+| `EXTRACTION_BUG` | Published supported value lost or misread by the pipeline |
+| `AMBIGUOUS` | Evidence admits more than one defensible interpretation |
+| `ACCESS_RESTRICTED` | Fact cannot be inspected within permitted access |
+| `INTENTIONALLY_UNSUPPORTED` | Explicitly unsupported input shape, reported for review |
+| `CONFLICT` | Source evidence supplies contradictory values |
+
+`review.coverage.audit_field` accepts an explicit evidence reference, explanation and
+verified retention checks across collection, evidence, grouping, extraction,
+normalization, canonicalization, persistence and export. `True` means inspected and
+retained, `False` inspected and lost, `None` not inspected. An uninspected earlier
+stage prevents an unsupported earliest-loss claim. Missing output alone cannot prove
+`SOURCE_MISSING` or `EXTRACTION_BUG`; those require inspected evidence.
+`coverage_summary` groups counts by publisher, source, website/Instagram channel,
+field, evidence type and readiness. It produces no invented completeness percentage.
+
+Readiness is separate from coverage and human decisions. Records/export schema 3
+includes `ready_for_review`, `needs_enrichment`, `needs_schedule_review` and
+`source_unavailable`, with reason codes and Persian explanations. The schema-3
+workbook exposes filters in `آمادگی داده`, `دلیل بررسی` and a separate `جلسه‌ها`
+column, while preserving historical snapshots and owner fields. SQLite DDL remains
+version 1; older record payloads receive additive read-time defaults.
+
+The historical matrices below describe their dated sampling only. In particular,
+their blanket Jabama session `U` classifications and caption-description exclusions
+are superseded by the current supported contracts. No new full-source coverage
+percentage or zero-defect conclusion follows from this one saved-page audit.
+
+## Historical 2026-09-26 audit
 
 Acceptance principle: if an approved public source clearly exposes a fact and the
 supported data contract includes it, the fact must survive into SQLite and every
@@ -15,7 +104,7 @@ portable output. Every empty field must be explained as one of:
 | A | `ambiguous` | Exposed but deliberately unresolved (recurrence, broad relative date) |
 | U | `intentionally_unsupported` | Outside the current contract (taxonomy, structured data) |
 | R | `access_restricted` | Only behind login, checkout or a robots-disallowed path |
-| BUG | `BUG` | Source-supported and lost — must be zero |
+| BUG | `BUG` (now `EXTRACTION_BUG`) | Source-supported and lost in the historical audited sample |
 
 ## Field semantics
 

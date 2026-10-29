@@ -37,6 +37,8 @@ class EvidenceRunSummary:
     output_path: Path
     failures: tuple[str, ...] = ()
     malformed: tuple[str, ...] = ()
+    capture_failed_slides: int = 0
+    capture_diagnostics: tuple[dict, ...] = ()
 
 
 def _evidence_kind(kind: MediaKind) -> EvidenceKind:
@@ -99,7 +101,7 @@ def run_instagram_evidence(
 
     fragments = [caption_fragment(item) for item in items]
     succeeded = empty = failed = 0
-    failures = [failure.reason for failure in capture.failures]
+    failures = [failure.report() for failure in capture.failures]
     evidence_store = JsonlEvidenceStore(instagram_evidence_output_path(source, data_dir))
     prior_read = evidence_store.read()
     for artifact in capture.artifacts:
@@ -143,6 +145,11 @@ def run_instagram_evidence(
         existing_evidence=stored.already_existing, output_path=stored.path,
         failures=tuple(failures),
         malformed=tuple((*raw_read.malformed, *prior_read.malformed)),
+        capture_failed_slides=sum(f.slide_index is not None for f in capture.failures),
+        capture_diagnostics=tuple(dict(source_id=source.id, raw_item_id=f.raw_item_id,
+            slide_index=f.slide_index, category=f.category, retry_count=f.retry_count,
+            frame_timestamp_ms=f.frame_timestamp_ms)
+            for f in capture.failures),
     )
 
 

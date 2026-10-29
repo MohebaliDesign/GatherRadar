@@ -1,5 +1,16 @@
 # Stage 9 — acceptance evidence
 
+## Data-quality and occurrence hardening (2026-10-20)
+
+The current implementation and actual frozen owner-run comparison are recorded in
+[DATA_QUALITY_VALIDATION.md](DATA_QUALITY_VALIDATION.md). Baseline 1,154 tests;
+final 1,257 passed, no failures/skips. The same 40 observations yield 32 canonical /
+25 displayed Events after three false/duplicate candidates collapse. A targeted
+34-assertion audit verifies 25 recovered facts and nine preserved golden-reference
+facts; it is not an exhaustive claim about every blank field. Historical snapshots
+and reviews survived isolated acceptance; original runtime data was not modified.
+Sections below are historical validation evidence.
+
 ## Instagram evidence hardening (current)
 
 Branch `fix/instagram-evidence-hardening`, base `67fb44f`. Baseline: 1,108 tests

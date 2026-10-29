@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -14,6 +14,8 @@ from ..deduplication.keys import stable_id
 from ..domain import Event, PlaceCandidate
 from ..domain.temporal import DatePrecision
 from .schema import DECISIONS
+from .readiness import assess_readiness
+from .eligibility import eligible, _undated
 
 WEEKDAYS = ('دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه', 'یکشنبه')
 MONTHS = ('فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
@@ -73,7 +75,7 @@ def iso(value: object) -> str:
 def quality(event: Event) -> str:
     if any('conflict' in d.code or 'unresolved_temporal' in d.code for d in event.diagnostics):
         return 'تعارض داده'
-    if event.start_date is None or event.date_precision is DatePrecision.UNKNOWN:
+    if not event.occurrences and (event.start_date is None or event.date_precision is DatePrecision.UNKNOWN):
         return 'تاریخ نامشخص'
     if event.diagnostics or event.date_precision is DatePrecision.INFERRED:
         return 'نیاز به بررسی'
@@ -109,7 +111,9 @@ def schedule(event: Event) -> str:
 
 
 def event_row(event: Event, run_id: str, human: tuple[str, str] | None = None) -> list:
+    from .records import primitive
     decision, note = human if human is not None else (DECISIONS[0], '')
+    readiness = assess_readiness(event)
     links = sorted({url(u) for u in (*event.evidence_urls, event.canonical_source_url) if u})
     visible = [decision, event.title, event.category, STATUS[event.status.value],
         jalali(event.start_date), WEEKDAYS[event.start_date.weekday()] if event.start_date else '',
@@ -118,7 +122,8 @@ def event_row(event: Event, run_id: str, human: tuple[str, str] | None = None) -
         event.venue_name, event.area_text, event.city, event.address, event.duration_text, price(event),
         event.availability_text, FORMATS.get(event.event_format, ''), event.description_text,
         event.organizer_name, url(event.registration_url), url(event.canonical_source_url), '\n'.join(links),
-        len(event.source_ids) or len(links), quality(event), note]
+        len(event.source_ids) or len(links), quality(event), note,
+        readiness.label, readiness.explanation, occurrence_text(event)]
     technical = [event.event_id, run_id, iso(event.start_date), iso(event.end_date), event.timezone,
         event.date_precision.value, iso(event.starts_at), iso(event.ends_at),
         str(event.price_amount) if event.price_amount is not None else '', event.currency,
@@ -126,8 +131,30 @@ def event_row(event: Event, run_id: str, human: tuple[str, str] | None = None) -
         encoded(event.candidate_ids), encoded(event.source_item_ids), encoded(links),
         url(event.canonical_source_url), encoded([asdict(d) for d in event.diagnostics]),
         iso(event.first_seen_at), iso(event.last_seen_at), event.duplicate_group_id,
-        encoded([asdict(p) for p in event.field_provenance]), event.extraction_confidence]
+        encoded([asdict(p) for p in event.field_provenance]), event.extraction_confidence,
+        encoded(primitive(event.occurrences)), event.schedule_kind.value, event.recurrence_rule,
+        readiness.status.value, encoded(readiness.reasons), encoded(readiness.indicators),
+        event.source_title, event.display_title_origin, encoded(event.display_title_evidence_ids),
+        event.title_evidence_text, event.title_review_required, event.event_detection_reason]
     return [v if v is not None else '' for v in visible + technical]
+
+
+def occurrence_text(event: Event) -> str:
+    rows = []
+    for occurrence in event.occurrences:
+        text = jalali(occurrence.start_date)
+        if occurrence.end_date:
+            text += ' تا ' + jalali(occurrence.end_date)
+        if occurrence.start_time:
+            text += '، ' + persian(occurrence.start_time.strftime('%H:%M'))
+        if occurrence.end_time:
+            text += ' تا ' + persian(occurrence.end_time.strftime('%H:%M'))
+        if occurrence.price_text:
+            text += ' — ' + occurrence.price_text
+        if occurrence.availability_text:
+            text += ' — ' + occurrence.availability_text
+        rows.append(text)
+    return '\n'.join(rows)
 
 
 def place_row(place: PlaceCandidate, run_id: str, source_id: str) -> list:
@@ -142,27 +169,42 @@ class ReviewWindow:
     events: tuple[Event, ...]
     filtered: int
     undated: int
+    schedule_review: tuple[Event, ...] = ()
+    dispositions: tuple = ()
 
 
 def review_window(events: tuple[Event, ...], started_at: datetime, days: int = 14,
                   review_timezone: str = 'Asia/Tehran') -> ReviewWindow:
+    from .relevance import assess_relevance
+    # Validate even empty input.
     if type(days) is not int or not 1 <= days <= 90:
         raise ValueError('days must be between 1 and 90')
     if started_at.tzinfo is None or started_at.utcoffset() is None:
         raise ValueError('run start must be timezone-aware')
-    today = started_at.astimezone(ZoneInfo(review_timezone)).date()
-    horizon = today + timedelta(days=days)
-    retained, undated = [], 0
-    for event in events:
-        unresolved = event.start_date is None or event.date_precision is DatePrecision.UNKNOWN
-        if unresolved:
-            undated += 1
-        elif (event.end_date or event.start_date) < today or event.start_date > horizon:
-            continue
-        retained.append(event)
-    retained.sort(key=lambda e: (e.start_date is None or e.date_precision is DatePrecision.UNKNOWN,
-        e.start_date or date.max, e.start_time is None, iso(e.start_time), e.title or '', e.event_id))
-    return ReviewWindow(tuple(retained), len(events) - len(retained), undated)
+    ZoneInfo(review_timezone)
+    accepted = tuple(e for e in events if eligible(e))
+    decisions = tuple(assess_relevance(e, started_at, days, review_timezone) for e in accepted)
+    retained = [e for e, d in zip(accepted, decisions) if d.disposition == 'actionable']
+    review = tuple(e for e, d in zip(accepted, decisions) if d.disposition == 'needs_schedule_review')
+    by_id = {d.event_id: d for d in decisions}
+    def ordering(event):
+        visible = [o for o in event.occurrences if o.occurrence_id in by_id[event.event_id].occurrence_ids]
+        first = min(visible, key=lambda o: (o.start_date, iso(o.start_time))) if visible else event
+        return (first.start_date or date.max, first.start_time is None, iso(first.start_time),
+                event.title or '', event.event_id)
+    retained.sort(key=ordering)
+    return ReviewWindow(tuple(retained), len(accepted) - len(retained), len(review), review, decisions)
+
+
+def eligible_review(result: CanonicalizationResult, window: ReviewWindow
+                    ) -> tuple[CanonicalizationResult, ReviewWindow]:
+    events = tuple(e for e in result.events if eligible(e))
+    visible = tuple(e for e in window.events if eligible(e))
+    review = tuple(e for e in window.schedule_review if eligible(e))
+    ids = {e.event_id for e in events}
+    return replace(result, events=events), ReviewWindow(
+        visible, len(events) - len(visible), len(review), review,
+        tuple(d for d in window.dispositions if d.event_id in ids))
 
 
 def snapshot_title(kind: str, started_at: datetime, review_timezone: str) -> str:
@@ -171,7 +213,7 @@ def snapshot_title(kind: str, started_at: datetime, review_timezone: str) -> str
 
 
 def duplicate_rows(result: CanonicalizationResult, run_id: str) -> list[list]:
-    membership = {cid: e for e in result.events for cid in e.candidate_ids}
+    membership = {cid: e for e in result.events if eligible(e) for cid in e.candidate_ids}
     rows = {}
     for pair in result.possible_duplicates:
         if pair.kind is not MatchKind.POSSIBLE_DUPLICATE:

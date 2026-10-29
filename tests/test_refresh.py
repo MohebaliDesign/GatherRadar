@@ -191,6 +191,22 @@ class RefreshTests(RepositoryCase):
         self.assertEqual(result.snapshot.events, 1)
         self.assertNotIn('private media state', str(result))
 
+    def test_media_diagnostics_survive_manifest_and_analysis(self):
+        source = next(s for s in load_sources(CONFIG) if s.id == 'davvvat_instagram')
+        item = raw(source)
+        collector = Mock()
+        collector.collect.return_value = CollectionResult(source.id, (item,))
+        self.service.instagram_collect = lambda source_id, **kwargs: run_instagram_collection(source_id, collector=collector, **kwargs)
+        detail = dict(source_id=source.id, raw_item_id=item.id, slide_index=2,
+                      category='visual_not_ready', retry_count=2)
+        self.evidence.return_value = SimpleNamespace(failures=('private detail intentionally not logged',),
+            malformed=(), capture_diagnostics=(detail,), ocr_failed=0)
+        result = self.run_refresh(source_ids=(source.id,))
+        self.assertEqual(result.sources[0].media_diagnostics, (detail,))
+        manifest = json.loads((Path(self.directory)/'runs/refresh_one.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['sources'][0]['media_diagnostics'], [detail])
+        self.assertNotIn('private detail', str(manifest))
+
     def test_skip_evidence_never_acquires(self):
         self.run_refresh(skip_instagram_evidence=True)
         self.evidence.assert_not_called()

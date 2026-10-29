@@ -414,8 +414,8 @@ class PublisherExportTests(RepositoryCase):
         (event,) = document['events']
         self.assertEqual(event['reference_urls'], ['https://davvvat.ir/event/42'])
         self.assertEqual({p['channel'] for p in event['channel_provenance']}, {'instagram'})
-        self.assertIn('description_text', event['channel_gaps'])
-        self.assertIsNone(event['description_text'])
+        self.assertNotIn('description_text', event['channel_gaps'])
+        self.assertEqual(event['description_text'], caption)
 
         with (root / 'exports/latest/events.csv').open(encoding='utf-8-sig', newline='') as handle:
             (row,) = list(csv.DictReader(handle))

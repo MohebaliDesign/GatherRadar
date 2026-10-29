@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..domain import DiscoveryType
+from ..domain.website import SourceSession
 
 EVENT_FORMATS = frozenset({"in_person", "online", "hybrid"})
 
@@ -43,10 +44,13 @@ class ExtractionInput:
     timezone: str | None = None
     city_hint: str | None = None
     source_title: str | None = None
-    # Website units only: validated structural facts and each fragment's own text
-    # as (origin, text), so listing and detail facts can be compared, not blended.
+    # Validated structural website facts plus each unit fragment's own text as
+    # (origin, text), so captions, OCR, listing and detail facts stay attributable.
     source_fields: tuple[SourceField, ...] = ()
     segments: tuple[tuple[str, str], ...] = ()
+    source_sessions: tuple[SourceSession, ...] = ()
+    source_session_diagnostics: tuple[str, ...] = ()
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +103,7 @@ class DiscoveryFacts:
     # Source-provided context, never generated prose; `summary` stays separate.
     description_text: str | None = None
     area_text: str | None = None
+    location_context: str | None = None
     duration_text: str | None = None
     organizer_name: str | None = None
     availability_text: str | None = None
@@ -109,6 +114,14 @@ class DiscoveryFacts:
     reference_urls: tuple[str, ...] = ()
     # Fields left null because listing/detail evidence explicitly disagreed.
     field_conflicts: tuple[str, ...] = ()
+    extraction_diagnostics: tuple[str, ...] = ()
+    source_sessions: tuple[SourceSession, ...] = ()
+    source_session_diagnostics: tuple[str, ...] = ()
+    source_title: str | None = None
+    display_title_origin: str | None = None
+    title_evidence_text: str | None = None
+    title_review_required: bool = False
+    event_detection_reason: str | None = None
 
 
 __all__ = ["EVENT_FORMATS", "DiscoveryEvidence", "DiscoveryFacts", "ExtractionInput", "SourceField"]

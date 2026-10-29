@@ -204,6 +204,8 @@ def format_summary(summary: RunSummary) -> str:
         lines.append("")
         lines.append("Skipped items:")
         lines.extend(f"  - {reason}" for reason in summary.failure_reasons)
+    if getattr(summary, 'warnings', ()):
+        lines.extend(('Warnings:', *(f'  - {reason}' for reason in summary.warnings)))
 
     lines.append("")
     lines.append("Saved:")
@@ -387,6 +389,7 @@ def format_evidence_summary(summary: EvidenceRunSummary) -> str:
         f'Source: {summary.source.name}', f'Raw items: {summary.raw_items}', '',
         f'Image assets: {summary.image_assets}',
         f'Carousel slides: {summary.carousel_slides}',
+        f'Failed/unconfirmed carousel positions: {summary.capture_failed_slides}',
         f'Reel frames: {summary.reel_frames}', '',
         f'OCR succeeded: {summary.ocr_succeeded}', f'OCR empty: {summary.ocr_empty}',
         f'OCR failed: {summary.ocr_failed}', '',

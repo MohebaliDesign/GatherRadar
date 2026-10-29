@@ -1,9 +1,12 @@
 """Source-supported field selection with explicit unresolved conflicts."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 from ..domain import Event
 from ..domain.event import CanonicalDiagnostic, ChannelProvenance, EventStatus, FieldProvenance
 from ..domain.temporal import DatePrecision
+from ..domain.occurrence import ScheduleKind, identify_occurrence, occurrence_key
 from ..extraction.fields import is_sold_out
 from .keys import stable_id, text_key
 from .matcher import temporal_reliable
@@ -13,10 +16,10 @@ TEMPORAL_FIELDS = ("start_date", "end_date", "start_time", "end_time", "timezone
                    "starts_at", "ends_at", "date_precision")
 TEXT_FIELDS = ("title", "summary", "category", "source_date_text", "venue_name", "address",
                "city", "event_format", "price_text", "registration_url", "language",
-               "area_text", "duration_text", "organizer_name", "availability_text", "source_schedule_text",
+               "area_text", "location_context", "duration_text", "organizer_name", "availability_text", "source_schedule_text",
                "source_category_text")
 FOLDED_FIELDS = frozenset({"title", "venue_name", "address", "city", "category", "language",
-                           "area_text", "duration_text", "organizer_name", "availability_text",
+                           "area_text", "location_context", "duration_text", "organizer_name", "availability_text",
                            "source_schedule_text", "source_category_text"})
 # Narrative source context, not an occurrence fact: never matched on, and
 # differing descriptions from several sources are not a factual conflict.
@@ -50,6 +53,7 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
     diagnostics: list[CanonicalDiagnostic] = []
     provenance: list[FieldProvenance] = []
     values: dict = {}
+    event_id = stable_id("event:", (anchor.raw_item.id, anchor.identity_slot))
 
     def resolve(field: str, pool: list[CandidateContext]):
         populated = [(c, getattr(c.candidate, field)) for c in pool
@@ -70,6 +74,14 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
 
     for field in TEXT_FIELDS:
         values[field] = resolve(field, ordered)
+    title_owner = next((c.candidate for c in ordered
+                        if c.candidate.title == values['title'] and c.candidate.display_title_origin), None)
+    if title_owner:
+        for field in ('source_title', 'display_title_origin', 'title_evidence_text',
+                      'display_title_evidence_ids', 'title_review_required', 'event_detection_reason'):
+            values[field] = getattr(title_owner, field)
+    values['evidence_fragment_ids'] = tuple(sorted({f for c in ordered
+        for f in (*c.candidate.evidence_fragment_ids, *c.candidate.display_title_evidence_ids)}))
     values["extraction_confidence"] = resolve("extraction_confidence", ordered)
     for field in CONTEXT_FIELDS:
         # Earliest-anchored source description, exactly as written; other
@@ -138,9 +150,89 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
         values["timezone"] = resolve("timezone", ordered)
 
     for context in ordered:
+        for code in context.candidate.extraction_diagnostics:
+            diagnostics.append(CanonicalDiagnostic("extraction:" + code, "extraction", (context.candidate_id,)))
         for diagnostic in context.outcome.diagnostics:
             diagnostics.append(CanonicalDiagnostic("normalization:" + diagnostic.code, diagnostic.field,
                                                    (context.candidate_id,)))
+    # Occurrences carry their own evidence and own commercial facts. Combining
+    # a canonical Event never lends an Event price to an individual session.
+    occurrences = {}
+    conflicting_session_keys = set()
+    for context in ordered:
+        for supplied in context.candidate.occurrences:
+            key = occurrence_key(supplied)
+            value = supplied
+            if key in conflicting_session_keys:
+                value = replace(value, diagnostics=tuple(sorted(set(value.diagnostics) | {"occurrence_temporal_conflict"})))
+                key = occurrence_key(value)
+            previous = occurrences.get(key)
+            if previous is not None and any(
+                getattr(previous, field) is not None and getattr(value, field) is not None
+                and getattr(previous, field) != getattr(value, field)
+                for field in TEMPORAL_FIELDS if field != "date_precision"
+            ):
+                conflicting_session_keys.add(key)
+                del occurrences[key]
+                previous = replace(previous, diagnostics=tuple(sorted(set(previous.diagnostics) | {"occurrence_temporal_conflict"})))
+                value = replace(value, diagnostics=tuple(sorted(set(value.diagnostics) | {"occurrence_temporal_conflict"})))
+                occurrences[occurrence_key(previous)] = identify_occurrence(previous, event_id)
+                key = occurrence_key(value)
+                diagnostics.append(CanonicalDiagnostic("occurrence_temporal_conflict", "occurrences",
+                                                       tuple(sorted(set(previous.candidate_ids) | set(value.candidate_ids)))))
+                previous = occurrences.get(key)
+            if previous is not None:
+                changes = {}
+                for field in ("source_item_ids", "candidate_ids", "evidence_urls", "evidence_fragment_ids", "diagnostics"):
+                    changes[field] = tuple(sorted(set(getattr(previous, field)) | set(getattr(value, field))))
+                for field in ("price_text", "price_amount", "currency", "price_per_person", "unit_price",
+                              "host_discount_pct", "platform_discount_pct", "availability_text", "remaining_seats", "enabled"):
+                    a, b = getattr(previous, field), getattr(value, field)
+                    changes[field] = a if b is None or a == b else b if a is None else None
+                    if a is not None and b is not None and a != b:
+                        diagnostics.append(CanonicalDiagnostic("occurrence_field_conflict", field,
+                                                               changes["candidate_ids"]))
+                for field in TEMPORAL_FIELDS:
+                    if getattr(previous, field) is None and getattr(value, field) is not None:
+                        changes[field] = getattr(value, field)
+                value = replace(previous, **changes)
+            occurrences[key] = identify_occurrence(value, event_id)
+    # A date-only source can corroborate one precise session. It is not itself
+    # another session. If several sessions could fit, keep the ambiguity visible.
+    for key, value in tuple(occurrences.items()):
+        if value.source_session_id or value.start_time is not None or value.end_date is not None:
+            continue
+        covering = [(other_key, other) for other_key, other in occurrences.items()
+                    if other_key != key and other.start_date == value.start_date
+                    and other.end_date is None and other.start_time is not None
+                    and other.timezone == value.timezone]
+        if len(covering) == 1:
+            other_key, other = covering[0]
+            occurrences[other_key] = replace(other, **{
+                field: tuple(sorted(set(getattr(other, field)) | set(getattr(value, field))))
+                for field in ("source_item_ids", "candidate_ids", "evidence_urls", "evidence_fragment_ids", "diagnostics")
+            })
+            del occurrences[key]
+    values["occurrences"] = tuple(occurrences[key] for key in sorted(occurrences))
+    kinds = {c.candidate.schedule_kind for c in ordered} - {ScheduleKind.UNKNOWN}
+    values["schedule_kind"] = (next(iter(kinds)) if len(kinds) == 1 else ScheduleKind.CONFLICT if kinds
+                               else ScheduleKind.UNKNOWN)
+    if conflicting_session_keys:
+        values["schedule_kind"] = ScheduleKind.CONFLICT
+    rules = {c.candidate.recurrence_rule for c in ordered if c.candidate.recurrence_rule}
+    values["recurrence_rule"] = next(iter(rules)) if len(rules) == 1 else None
+    if len(values["occurrences"]) > 1:
+        # A canonical multi-session Event has no arbitrary primary occurrence.
+        for field in TEMPORAL_FIELDS:
+            if field != "timezone":
+                values[field] = DatePrecision.UNKNOWN if field == "date_precision" else None
+        provenance = [p for p in provenance if p.field not in TEMPORAL_FIELDS or p.field == "timezone"]
+        if values["schedule_kind"] not in {ScheduleKind.CONFLICT, ScheduleKind.RECURRING}:
+            values["schedule_kind"] = ScheduleKind.DISCRETE
+    for field in ("occurrences", "schedule_kind", "recurrence_rule"):
+        if values[field]:
+            provenance.append(FieldProvenance(field, tuple(c.candidate_id for c in ordered
+                                                          if getattr(c.candidate, field))))
     if values["title"] is None:
         diagnostics.append(CanonicalDiagnostic("missing_canonical_title", "title", ids))
     url = anchor.candidate.evidence_url or anchor.raw_item.content_url
@@ -150,7 +242,7 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
     status = EventStatus.SOLD_OUT if is_sold_out(values["availability_text"]) else EventStatus.UNKNOWN
     return Event(
         status=status,
-        event_id=stable_id("event:", (anchor.raw_item.id, anchor.identity_slot)),
+        event_id=event_id,
         canonical_source_url=url,
         first_seen_at=min(c.first_seen_at for c in members),
         last_seen_at=max(c.raw_item.captured_at for c in members),

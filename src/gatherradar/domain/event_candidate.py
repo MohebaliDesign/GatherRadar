@@ -5,6 +5,8 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from .temporal import DatePrecision
+from .occurrence import EventOccurrence, ScheduleKind
+from .website import SourceSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,7 @@ class EventCandidate:
     date_precision: DatePrecision = DatePrecision.UNKNOWN
     description_text: str | None = None
     area_text: str | None = None
+    location_context: str | None = None
     duration_text: str | None = None
     organizer_name: str | None = None
     availability_text: str | None = None
@@ -44,6 +47,19 @@ class EventCandidate:
     source_category_text: str | None = None
     reference_urls: tuple[str, ...] = ()
     field_conflicts: tuple[str, ...] = ()
+    occurrences: tuple[EventOccurrence, ...] = ()
+    schedule_kind: ScheduleKind = ScheduleKind.UNKNOWN
+    recurrence_rule: str | None = None
+    evidence_fragment_ids: tuple[str, ...] = ()
+    extraction_diagnostics: tuple[str, ...] = ()
+    source_sessions: tuple[SourceSession, ...] = ()
+    source_session_diagnostics: tuple[str, ...] = ()
+    source_title: str | None = None
+    display_title_origin: str | None = None
+    title_evidence_text: str | None = None
+    display_title_evidence_ids: tuple[str, ...] = ()
+    title_review_required: bool = False
+    event_detection_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.candidate_id.strip() or not self.raw_item_id.strip():

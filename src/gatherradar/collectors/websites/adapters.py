@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Callable
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
-from ...domain.website import MAX_CARD_TEXT, WebsiteConfig
+from ...domain.website import MAX_CARD_TEXT, SourceSession, WebsiteConfig
 from ..base import SourceConfigurationError, SourceUnavailableError
 from .html import Node, content_text, excluded, parse_html
 from .transport import Page
@@ -33,6 +33,8 @@ class WebsiteDetail:
     title_is_heading: bool = False
     # Adapter-verified (field, exact retained text) pairs from page structure.
     fields: Fields = ()
+    sessions: tuple[SourceSession, ...] = ()
+    session_diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,8 +284,16 @@ class VadoostanAdapter(GenericAdapter):
 class JabamaAdapter(GenericAdapter):
     """Jabama detail pages, shared by its Events and Experiences listings."""
 
-    name = 'jabama-events/2'
+    name = 'jabama-events/3'
     native_ids = True
+
+    def extract(self, page: Page, source_url: str) -> WebsiteDetail:
+        from .jabama_sessions import extract_sessions
+
+        detail = super().extract(page, source_url)
+        embedded = extract_sessions(parse_html(page.html), page.url)
+        return replace(detail, sessions=embedded.sessions, session_diagnostics=embedded.diagnostics,
+                       structured_data_present=detail.structured_data_present or embedded.present)
 
     def _article(self, root: Node) -> Node:
         articles = [node for node in root.select('article') if node.select('h1')]

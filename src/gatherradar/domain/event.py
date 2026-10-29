@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from .raw_item import _require_aware
 from .temporal import DatePrecision
+from .occurrence import EventOccurrence, ScheduleKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +97,7 @@ class Event:
     # `summary` remains reserved for a future dedicated summary contract.
     description_text: str | None = None
     area_text: str | None = None
+    location_context: str | None = None
     duration_text: str | None = None
     organizer_name: str | None = None
     availability_text: str | None = None
@@ -109,6 +111,18 @@ class Event:
     # Null fields a currently unavailable publisher channel usually supplies:
     # "missing because the channel was unavailable", not "the source omitted it".
     channel_gaps: tuple[str, ...] = ()
+    occurrences: tuple[EventOccurrence, ...] = ()
+    schedule_kind: ScheduleKind = ScheduleKind.UNKNOWN
+    recurrence_rule: str | None = None
+    # `title` remains the compatible display-title field. The source quotation
+    # and deterministic derivation evidence are deliberately separate.
+    source_title: str | None = None
+    display_title_origin: str | None = None
+    title_evidence_text: str | None = None
+    display_title_evidence_ids: tuple[str, ...] = ()
+    evidence_fragment_ids: tuple[str, ...] = ()
+    title_review_required: bool = False
+    event_detection_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id.strip() or not self.canonical_source_url.strip():

@@ -1,5 +1,11 @@
 # GatherRadar
 
+Current Event review outputs require a real, source-attributed title. Blank and
+placeholder titles are excluded before new canonical persistence and from every
+new export, including re-exports of historical runs. Raw evidence and historical
+review data remain intact. See [Event admission](docs/DATA_CONTRACTS.md#event-admission)
+and [local re-export behavior](docs/LOCAL_REVIEW.md#workbook-and-human-ownership).
+
 > A provenance-first event discovery pipeline for curated websites and Instagram sources.
 
 GatherRadar is an early-stage Python project for answering a practical question: **what worthwhile events can a small community attend next?** It replaces repeated browsing across selected public sources with a reviewable pipeline that collects source content, preserves provenance, extracts structured facts, and classifies each observation as an **event**, a **place**, or **other**.
@@ -112,6 +118,13 @@ The tests are designed to run offline with fixtures and fakes; they do not requi
 
 ## Usage
 
+Current Event exports use the exact stored refresh time in `Asia/Tehran`: ended
+Events are excluded, ongoing ranges and supported future sessions are retained,
+and unresolved schedules go to a separate `زمان‌بندی` sheet / `schedule_review.csv`.
+Historical runs re-export against their own stored clock. Instagram `--limit 5`
+selects five recent posts/reels per profile; Evenza Platform is enabled as
+`evenza_platform_instagram`. See [reliability validation](docs/CAROUSEL_RUNTIME_VALIDATION.md).
+
 ### 1. Collect from a public website
 
 Use a source ID from `config/sources.yaml`:
@@ -188,8 +201,11 @@ time, or capture time as fallback. Nearby yearless dates may infer a year within
 
 Prices use Decimal in their stated units: `TOMAN`, `IRR`, or explicit supported foreign
 currency codes. Explicit free means zero with no invented currency. Unknown prices stay null.
-Multi-day hours, recurring schedules, multiple sessions, broad relative dates, price ranges,
-tiers and conditional prices remain partial/unresolved. A bare relative token also needs
+Multi-day hours retain date bounds and daily clocks without a continuous timestamp.
+Explicit same-month day lists and validated Jabama embedded sessions produce separate
+occurrences; the parent Event does not pick an arbitrary date. Weekly recurrence
+retains its supported rule without generating future dates. Broad relative dates,
+price ranges, tiers and conditional prices remain partial/unresolved. A bare relative token also needs
 clear temporal context, so a publisher named “Today” cannot invent a date.
 See [the normalization contract](docs/DATA_CONTRACTS.md#deterministic-normalization-stage-7)
 for exact policies and [the validation report](docs/STAGE7_VALIDATION.md) for measured results.
@@ -237,7 +253,8 @@ python -m gatherradar refresh --all-enabled --days 14
 ```
 
 It ends with a publisher/channel summary (channel statuses, publisher coverage and any
-potentially reduced fields), then canonical and displayed Event counts.
+potentially reduced fields), then canonical/displayed Event counts and separate
+data-readiness counts.
 
 Local workbook schema 3 opens on the latest Events. Permanent tabs are `تاریخچه اجراها`,
 `بررسی تکراری‌ها`, and `راهنما`; `_meta` is hidden. Only the header row is frozen.
@@ -264,6 +281,16 @@ Reading the Event columns:
 | `توضیحات / معرفی` | The source's own description, complete — not an AI summary |
 | `ظرفیت / وضعیت ثبت‌نام` | The source's availability wording, e.g. `تکمیل ظرفیت` (which also sets the Event status to sold out) |
 | `مدت` / `برگزارکننده` | A stated duration and an explicitly labelled organizer or host |
+| `آمادگی داده` | Filter ready-for-review, enrichment, schedule-review and unavailable-source records independently of your decision |
+| `دلیل بررسی` | A Persian explanation of readiness; missing optional facts are not scored as defects |
+| `جلسه‌ها` | Source-supported dated sessions with their own clock, price and availability |
+
+Records/portable schema 3 includes structured `occurrences`, `schedule_kind`,
+`recurrence_rule`, readiness reasons and quality indicators. Historical database
+payloads gain safe empty defaults on read; Event IDs and saved owner decisions
+remain authoritative. XLSX stays schema 3 with additive snapshot columns.
+Caption descriptions are unchanged source text only for a defensible single-Event
+unit. Media roundups are kept separate. See [data-quality validation](docs/DATA_QUALITY_VALIDATION.md).
 
 Listing-card facts (for example a price or sold-out badge shown only in the list) belong
 to that item and are kept with provenance; a listing and detail page that disagree leave

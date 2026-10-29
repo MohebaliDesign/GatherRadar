@@ -24,6 +24,8 @@ from .instagram_browser import (
 
 DEFAULT_MAX_CAROUSEL_SLIDES = 20
 DEFAULT_MAX_REEL_FRAMES = 6
+MAX_CAPTURE_ATTEMPTS = 3
+VISUAL_SELECTOR = 'article img, main img, article video, main video'
 
 # is_visible() includes slides outside an overflow-clipped carousel and thumbnails
 # below the viewport. Only score the rendered portion of a loaded media element.
@@ -46,12 +48,15 @@ _VISIBLE_MEDIA_AREA = '''(element) => {
             top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
         }
     }
-    return right-left >= 120 && bottom-top >= 120 ? (right-left)*(bottom-top) : 0;
+    // Reject a slide still entering/leaving the horizontally clipped carousel.
+    return right-left >= 120 && bottom-top >= 120 && right-left >= box.width * .98
+        ? (right-left)*(bottom-top) : 0;
 }'''
 
 
 class MediaPageDriver(Protocol):
     def capture_current_visual(self) -> bytes: ...
+    def has_next_carousel(self) -> bool: ...
     def advance_carousel(self) -> bool: ...
     def video_duration_ms(self) -> int | None: ...
     def capture_frame(self, timestamp_ms: int) -> bytes: ...
@@ -61,6 +66,22 @@ class MediaPageDriver(Protocol):
 class MediaCaptureFailure:
     raw_item_id: str
     reason: str
+    source_id: str = ''
+    slide_index: int | None = None
+    category: str = 'capture_failed'
+    retry_count: int = 0
+    frame_timestamp_ms: int | None = None
+
+    def report(self) -> str:
+        return (f'source_id={self.source_id} raw_item_id={self.raw_item_id} '
+                f'slide_index={self.slide_index} category={self.category} '
+                f'retry_count={self.retry_count}: {self.reason}')
+
+
+class VisualCaptureError(RuntimeError):
+    def __init__(self, category: str) -> None:
+        self.category = category
+        super().__init__(category)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,46 +125,49 @@ def capture_post_artifacts(
     if max_slides < 1:
         raise ValueError('max_slides must be positive')
     failures: list[MediaCaptureFailure] = []
-    try:
-        first = driver.capture_current_visual()
-    except Exception as exc:
-        return MediaCaptureResult(
-            failures=(MediaCaptureFailure(raw_item.id, f'visual capture failed ({type(exc).__name__})'),)
-        )
-    try:
-        has_next = driver.advance_carousel()
-    except Exception as exc:
-        failures.append(MediaCaptureFailure(raw_item.id, f'carousel advance failed ({type(exc).__name__})'))
+    artifacts: list[MediaArtifact] = []
+    hashes: set[str] = set()
+    for index in range(max_slides):
+        content = None
+        for attempt in range(MAX_CAPTURE_ATTEMPTS):
+            try:
+                content = driver.capture_current_visual()
+                if _hash(content) in hashes:
+                    raise VisualCaptureError('duplicate_visual')
+                break
+            except (BrowserSessionExpiredError, InstagramCheckpointError):
+                raise
+            except Exception as exc:
+                content = None
+                if attempt == MAX_CAPTURE_ATTEMPTS - 1:
+                    category = getattr(exc, 'category', type(exc).__name__)
+                    failures.append(MediaCaptureFailure(raw_item.id,
+                        f'visual capture failed at slide {index} ({category}); remaining slides unconfirmed',
+                        raw_item.source_id, index, category, attempt))
+        if content is None:
+            # A failed transition/capture does not prove the current position.
+            # Retain earlier slides and stop, never relabel a later screenshot.
+            break
+        hashes.add(_hash(content))
         has_next = False
-    if not has_next:
-        outcome = store.write(raw_item, MediaKind.IMAGE, first)
-        return MediaCaptureResult((outcome.artifact,), tuple(failures))
-
-    artifacts: list[MediaArtifact] = [
-        store.write(raw_item, MediaKind.CAROUSEL_SLIDE, first, slide_index=0).artifact
-    ]
-    hashes = {_hash(first)}
-    index = 1
-    while index < max_slides:
         try:
-            content = driver.capture_current_visual()
-            digest = _hash(content)
-            if digest in hashes:
-                break
-            hashes.add(digest)
-            artifacts.append(
-                store.write(
-                    raw_item, MediaKind.CAROUSEL_SLIDE, content, slide_index=index
-                ).artifact
-            )
+            if index + 1 < max_slides:
+                has_next = driver.advance_carousel()
+            elif driver.has_next_carousel():
+                failures.append(MediaCaptureFailure(raw_item.id,
+                    'carousel slide limit reached; remaining slides unconfirmed',
+                    raw_item.source_id, index + 1, 'slide_limit', 0))
+        except (BrowserSessionExpiredError, InstagramCheckpointError):
+            raise
         except Exception as exc:
-            failures.append(MediaCaptureFailure(raw_item.id, f'slide {index} failed ({type(exc).__name__})'))
-        index += 1
-        try:
-            if not driver.advance_carousel():
-                break
-        except Exception as exc:
-            failures.append(MediaCaptureFailure(raw_item.id, f'carousel advance failed ({type(exc).__name__})'))
+            failures.append(MediaCaptureFailure(raw_item.id,
+                'carousel advance failed; remaining slides unconfirmed', raw_item.source_id,
+                index + 1, getattr(exc, 'category', 'navigation_failed'), 0))
+        kind = (MediaKind.CAROUSEL_SLIDE if index or has_next or failures
+                or raw_item.content_type == 'carousel' else MediaKind.IMAGE)
+        artifacts.append(store.write(raw_item, kind, content,
+            slide_index=index if kind is MediaKind.CAROUSEL_SLIDE else None).artifact)
+        if not has_next:
             break
     return MediaCaptureResult(tuple(artifacts), tuple(failures))
 
@@ -156,11 +180,13 @@ def capture_reel_artifacts(
         timestamps = sample_reel_timestamps(driver.video_duration_ms(), max_frames)
     except Exception as exc:
         return MediaCaptureResult(
-            failures=(MediaCaptureFailure(raw_item.id, f'video inspection failed ({type(exc).__name__})'),)
+            failures=(MediaCaptureFailure(raw_item.id, f'video inspection failed ({type(exc).__name__})',
+                raw_item.source_id, category='video_inspection_' + type(exc).__name__),)
         )
     if not timestamps:
         return MediaCaptureResult(
-            failures=(MediaCaptureFailure(raw_item.id, 'video duration is unavailable'),)
+            failures=(MediaCaptureFailure(raw_item.id, 'video duration is unavailable',
+                raw_item.source_id, category='video_duration_unavailable'),)
         )
     artifacts: list[MediaArtifact] = []
     failures: list[MediaCaptureFailure] = []
@@ -180,7 +206,8 @@ def capture_reel_artifacts(
             )
         except Exception as exc:
             failures.append(
-                MediaCaptureFailure(raw_item.id, f'frame {timestamp} ms failed ({type(exc).__name__})')
+                MediaCaptureFailure(raw_item.id, f'frame {timestamp} ms failed ({type(exc).__name__})',
+                    raw_item.source_id, category='frame_capture_' + type(exc).__name__, frame_timestamp_ms=timestamp)
             )
     return MediaCaptureResult(tuple(artifacts), tuple(failures))
 
@@ -188,9 +215,12 @@ def capture_reel_artifacts(
 class PlaywrightMediaPageDriver:
     '''Small browser-specific layer around the bounded capture algorithms.'''
 
-    def __init__(self, page: Any, *, settle_ms: int = 500) -> None:
+    def __init__(self, page: Any, *, timeout_ms: int = 5_000) -> None:
         self.page = page
-        self.settle_ms = settle_ms
+        self._visual = None
+        self._source = None
+        self._advanced = False
+        self.timeout_ms = timeout_ms
 
     def _largest_visible(self, selector: str) -> Any:
         self.page.wait_for_function(
@@ -211,23 +241,60 @@ class PlaywrightMediaPageDriver:
         return max(choices, key=lambda entry: entry[0])[1]
 
     def capture_current_visual(self) -> bytes:
-        visual = self._largest_visible('article img, main img')
-        # Playwright waits for stable geometry before scrolling. A raw page
-        # screenshot otherwise races the last subpixel of carousel motion.
-        visual.scroll_into_view_if_needed()
-        box = visual.bounding_box()
-        if not box:
-            raise ValueError('displayed media has no capture bounds')
+        operation = 'visual_readiness'
+        try:
+            # Hold an element handle, not a live nth locator which can silently
+            # point at another slide after React replaces/reorders DOM nodes.
+            handle = self.page.wait_for_function(
+                f'''(args) => {{
+                    const choices = [...document.querySelectorAll(args.selector)]
+                        .map(el => [({_VISIBLE_MEDIA_AREA})(el), el])
+                        .filter(([area]) => area > 0).sort((a,b) => b[0]-a[0]);
+                    const el = choices[0]?.[1];
+                    if (!el || (args.advanced && el === args.previous &&
+                        (el.currentSrc || el.src) === args.source)) return false;
+                    return el;
+                }}''', arg=dict(selector=VISUAL_SELECTOR, advanced=self._advanced,
+                               previous=self._visual, source=self._source), timeout=self.timeout_ms)
+            visual = handle.as_element()
+            operation = 'visual_stability'
+            visual.wait_for_element_state('stable', timeout=self.timeout_ms)
+            source = visual.evaluate('(el) => el.currentSrc || el.src')
+            operation = 'video_frame_readiness'
+            if visual.evaluate('(el) => el.tagName') == 'VIDEO':
+                # One deterministic poster frame per video slide; reels retain
+                # their separate multi-frame sampler and timestamps.
+                self._seek_video(visual, 0)
+            operation = 'capture_bounds'
+            if visual.evaluate(_VISIBLE_MEDIA_AREA) <= 0:
+                raise VisualCaptureError('visual_changed')
+            box = visual.bounding_box()
+            if not box:
+                raise VisualCaptureError('capture_bounds')
+            operation = 'screenshot'
+            content = self._screenshot(box)
+            if (visual.evaluate('(el) => el.currentSrc || el.src') != source
+                    or visual.evaluate(_VISIBLE_MEDIA_AREA) <= 0
+                    or visual.bounding_box() != box):
+                raise VisualCaptureError('visual_changed')
+            self._visual, self._source, self._advanced = visual, source, False
+            return content
+        except VisualCaptureError:
+            raise
+        except Exception as exc:
+            raise VisualCaptureError(operation + '_' + type(exc).__name__) from None
+
+    def _screenshot(self, box: dict) -> bytes:
         # Locator screenshots round fractional edges outward, including a sliver
         # of the neighboring carousel slide. Keep only whole pixels inside it.
         left, top = math.ceil(box['x']), math.ceil(box['y'])
-        return self.page.screenshot(type='png', clip={
+        return self.page.screenshot(type='png', timeout=self.timeout_ms, clip={
             'x': left, 'y': top,
             'width': math.floor(box['x'] + box['width']) - left,
             'height': math.floor(box['y'] + box['height']) - top,
         })
 
-    def advance_carousel(self) -> bool:
+    def _next_control(self) -> Any | None:
         selector = (
             'article button[aria-label=Next], '
             'article button[aria-label=بعدی], '
@@ -239,10 +306,19 @@ class PlaywrightMediaPageDriver:
         for index in range(controls.count() - 1, -1, -1):
             control = controls.nth(index)
             if control.is_visible() and control.is_enabled():
-                control.click()
-                self.page.wait_for_timeout(self.settle_ms)
-                return True
-        return False
+                return control
+        return None
+
+    def has_next_carousel(self) -> bool:
+        return self._next_control() is not None
+
+    def advance_carousel(self) -> bool:
+        control = self._next_control()
+        if control is None:
+            return False
+        control.click(timeout=self.timeout_ms)
+        self._advanced = True
+        return True
 
     def _video(self) -> Any:
         return self._largest_visible('article video, main video')
@@ -255,6 +331,10 @@ class PlaywrightMediaPageDriver:
 
     def capture_frame(self, timestamp_ms: int) -> bytes:
         video = self._video()
+        self._seek_video(video, timestamp_ms)
+        return video.screenshot(type='png')
+
+    def _seek_video(self, video: Any, timestamp_ms: int) -> None:
         video.evaluate('(video) => video.pause()')
         video.evaluate(
             '''(video, seconds) => new Promise((resolve, reject) => {
@@ -283,7 +363,6 @@ class PlaywrightMediaPageDriver:
             })''',
             timestamp_ms / 1000,
         )
-        return video.screenshot(type='png')
 
 
 class InstagramMediaEvidenceAcquirer:
@@ -340,13 +419,16 @@ class InstagramMediaEvidenceAcquirer:
                     raise
                 except InstagramCheckpointError as exc:
                     # Stop for manual verification, retaining earlier captures.
-                    failures.append(MediaCaptureFailure(raw_item.id, str(exc)))
+                    failures.append(MediaCaptureFailure(raw_item.id, str(exc), source.id, category='access_checkpoint'))
                     break
                 except Exception as exc:
                     failures.append(
-                        MediaCaptureFailure(raw_item.id, f'media page failed ({type(exc).__name__})')
+                        MediaCaptureFailure(raw_item.id, f'media page failed ({type(exc).__name__})',
+                            source.id, category='media_page_' + type(exc).__name__)
                     )
-        return MediaCaptureResult(tuple(artifacts), tuple(failures))
+        from dataclasses import replace
+        return MediaCaptureResult(tuple(artifacts), tuple(
+            replace(f, source_id=source.id) if not f.source_id else f for f in failures))
 
 
 __all__ = [

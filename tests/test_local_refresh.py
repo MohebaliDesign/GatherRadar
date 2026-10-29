@@ -100,8 +100,48 @@ class LocalRefreshTests(LocalCase):
         with patch('gatherradar.orchestration.refresh.run_canonical_review', side_effect=AssertionError('analysis')):
             paths, failures = other.export('latest')
         self.assertEqual(failures, ())
-        self.assertEqual(len(paths), 21)
+        self.assertEqual(len(paths), 25)
         self.assertEqual(self.collector.call_count, 1)
+
+    def test_title_exclusion_counts_are_saved_in_run_manifest_and_sqlite(self):
+        analyze = self.service.analyze
+        def missing_title(*args, **kwargs):
+            review = analyze(*args, **kwargs)
+            return replace(review, result=replace(review.result,
+                events=tuple(replace(event, title=None) for event in review.result.events)))
+        self.service.analyze = missing_title
+        result = self.refresh()
+        self.assertEqual(result.snapshot.events, 0)
+        self.assertEqual(result.export_failures, ())
+        manifest = json.loads((self.root / 'runs/local.json').read_text(encoding='utf-8'))
+        metadata = self.repo.load()['run']
+        for key, expected in (
+            ('discovered_event_count', 1), ('excluded_missing_title', 1),
+            ('canonical_event_count', 0), ('filtered', 0), ('event_count', 0),
+            ('excluded_missing_title_by_source', {self.source.id: 1}),
+        ):
+            self.assertEqual(manifest[key], expected)
+            self.assertEqual(metadata[key], expected)
+
+    def test_title_exclusion_counts_are_saved_in_run_manifest_and_sqlite(self):
+        analyze = self.service.analyze
+        def missing_title(*args, **kwargs):
+            review = analyze(*args, **kwargs)
+            return replace(review, result=replace(review.result,
+                events=tuple(replace(event, title=None) for event in review.result.events)))
+        self.service.analyze = missing_title
+        result = self.refresh()
+        self.assertEqual(result.snapshot.events, 0)
+        self.assertEqual(result.export_failures, ())
+        manifest = json.loads((self.root / 'runs/local.json').read_text(encoding='utf-8'))
+        metadata = self.repo.load()['run']
+        for key, expected in (
+            ('discovered_event_count', 1), ('excluded_missing_title', 1),
+            ('canonical_event_count', 0), ('filtered', 0), ('event_count', 0),
+            ('excluded_missing_title_by_source', {self.source.id: 1}),
+        ):
+            self.assertEqual(manifest[key], expected)
+            self.assertEqual(metadata[key], expected)
 
     def test_explicit_import_and_status_commands_are_offline(self):
         self.refresh()

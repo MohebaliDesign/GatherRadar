@@ -6,6 +6,25 @@
 
 **Primary audience:** The project owner and a private community of approximately 20–40 people
 
+**Current contract extension (2026-10-20):** Events can own source-supported dated
+occurrences. Explicit day lists and validated Jabama public embedded sessions stay
+separate; weekly recurrence never generates arbitrary future dates. Data readiness
+is separate from owner decisions, availability and collection health. Records/export
+schema 3 adds occurrences and readiness without recreating SQLite (DDL schema 1) or
+rewriting historical workbook snapshots (XLSX schema 3). The owner explicitly
+authorized this extension; Telegram remains deferred.
+
+**Event admission clarification (2026-10-23):** Establish a real activity before
+resolving its display title. A formal source heading is not mandatory: a named
+activity or concise deterministic description supported by this candidate's own
+evidence may supply `title`. Preserve `source_title`, origin, evidence span/IDs and
+the derived-title review warning separately. Collection covers, ambiguous series
+invitations, ordinary promotions and unrelated content are not individual Events.
+The same admission policy guards persistence and current exports, including old
+run projections; raw reprocessing is required to recover facts absent from a saved
+snapshot. Historical SQLite records, decisions and workbook snapshots remain intact.
+See [the admission contract](docs/DATA_CONTRACTS.md#event-admission).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile
@@ -84,6 +103,8 @@ Normalization and validation
       ↓
 Deduplication
       ↓
+Source-supported title admission
+      ↓
 Review-window filtering
       ↓
 SQLite canonical/review repository
@@ -110,7 +131,8 @@ XLSX (default review), CSV, JSON, manual Gemini bundle; optional Google Sheets
   occurrence evidence and source/publisher context support explainable decisions.
 - **Canonical persistence:** standard-library SQLite behind `CanonicalRepository`.
   Runs, current Event identity, immutable fact snapshots, and human review are separate.
-  Raw captions/OCR remain in JSONL, never duplicated into the database.
+  Raw observations/OCR remain in JSONL. Only a caption deliberately attributed
+  as an Event description can also appear in the structured fact payload.
 - **XLSX:** default Persian RTL review workspace. Only supported decisions/notes import;
   arbitrary fact edits stay visual and never feed extraction or matching.
 - **CSV/JSON:** portable tabular/structured exports generated from persisted runs.
@@ -152,7 +174,9 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 | Field | Meaning |
 | --- | --- |
 | `event_id` | Stable internal event identifier |
-| `title` | Best source-supported event title |
+| `title` | Human-readable display title, explicit or deterministically derived from Event-specific source evidence |
+| `source_title` / `display_title_origin` | Original explicit title when available; explicit caption/website/OCR versus descriptive recovery |
+| `title_evidence_text` / `display_title_evidence_ids` / `title_review_required` | Supporting source span, candidate-specific fragment IDs, and derived-title warning |
 | `summary` | Reserved for a future dedicated summary contract; not generated, normally empty |
 | `description_text` | The source's own description text, never rewritten or summarized |
 | `category` / `tags` | Controlled category plus optional discovery tags |
@@ -163,7 +187,8 @@ neither becomes no candidate at all. See `docs/DATA_CONTRACTS.md` for the full s
 | `timezone` | IANA timezone used for interpretation |
 | `venue_name` / `address` / `city` | Structured location fields when known |
 | `area_text` | Approximate neighborhood/locality as written; never a venue, address or geocode |
-| `source_schedule_text` | Exact multi-session/recurring schedule wording; never expanded into occurrences |
+| `source_schedule_text` | Exact multi-session/recurring wording; concrete dates can support occurrences, recurrence alone cannot |
+| `occurrences` / `schedule_kind` / `recurrence_rule` | Deterministic dated sessions, explicit range bounds, or a source-backed weekly rule without generated future dates |
 | `duration_text` / `organizer_name` | Explicitly stated length and labelled organizer/host |
 | `availability_text` | Explicit availability wording; sold-out wording sets status `sold_out` |
 | `event_format` | `in_person`, `online`, `hybrid`, or `unknown` |
@@ -197,6 +222,21 @@ Event ID; duplicate pair review persists without changing matching. Place review
 run/candidate-scoped, with no Place deduplication. Historical workbook snapshots are
 not rewritten. Invalid/conflicting review rows are reported; no arbitrary source-fact
 correction is imported. See [local workflow](docs/LOCAL_REVIEW.md).
+
+The same snapshot also offers filterable Persian readiness, an explanation, and
+session details. Incomplete discoveries retain their raw evidence for investigation.
+Only positively identified activities meeting Event title admission enter current Event review outputs;
+eligible Events with unresolved schedules remain in a separate schedule-review dataset.
+Only run-time actionable Events enter the current Event view and publishing exports.
+A supported ongoing exhibition range stays actionable when visiting hours need
+confirmation. Schedule completeness and publication readiness do not erase known
+temporal relevance. Explicit date lists preserve every date without borrowing a
+header's clock for all sessions. Relative dates require the original publication
+timestamp in the source timezone; capture time never substitutes for it.
+Optional missing price/description/venue does not by itself fail readiness. Known
+extraction loss, contradictory evidence, incomplete OCR and unresolved schedules do.
+The source's unchanged caption may be a description only when its unit identifies
+one defensible Event; roundup captions are not copied onto separate media Events.
 
 ## 6. Data and language rules
 
@@ -429,7 +469,7 @@ its separately observed `/theaters/` layout is deliberately outside coverage. Ra
 and full titles can still be missing/partial in candidate fields; no rule tuning was done.
 
 This is not universal scraping. Static UTF-8 list/detail layouts only; no arbitrary CSS,
-JavaScript rendering, card-only roundup extraction, occurrence expansion, or full visibility
+JavaScript rendering, card-only roundup extraction, arbitrary recurrence expansion, or full visibility
 computation. Layout drift and unrecognized recommendation containers need owner review.
 Neither website storage nor discovery reconstructs a historical listing snapshot or marks
 removed events. Broader source coverage and extraction accuracy remain unvalidated.
@@ -445,15 +485,17 @@ Stage 8 now reconciles and creates it in memory, without persistence.
 
 Jalali conversion uses `persiantools>=6.2,<7.0` (verified 6.2.0 on Python 3.13.15/Windows).
 Timezone comes from `Source` and is validated with `ZoneInfo`, including DST gap/fold checks.
-Relative dates use stored publication time, else capture time, never the wall clock. Bare
+Relative dates require stored publication time, never capture time or the wall clock. Bare
 relative tokens require a standalone/labelled temporal evidence line to avoid proper-name
-false positives. Yearless day/month inference accepts one adjacent-year candidate within
+false positives. Finite weekday pairs also require corroborating publication/week context.
+Yearless day/month inference accepts one adjacent-year candidate within
 45 days of that local reference, always flagged for review; yearless ranges must fit one
 Jalali year and span <=90 days. Money uses Decimal and distinct TOMAN/IRR stated units.
 Free is zero with unspecified currency. Source wording is never replaced with parsing text.
 
 Explicit Persian day ordinals through 31 and attached/separate `ماه` month suffixes
-are supported in single dates and clear ranges. Discrete sessions stay unresolved;
+are supported in single dates and clear ranges. Explicit same-month day lists now
+produce separate occurrences when every date passes the same year/reference bounds;
 date ranges with daily hours retain date/time components and `multi_day_hours`, with
 no continuous `starts_at`/`ends_at` interval. Existing reference/year bounds still apply.
 Discovery keeps the full wording of these shapes in `source_date_text` for every Jalali
@@ -553,9 +595,9 @@ depends on knowing.
 - Category taxonomy and Persian/English display conventions. The rule engine ships a small
   provisional vocabulary in `rules.py`; the final taxonomy is still open. Source genre chips
   (e.g. Vadoostan `بازی`/`ورزش`/`موسیقی`) have no taxonomy entry yet; they are kept verbatim as `source_category_text` and displayed.
-- Whether to extract embedded booking-session data (Jabama script payload) and expand
-  occurrences; both are outside the current contract. Structured session extraction is a
-  future capability; the release gate keeps only visible source schedule wording.
+- **Resolved:** bounded parsing of verified Jabama public embedded session data is
+  supported without executing scripts or calling APIs. Explicit dated sessions are
+  occurrences; recurrence expansion without source dates remains unsupported.
 - **Resolved:** `davvvat_website` is disabled by default because its robots.txt disallows
   GatherRadar (re-checked 2026-09-27); its definition and adapter are kept.
 - Scheduling is deferred; Stage 9 is manually triggered only.
@@ -590,10 +632,24 @@ Failed sources remain visible while successful sources continue. `refresh --stor
 analyzes existing observations offline. `export --run latest` reads SQLite only.
 `refresh` defaults to media acquisition; `--skip-instagram-evidence` is caption-only.
 
-The default review horizon is 14 days (1–90), inclusive from run start in the explicit
-review timezone (default Asia/Tehran). Ranges overlap; undated/unknown-precision Events
-remain visible after dated ones. Inferred dates keep diagnostics. No event timezone
-is overwritten. Out-of-window canonical Events remain in SQLite history.
+The default review horizon is 14 days (1–90), inclusive from the stored run start's
+Asia/Tehran date. The exact run timestamp excludes reliably ended sessions, including
+earlier today. Verified occurrences take precedence; ongoing source-supported ranges
+remain eligible even when their start is old or their end exceeds the horizon. Daily
+hours never imply continuous attendance; an unknown end is never invented. Unresolved
+and recurring schedules without verified instances are a separate schedule-review
+dataset, never upcoming publishing candidates. Inferred dates retain diagnostics.
+`--review-timezone` controls presentation only; event timezones are preserved.
+SQLite retains full historical facts and review decisions. Every current export uses
+the same schedule projection; historical re-export uses that run's stored timestamp.
+
+Instagram still selects five published posts/reels per source with `--limit 5`, using
+the bounded three-item pinned-post buffer. Missing publication timestamps produce an
+explicit recency warning, not a claim of verified newest-five membership. Carousel
+capture waits for changed, loaded and stable visible media, including video slides
+(one paused frame at zero). Three attempts stay on the same position; persistent or
+duplicate capture stops that post with an explicit missing-position report while
+retaining successful artifacts. Evenza Platform is an enabled generic Instagram source.
 
 Persistence precedes export. SQLite version 1 uses foreign keys, explicit atomic
 transactions, WAL, FULL synchronous writes and a five-second busy timeout. Newer or
@@ -635,3 +691,20 @@ source category label (`source_category_text`) outranks free-text category infer
 item without generic Event vocabulary be an Event only when its own detail page has one
 verified date slot with a clock time plus price/registration/attendance evidence; listing
 context alone never qualifies and generic thresholds are unchanged.
+
+Field completeness adds nullable `location_context` for an explicitly stated building,
+separate from venue, neighborhood, street address and city. A pinned three-part
+area/building/venue line may supply those components without geographic inference;
+an explicit pinned name/branch line may supply its neighborhood. Existing candidate
+and fragment lineage is retained. Explicit AM/PM clocks are preserved and normalized.
+
+Current local exports derive next-session date/clocks and remaining session count from
+verified future occurrences inside the stored run's horizon, ordered by their aware
+instants. Date-only sessions retain unknown clocks. Already-started sessions and
+ongoing ranges remain actionable where appropriate but are not labelled a next session.
+These are presentation values, never substituted into the parent Event dates.
+XLSX uses Persian category labels on both current Event and schedule-review sheets;
+factual re-projections preserve prior sheets. Future refresh manifests retain bounded
+media failure categories, RawItem IDs, slide/frame positions and retry counts instead
+of just the aggregate partial-evidence flag. Historical manifests cannot reconstruct
+failure details that were never saved.

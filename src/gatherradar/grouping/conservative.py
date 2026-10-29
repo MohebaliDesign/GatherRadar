@@ -9,11 +9,16 @@ from ..extraction import fields, rules
 from ..extraction.rule_based import classify
 from ..extraction.signals import SignalSet, analyze, has_meaningful_content
 from ..extraction.text import normalize, phrase_tokens, title_equivalence_key
+from ..extraction.titles import event_title, descriptive_title
 
-# Debug explanations carried on `DiscoveryUnit.notes`; never persisted or exported.
+# Grouping explanations stay on `DiscoveryUnit.notes`; extraction promotes the two
+# uncertainty/role-correction codes below into persistent candidate diagnostics.
 NOTE_SUPPORT_ATTACHED = 'support_attached_to_anchor'
 NOTE_REPEATED_ANCHOR = 'repeated_anchor_collapsed'
 NOTE_INSUFFICIENT_OCR = 'ocr_fragment_insufficient_for_independent_event'
+NOTE_TEMPORAL_OCR = 'repeated_anchor_with_unreliable_temporal_ocr'
+NOTE_VENUE_ROLE = 'source_venue_reclassified_from_ocr_title'
+NOTE_CAPTION_BRIDGE = 'caption_date_corroborates_noisy_reel_anchor'
 
 _MEDIA_OCR = frozenset({EvidenceKind.IMAGE_OCR, EvidenceKind.CAROUSEL_SLIDE_OCR, EvidenceKind.REEL_FRAME_OCR})
 # An unlabelled clock or numeric date alone on its OCR line ("3 am", "18:30", "9/25").
@@ -193,11 +198,127 @@ def _relation(profile: _Profile, title: tuple[str, ...]) -> tuple[bool, str] | N
     meaningful = [line for line in residual if has_meaningful_content(line)]
     weak = [line for line in meaningful if _weak_temporal(line)]
     rest = [line for line in meaningful if line not in weak]
+    # Tesseract can wrap a single unlabelled clock across lines ("۳\n‎am").
+    # Inspect the complete residual, including numeric-only lines that the
+    # meaningful-content guard would otherwise discard. The OCR stays intact in
+    # collapsed provenance; it never becomes authoritative temporal wording.
+    residual_text = '\n'.join(residual)
+    residual_signals = analyze(residual_text)
+    weak_spans = [s for s in residual_signals.times
+                  if _weak_temporal(s.text) and '\n' in s.text]
+    for signal in sorted(weak_spans, key=lambda s: s.start, reverse=True):
+        residual_text = residual_text[:signal.start] + ' ' * (signal.end - signal.start) + residual_text[signal.end:]
+    if weak_spans and _states_no_fact(residual_text):
+        return True, NOTE_INSUFFICIENT_OCR
     if not rest or _states_no_fact('\n'.join(rest)):
         return True, NOTE_INSUFFICIENT_OCR if weak else NOTE_REPEATED_ANCHOR
     if profile.title is not None and all(_support_line(line) for line in rest):
         return False, NOTE_SUPPORT_ATTACHED
     return None
+
+
+def _inline_noisy_repetition(first: _Profile, second: _Profile) -> bool:
+    """A repeated named Reel anchor with the same unusable temporal line.
+
+    This only covers mixed-script corruption between a Persian weekday and its
+    labelled clock. A clean changed clock/date remains distinct. Both observations
+    must have the exact title and date wording, plus another repeated multiword
+    line; title/URL alone never qualify. The repeated frame stays auditable.
+    """
+    if (first.fragment.kind is not EvidenceKind.REEL_FRAME_OCR
+            or second.fragment.kind is not EvidenceKind.REEL_FRAME_OCR
+            or first.title is None or first.title != second.title
+            or first.ambiguous or second.ambiguous):
+        return False
+    left, right = fields.source_date_text(first.signals), fields.source_date_text(second.signals)
+    if not left or not right or _equivalent(left) != _equivalent(right):
+        return False
+    weekdays = {normalize(day) for day in rules.PERSIAN_WEEKDAYS}
+    if normalize(left).strip() not in weekdays:
+        return False
+    def corrupt(profile: _Profile) -> bool:
+        named = profile.signals.named_event
+        if named is None:
+            return False
+        for line in profile.lines:
+            if named.text not in line:
+                continue
+            tail = normalize(line.split(named.text, 1)[1])
+            return bool(re.search(r'[a-z]{2,}', tail) and 'ساعت' in tail
+                        and any(day in tail for day in weekdays))
+        return False
+    if not (corrupt(first) and corrupt(second)):
+        return False
+    for reader in (fields.address, fields.venue_name, fields.city, fields.price_text,
+                   fields.registration_url):
+        a, b = reader(first.signals), reader(second.signals)
+        if a or b:
+            return False
+    return bool(_subtitle_keys(first) & _subtitle_keys(second))
+
+
+def _subtitle_keys(profile: _Profile) -> set[tuple[str, ...]]:
+    return {title_equivalence_key(re.split(r'[؟?/<>]', line, maxsplit=1)[0]) for line in profile.lines
+            if len(title_equivalence_key(re.split(r'[؟?/<>]', line, maxsplit=1)[0])) >= 3
+            and not analyze(line).positive}
+
+
+def _single_calendar_key(found: SignalSet) -> tuple[str, ...] | None:
+    """Exact weekday/day/month/year wording, excluding its optional clock."""
+    if fields.source_schedule_text(found):
+        return None
+    wording = fields.source_date_text(found)
+    if not wording:
+        return None
+    selected = analyze(wording)
+    end = min((signal.start for signal in selected.times), default=len(wording))
+    tokens = phrase_tokens(wording[:end])
+    months = {normalize(month) for month in rules.JALALI_MONTHS + rules.JALALI_MONTH_FORMS}
+    if (not any(token in months for token in tokens)
+            or not any(token.isdigit() and 1 <= int(token) <= 31 for token in tokens)
+            or any(token in {"و", "تا", "الی"} for token in tokens)):
+        return None
+    return tokens
+
+
+def _caption_date_bridge(caption: _Profile, groups: list[_Group]) -> tuple[_Group, _Group] | None:
+    """Link repeated noisy titles only through independently matching date evidence.
+
+    The current caption and a separate non-anchor Reel frame must state the exact
+    same single calendar date. That frame must also repeat the multiword subtitle
+    of the sole remaining Event anchor, already proven to contain repeated corrupt
+    temporal OCR. No fuzzy title comparison, extra Event, clock conflict or
+    multi-session caption qualifies.
+    """
+    if not caption.anchor or caption.ambiguous or caption.title is not None:
+        return None
+    calendar = _single_calendar_key(caption.signals)
+    if calendar is None or not caption.signals.times:
+        return None
+    anchors = [group for group in groups if group.members[0].anchor]
+    if len(anchors) != 1:
+        return None
+    anchor = anchors[0]
+    if not any(note == NOTE_TEMPORAL_OCR for _, note in anchor.notes):
+        return None
+    matches = []
+    for bridge in groups:
+        if bridge is anchor or len(bridge.members) != 1:
+            continue
+        member = bridge.members[0]
+        if (member.fragment.kind is not EvidenceKind.REEL_FRAME_OCR or member.anchor
+                or member.ambiguous or member.signals.times
+                or _single_calendar_key(member.signals) != calendar
+                or not (_subtitle_keys(member) & _subtitle_keys(anchor.members[0]))):
+            continue
+        if any(
+            left and right and _equivalent(left) != _equivalent(right)
+            for reader in (fields.address, fields.venue_name, fields.city, fields.price_text, fields.registration_url)
+            for left, right in [(reader(caption.signals), reader(member.signals))]
+        ):
+            continue
+        matches.append(bridge)
+    return (anchor, matches[0]) if len(matches) == 1 else None
 
 
 @dataclass
@@ -212,6 +333,10 @@ class _Group:
 
     def admit(self, profile: _Profile, title: tuple[str, ...]) -> bool:
         '''Attach a repetition of this group's anchor; False leaves the group unchanged.'''
+        if _inline_noisy_repetition(self.members[0], profile):
+            self.collapsed.append(profile.fragment)
+            self.notes.append((profile.fragment.fragment_id, NOTE_TEMPORAL_OCR))
+            return True
         relation = _relation(profile, title)
         if relation is None:
             return False
@@ -235,6 +360,37 @@ class ConservativeGrouping:
     '''
 
     name = 'conservative/2'
+
+    @staticmethod
+    def _split_caption(fragment: EvidenceFragment) -> tuple[EvidenceFragment, ...]:
+        """Only separate independently headed, scheduled announcement blocks.
+
+        Exact offsets and the original fragment remain in provenance. A list of
+        names without per-activity schedule/attendance context stays unresolved.
+        """
+        headings = []
+        cursor = 0
+        for line in fragment.text.splitlines(keepends=True):
+            text = line.strip()
+            found = analyze(text)
+            title, _ = event_title(found)
+            if (title and len(text) <= 160 and found.event_strong
+                    and not found.dates and not found.times and not found.registration
+                    and found.tokens and found.event_strong[0].start == found.tokens[0].start):
+                headings.append((cursor, title_equivalence_key(title)))
+            cursor += len(line)
+        if not 2 <= len(headings) <= 12 or len({key for _, key in headings}) != len(headings):
+            return ()
+        spans = [(start, headings[index + 1][0] if index + 1 < len(headings) else len(fragment.text))
+                 for index, (start, _) in enumerate(headings)]
+        if any(not (analyze(fragment.text[a:b]).dates or analyze(fragment.text[a:b]).registration)
+               for a, b in spans):
+            return ()
+        return tuple(EvidenceFragment.create(raw_item_id=fragment.raw_item_id, kind=EvidenceKind.CAPTION,
+            text=fragment.text[a:b], source_url=fragment.source_url, raw_text=fragment.text,
+            extraction_engine='caption-segmentation', extraction_version='1',
+            extraction_config=f'index={index};start={a};end={b};parent={fragment.fragment_id}')
+            for index, (a, b) in enumerate(spans))
 
     def group(self, bundle: EvidenceBundle) -> tuple[DiscoveryUnit, ...]:
         caption: _Profile | None = None
@@ -288,6 +444,73 @@ class ConservativeGrouping:
         if caption is not None:
             lead = _Group([caption])
             absorbed = False
+            # A described workshop may corroborate a repeated noisy Reel title.
+            # Activity, subject and weekday must agree. Clean changed dates stay
+            # separate; a one-character OCR suffix is corrected only by caption.
+            described = descriptive_title(caption.fragment.text)
+            if described and fields.source_date_text(caption.signals):
+                words = title_equivalence_key(described)
+                subjects = tuple(w for w in words[1:] if w not in {'ساخت', 'درست', 'کردن', 'پخت', 'اموزش'})
+                weekdays = {normalize(d) for d in rules.PERSIAN_WEEKDAYS}
+                caption_days = {normalize(s.text) for s in caption.signals.dates} & weekdays
+                for group in list(groups):
+                    member = group.members[0]
+                    media_title, _ = event_title(member.signals)
+                    media_words = title_equivalence_key(media_title or '')
+                    media_days = {normalize(s.text) for s in member.signals.dates} & weekdays
+                    same_subject = (len(media_words) == len(subjects) + 1 and media_words[:1] == words[:1]
+                        and all(a == b or (a.startswith(b) and len(a) == len(b) + 1)
+                                for a, b in zip(media_words[1:], subjects)))
+                    media_date = fields.source_date_text(member.signals)
+                    calendar_terms = {normalize(m) for m in rules.JALALI_MONTHS + rules.JALALI_MONTH_FORMS + rules.GREGORIAN_MONTHS}
+                    no_calendar = not any(normalize(s.term) in calendar_terms or s.term.startswith('numeric')
+                                          for s in member.signals.dates)
+                    caption_clocks = {phrase_tokens(s.text) for s in caption.signals.times}
+                    media_clocks = {phrase_tokens(s.text) for s in member.signals.times}
+                    if (member.fragment.kind is EvidenceKind.REEL_FRAME_OCR and same_subject
+                            and caption_days and media_days == caption_days
+                            and no_calendar and (not media_clocks or media_clocks.issubset(caption_clocks))):
+                        lead.collapsed.extend(p.fragment for p in group.members)
+                        lead.collapsed.extend(group.collapsed)
+                        lead.notes.append((member.fragment.fragment_id, 'caption_corroborates_noisy_activity_title'))
+                        groups.remove(group)
+                        absorbed = True
+            bridge = _caption_date_bridge(caption, groups)
+            if bridge is not None:
+                anchor_group, date_group = bridge
+                lead.members.extend(anchor_group.members)
+                lead.collapsed.extend(anchor_group.collapsed)
+                lead.collapsed.extend(p.fragment for p in date_group.members)
+                lead.collapsed.extend(date_group.collapsed)
+                lead.notes.extend(anchor_group.notes)
+                lead.notes.append((date_group.members[0].fragment.fragment_id, NOTE_CAPTION_BRIDGE))
+                groups.remove(anchor_group)
+                groups.remove(date_group)
+                absorbed = True
+            caption_title, _ = event_title(caption.signals)
+            caption_venue = fields.venue_name(caption.signals)
+            if caption_title and caption_venue:
+                venue_key = ''.join(phrase_tokens(caption_venue))
+                for group in list(groups):
+                    anchor = group.members[0]
+                    named = anchor.signals.named_event
+                    temporal = fields.source_date_text(anchor.signals)
+                    month_only = (not temporal or normalize(temporal).strip() in
+                                  {normalize(month) for month in rules.JALALI_MONTHS + rules.JALALI_MONTH_FORMS})
+                    if (named is not None and anchor.fragment.kind in _MEDIA_OCR
+                            and ''.join(phrase_tokens(named.text)) == venue_key
+                            and ''.join(phrase_tokens(caption_title)) != venue_key
+                            and not anchor.ambiguous and month_only and not anchor.signals.times
+                            and not anchor.signals.registration and not anchor.signals.prices
+                            and not fields.venue_name(anchor.signals) and not fields.address(anchor.signals)):
+                        # The caption explicitly states the exact wording as a
+                        # venue of a separately named Event. Retain the OCR as
+                        # provenance rather than manufacturing a second Event.
+                        lead.collapsed.extend(p.fragment for p in group.members)
+                        lead.collapsed.extend(group.collapsed)
+                        lead.notes.append((anchor.fragment.fragment_id, NOTE_VENUE_ROLE))
+                        groups.remove(group)
+                        absorbed = True
             if caption.title is not None:
                 for group in list(groups):
                     if self._absorb(lead, group, caption.title):
@@ -308,12 +531,22 @@ class ConservativeGrouping:
             pages[0].members.extend(listing)
         elif listing:
             groups.append(_Group(listing))
-        return tuple(
+        units = tuple(
             DiscoveryUnit.from_fragments(
                 tuple(profile.fragment for profile in group.members), strategy=self.name,
                 collapsed=tuple(group.collapsed), notes=tuple(group.notes),
             ) for group in groups
         )
+        result = []
+        for unit in units:
+            parts = (self._split_caption(unit.fragments[0]) if len(unit.fragments) == 1
+                     and unit.fragments[0].kind is EvidenceKind.CAPTION else ())
+            if parts:
+                result.extend(DiscoveryUnit.from_fragments((part,), strategy=self.name,
+                    collapsed=(unit.fragments[0], *unit.collapsed), notes=unit.notes) for part in parts)
+            else:
+                result.append(unit)
+        return tuple(result)
 
     @staticmethod
     def _absorb(lead: _Group, group: _Group, title: tuple[str, ...]) -> bool:

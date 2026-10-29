@@ -27,8 +27,15 @@ _SINGLE = re.compile(rf"(?<!\w)(?P<day>{_DAY})\s+(?P<month>{_MONTH})(?:\s*ماه
 _ISO = re.compile(r"(?<![\w/.-])(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})(?![\w/.-])")
 _RELATIVE = re.compile(r"(?<!\w)(امروز|فردا|today|tomorrow)(?!\w)")
 _BROAD = re.compile(r"این هفته|آخر هفته|هفته آینده|هفته بعد|next week|this week|weekend")
-_DISCRETE = re.compile(rf"(?<!\w){_DAY}\s*(?:و|,|،|and)\s*{_DAY}\s+{_MONTH}(?:\s*ماه)?(?!\w)")
+_DISCRETE = re.compile(
+    rf"(?<!\w)(?P<days>{_DAY}(?:\s*(?:و|,|،|and)\s*{_DAY})+)"
+    rf"\s+(?P<month>{_MONTH})(?:\s*ماه)?(?:\s+(?P<year>{_YEAR}))?(?!\w)"
+)
 _WEEKDAY = re.compile(r"(?<!\w)(" + "|".join(sorted(_WEEKDAYS, key=len, reverse=True)) + r")(?!\w)")
+
+
+GREGORIAN_MONTHS = {name: i for i, name in enumerate('january february march april may june july august september october november december'.split(), 1)}
+_ENGLISH = re.compile(r'(?<!\w)(?P<month>' + '|'.join(GREGORIAN_MONTHS) + r')\s+(?P<day>\d{1,2})(?:\s*(?:to|[-–—])\s*(?P<end>\d{1,2}))?,?\s+(?P<year>\d{4})(?!\w)')
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,7 @@ class ParsedDates:
     remainder: str
     diagnostics: tuple[Diagnostic, ...] = ()
     blocked: bool = False
+    discrete_dates: tuple[date, ...] = ()
 
 
 def _diagnostic(code: str, message: str, invalid: bool = False) -> Diagnostic:
@@ -52,10 +60,24 @@ def parse_dates(text: str, reference: date) -> ParsedDates:
     """
     # Harakat are optional spelling marks (e.g. سوّم / سی‌اُم), not date facts.
     text = re.sub(r'[\u064b-\u065f\u0670]', '', text)
+    english = _ENGLISH.search(text)
+    if english:
+        remaining = text[:english.start()] + ' ' + text[english.end():]
+        if text[:english.start()].strip() not in {'', 'from', 'از'} or _ENGLISH.search(remaining) or _SINGLE.search(remaining):
+            return ParsedDates(None, None, text, (_diagnostic('ambiguous_date_context', 'Conflicting or qualified Gregorian wording.'),), True)
+        try:
+            start = date(int(english['year']), GREGORIAN_MONTHS[english['month']], int(english['day']))
+            end = start.replace(day=int(english['end'])) if english['end'] else None
+            if end and end < start:
+                raise ValueError('reversed range')
+        except ValueError:
+            return ParsedDates(None, None, remaining, (_diagnostic('invalid_date', 'Invalid Gregorian range.', True),), True)
+        return ParsedDates(start, end, remaining.replace('from', '', 1).strip())
     if _BROAD.search(text):
         return ParsedDates(None, None, text, (_diagnostic("broad_relative_date", "Broad relative wording has no single supported day."),), True)
-    if _DISCRETE.search(text):
-        return ParsedDates(None, None, text, (_diagnostic("multiple_dates", "Discrete sessions are not represented in Stage 7."),), True)
+    discrete = _DISCRETE.search(text)
+    if discrete:
+        return _parse_discrete(discrete, text, reference)
     match = _RANGE.search(text)
     is_range = match is not None
     if match is None:
@@ -125,3 +147,47 @@ def parse_dates(text: str, reference: date) -> ParsedDates:
     if is_range and match["w2"] and _WEEKDAYS[match["w2"]] != end.weekday():
         return ParsedDates(None, None, remaining, (_diagnostic("weekday_contradiction", "End weekday conflicts with the range end date.", True),), True)
     return ParsedDates(start, end, remaining, tuple(diagnostics))
+
+
+def _parse_discrete(match: re.Match, text: str, reference: date) -> ParsedDates:
+    """Expand only an explicit same-month list with one safe year for every day."""
+    prefix = text[:match.start()].strip(" :：,،📅🗓")
+    remaining = text[:match.start()] + " " + text[match.end():]
+    if prefix not in {"", "تاریخ", "زمان"}:
+        return ParsedDates(None, None, text, (_diagnostic(
+            "ambiguous_date_context", "A discrete date list has unsupported qualifying wording."),), True)
+    if (re.search(r"\s+[0-9]{3,}", text[match.end():])
+            or _SINGLE.search(remaining) or _ISO.search(remaining)
+            or re.search(_MONTH, remaining)):
+        return ParsedDates(None, None, text, (_diagnostic(
+            "multiple_dates", "Separate date expressions require schedule review."),), True)
+    days = [parse_day(token[0]) for token in re.finditer(_DAY, match["days"])]
+    month = MONTHS[match["month"]]
+    diagnostics = [_diagnostic("multiple_dates", "The source identifies distinct dated occurrences.")]
+    try:
+        if match["year"]:
+            values = tuple(JalaliDate(int(match["year"]), month, day).to_gregorian() for day in days)
+        else:
+            year = JalaliDate(reference).year
+            possible = []
+            valid = False
+            for candidate_year in (year - 1, year, year + 1):
+                try:
+                    dates = tuple(JalaliDate(candidate_year, month, day).to_gregorian() for day in days)
+                except ValueError:
+                    continue
+                valid = True
+                if all(abs((day - reference).days) <= 45 for day in dates):
+                    possible.append(dates)
+            if not valid:
+                raise ValueError("impossible calendar date")
+            if len(possible) != 1:
+                return ParsedDates(None, None, remaining, tuple(diagnostics) + (_diagnostic(
+                    "missing_year", "No unique year places every listed date within 45 reference days."),), True)
+            values = possible[0]
+            diagnostics.append(_diagnostic("inferred_year", "Every listed date falls within 45 days of the stored reference; review required."))
+    except (ValueError, OverflowError):
+        return ParsedDates(None, None, remaining, (_diagnostic(
+            "invalid_date", "A listed calendar date is invalid.", True),), True)
+    return ParsedDates(None, None, remaining, tuple(diagnostics),
+                       discrete_dates=tuple(sorted(set(values))))

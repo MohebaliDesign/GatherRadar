@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import load_sources
@@ -27,6 +27,8 @@ class SourceReview:
     place_candidates: int = 0
     diagnostics: tuple[str, ...] = ()
     observed_item_ids: tuple[str, ...] = ()
+    funnel: dict[str, int] = field(default_factory=dict)
+    investigations: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +38,11 @@ class CanonicalReview:
 
 
 def identity_slot(unit: DiscoveryUnit | None) -> str:
+    if unit is not None:
+        segmented = next((f for f in unit.fragments if f.extraction_engine == 'caption-segmentation'), None)
+        if segmented is not None:
+            index = segmented.extraction_config.split(';', 1)[0].split('=', 1)[1]
+            return 'primary' if index == '0' else 'caption:' + index
     if unit is None or any(f.kind in {EvidenceKind.CAPTION, EvidenceKind.WEBSITE_TEXT, EvidenceKind.WEBSITE_LISTING}
                            for f in unit.fragments):
         return "primary"
@@ -119,8 +126,28 @@ def run_canonical_review(
                 source_contexts.append(CandidateContext(outcome, discovery.candidate, raw, source,
                     first_seen.get(raw.id, raw.captured_at), identity_slot(units.get(discovery.discovery_unit_id))))
             contexts.extend(source_contexts)
+            by_raw = {raw.id: [o for o in summary.outcomes if o.raw_item_id == raw.id] for raw in items}
+            event_items = {key for key, values in by_raw.items() if any(o.event for o in values)}
+            non_event = {key for key, values in by_raw.items() if key not in event_items
+                         and any(o.evidence and (o.evidence.reason or '').startswith('non_event:') for o in values)}
+            investigations = tuple(dict(raw_item_id=raw.id, url=raw.content_url,
+                reason='title_resolution_failed' if outcome.event and not outcome.event.title else reason)
+                for raw in items for outcome in by_raw[raw.id]
+                if (reason := outcome.evidence.reason if outcome.evidence else outcome.reason)
+                and (reason.startswith(('needs_evidence:', 'non_event:')) or outcome.event and not outcome.event.title))
+            candidates = summary.event_candidates
+            funnel = dict(raw_items_selected=len(items), likely_event_items=len(event_items),
+                confirmed_non_event_items=len(non_event), unclassified_items=len(items)-len(event_items)-len(non_event),
+                event_candidates=len(candidates), explicit_titles_found=sum(bool(c.display_title_origin and
+                    c.display_title_origin.startswith('explicit_')) for c in candidates),
+                descriptive_titles_recovered=sum(c.display_title_origin == 'derived_from_source_description' for c in candidates),
+                unresolved_titles=sum(not c.title for c in candidates),
+                occurrences_resolved=sum(len(c.outcome.candidate.occurrences) for c in source_contexts
+                                         if hasattr(c.outcome.candidate, 'occurrences')),
+                evidence_fragments=len({f.fragment_id for u in units.values() for f in u.fragments + u.collapsed}),
+                media_ocr_failures=sum(bool(f.failure_reason) for f in history if f.raw_item_id in by_raw))
             reports.append(SourceReview(source, mode, len(items), summary.events, summary.places,
-                                        tuple(diagnostics), tuple(sorted(item.id for item in items))))
+                                        tuple(diagnostics), tuple(sorted(item.id for item in items)), funnel, investigations))
         except Exception:
             # Never echo an exception that could contain source payloads or secrets.
             reports.append(SourceReview(source, "source_failed", diagnostics=("offline_source_failed",)))

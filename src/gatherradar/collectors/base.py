@@ -75,6 +75,7 @@ class CollectionResult:
     source_id: str
     items: tuple[RawItem, ...] = ()
     failures: tuple[ItemFailure, ...] = ()
+    warnings: tuple[str, ...] = ()
 
     @property
     def observed(self) -> int:

@@ -35,6 +35,8 @@ from . import fields, rules
 from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput
 from .signals import SignalSet, analyze
 from .text import normalize
+from .titles import caption_description, event_title, resolve_title
+from .detection import context_diagnostic
 
 PROVIDER_NAME = "rule-based/1"
 
@@ -105,12 +107,20 @@ def score(found: SignalSet) -> Scores:
 def classify(found: SignalSet) -> tuple[DiscoveryType, Scores, str]:
     """Decide what the observation is, and say why in one sentence."""
     scores = score(found)
+    diagnostic = context_diagnostic(found.text)
+    if diagnostic:
+        return DiscoveryType.OTHER, scores, diagnostic
 
     has_event_term = bool(found.event_strong or found.event_weak)
     has_strong_term = bool(found.event_strong)
     # A bare link is not occurrence evidence: Instagram captions carry links for
     # every reason. Registration has to be said in words to count.
-    has_occurrence_evidence = bool(found.dates or found.times or found.registration)
+    # A month name in an OCR logo ("October Festival") is not a schedule.
+    month_names = {normalize(m) for m in rules.JALALI_MONTHS + rules.JALALI_MONTH_FORMS + rules.GREGORIAN_MONTHS}
+    temporal = fields.source_date_text(found) or ''
+    meaningful_dates = any(normalize(s.text).strip() not in month_names for s in found.dates)
+    has_occurrence_evidence = bool((found.dates and (meaningful_dates or any(c.isdigit() for c in temporal)))
+                                   or found.times or found.registration)
     has_location_context = bool(found.locations or found.place_terms)
 
     path_a = has_event_term and has_occurrence_evidence
@@ -157,6 +167,7 @@ def _event_facts(found: SignalSet, evidence: DiscoveryEvidence) -> DiscoveryFact
         language=found.language,
         evidence=evidence,
         area_text=fields.area_text(found),
+        location_context=fields.location_context(found),
         duration_text=fields.duration_text(found),
         organizer_name=fields.organizer_name(found),
         availability_text=fields.availability_text(found),
@@ -182,6 +193,7 @@ def _place_facts(found: SignalSet, evidence: DiscoveryEvidence) -> DiscoveryFact
 # Simple facts read from each evidence fragment separately and compared. Temporal
 # wording, titles and categories are read from the whole unit, as before.
 MERGED_FIELDS = {
+    "location_context": fields.location_context,
     "price_text": fields.price_text, "venue_name": fields.venue_name, "address": fields.address,
     "city": fields.city, "area_text": fields.area_text, "duration_text": fields.duration_text,
     "organizer_name": fields.organizer_name, "availability_text": fields.availability_text,
@@ -271,21 +283,38 @@ class RuleBasedDiscoveryProvider:
     def discover(self, extraction_input: ExtractionInput) -> DiscoveryFacts:
         found = analyze(extraction_input.raw_text)
         discovery_type, scores, reason = classify(found)
-        if discovery_type is DiscoveryType.OTHER and structured_occurrence(found, extraction_input):
+        if ((discovery_type is DiscoveryType.OTHER and structured_occurrence(found, extraction_input))
+                or (extraction_input.source_sessions and isinstance(extraction_input.source_title, str)
+                    and extraction_input.source_title.strip()
+                    and extraction_input.source_title in extraction_input.raw_text)):
             discovery_type, reason = DiscoveryType.EVENT, REASON_EVENT_STRUCTURED
         evidence = _evidence(found, scores, reason)
 
         if discovery_type is DiscoveryType.EVENT:
             facts = _event_facts(found, evidence)
+            resolved = resolve_title(extraction_input)
+            diagnostics = () if resolved.title else event_title(found)[1]
+            facts = replace(facts, title=resolved.title, extraction_diagnostics=diagnostics,
+                            source_title=resolved.source_title, display_title_origin=resolved.origin,
+                            title_evidence_text=resolved.evidence_text, title_review_required=resolved.review_required,
+                            event_detection_reason=reason)
             # Classification is unchanged. An explicit retained heading can name
             # an already-classified Event; arbitrary first lines cannot.
             title = extraction_input.source_title
             if (isinstance(title,str) and 0 < len(title.strip()) <= 500
                     and title in extraction_input.raw_text):
                 facts = replace(facts,title=title)
+                facts = replace(facts, extraction_diagnostics=())
             else:
                 title = None
-            facts = replace(facts, source_schedule_text=fields.source_schedule_text(found, exclude=title))
+            captions = [text for origin, text in extraction_input.segments if origin == 'caption']
+            if len(captions) == 1:
+                description, caption_diagnostics = caption_description(captions[0])
+                facts = replace(facts, description_text=description,
+                                extraction_diagnostics=(*facts.extraction_diagnostics, *caption_diagnostics))
+            facts = replace(facts, source_schedule_text=fields.source_schedule_text(found, exclude=title),
+                            source_sessions=extraction_input.source_sessions,
+                            source_session_diagnostics=extraction_input.source_session_diagnostics)
             return _merge_evidence(facts, extraction_input)
         if discovery_type is DiscoveryType.PLACE:
             return _place_facts(found, evidence)

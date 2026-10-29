@@ -24,6 +24,13 @@ def parse_times(text: str) -> ParsedTimes:
     text = re.sub(r"^(?:زمان|تاریخ)\s*[:：]\s*", "", text).strip()
     if not text:
         return ParsedTimes()
+    meridiem = re.fullmatch(r'(?:ساعت\s*)?([0-9]{1,2})(?::([0-9]{2}))?\s*([ap])\.?\s*m\.?', text, re.I)
+    if meridiem:
+        hour, minute = int(meridiem[1]), int(meridiem[2] or 0)
+        if not 1 <= hour <= 12 or not 0 <= minute <= 59:
+            return ParsedTimes(diagnostics=(Diagnostic('invalid_time', 'source_date_text',
+                'Explicit AM/PM requires a 1–12 hour and valid minute.', Severity.ERROR),))
+        return ParsedTimes(start=time(hour % 12 + (12 if meridiem[3].lower() == 'p' else 0), minute))
     match = _RANGE.fullmatch(text) or _SINGLE.fullmatch(text)
     if not match or (match.re is _SINGLE and ":" not in text and "ساعت" not in text):
         return ParsedTimes(diagnostics=(Diagnostic("unparsed_temporal", "source_date_text", "Temporal wording is not a supported single date/time expression."),))

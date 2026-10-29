@@ -16,6 +16,7 @@ EVENT_VISIBLE = (
     'منطقه / محله', 'شهر', 'آدرس', 'مدت', 'هزینه', 'ظرفیت / وضعیت ثبت‌نام', 'فرمت',
     'توضیحات / معرفی', 'برگزارکننده', 'ثبت‌نام / خرید', 'منبع اصلی', 'همه منابع',
     'تعداد منابع', 'کیفیت داده', 'یادداشت من',
+    'آمادگی داده', 'دلیل بررسی', 'جلسه‌ها',
 )
 EVENT_TECHNICAL = (
     'event_id', 'run_id', 'start_date_iso', 'end_date_iso', 'timezone', 'date_precision',
@@ -24,6 +25,10 @@ EVENT_TECHNICAL = (
     'source_ids', 'publisher_keys', 'candidate_ids', 'source_item_ids', 'evidence_urls',
     'canonical_source_url', 'diagnostics', 'first_seen_at', 'last_seen_at',
     'duplicate_group_id', 'field_provenance', 'extraction_confidence',
+    'occurrences', 'schedule_kind', 'recurrence_rule', 'data_readiness',
+    'readiness_reasons', 'quality_indicators',
+    'source_title', 'display_title_origin', 'display_title_evidence_ids',
+    'title_evidence_text', 'title_review_required', 'event_detection_reason',
 )
 EVENT_HEADERS = EVENT_VISIBLE + EVENT_TECHNICAL
 PLACE_VISIBLE = ('تصمیم من', 'نام مکان', 'دسته‌بندی', 'شهر', 'آدرس', 'ساعات فعالیت',
@@ -48,6 +53,8 @@ GUIDE_ROWS = [
     ['ستون‌های پنهان', 'شناسه‌ها، تاریخ میلادی و مسیر شواهد برای بررسی فنی نگه داشته می‌شوند.'],
     ['شواهد', 'متن کامل منبع و OCR در رایانه می‌ماند؛ اصلاح دستی سلول، شاهد منبع نیست.'],
     ['کیفیت داده', 'تاریخ نامشخص، اطلاعات ناقص و تعارض‌ها نیازمند بررسی شما هستند.'],
+    ['آمادگی داده', 'با فیلتر این ستون، آماده بررسی، نیاز به تکمیل، بررسی زمان‌بندی و منبع ناموجود را جدا کنید. این وضعیت تصمیم شما نیست.'],
+    ['جلسه‌ها', 'تاریخ و ساعت هر جلسه فقط با شاهد منبع نمایش داده می‌شود؛ قیمت و ظرفیت هر جلسه مستقل است. تکرار هفتگی بدون تاریخ گسترش نمی‌یابد.'],
     ['مکان / منطقه / آدرس', 'مکان نام محل برگزاری است؛ منطقه / محله محدوده تقریبی اعلام‌شده است و آدرس دقیق نیست.'],
     ['زمان‌بندی اعلام‌شده', 'متن دقیق زمان‌بندی منبع؛ برای جلسات متعدد یا تاریخ ناقص. هیچ جلسه‌ای ساخته نمی‌شود.'],
     ['توضیحات / معرفی', 'متن توضیحات خود منبع، بدون خلاصه‌سازی یا هوش مصنوعی.'],

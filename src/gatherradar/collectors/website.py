@@ -77,12 +77,16 @@ class WebsiteCollector:
                           for origin, pairs, text in (('detail', detail.fields, detail.text),
                                                       ('listing', card.fields if card else (), card.text if card else ''))
                           for name, value in pairs if name in STRUCTURED_FIELDS and value in text]
+                sessions = [session.to_dict() for session in detail.sessions]
                 # A verified heading, the item's own listing card and structural
                 # fields are material extraction evidence. They join observation
                 # identity so a changed card (e.g. now sold out) is a new revision.
                 material = (detail.text + ('\x1fheading:' + detail.title if detail.title_is_heading else '')
                             + ('\x1flisting:' + card.text if card else '')
-                            + ('\x1ffields:' + json.dumps(fields, ensure_ascii=False, sort_keys=True) if fields else ''))
+                            + ('\x1ffields:' + json.dumps(fields, ensure_ascii=False, sort_keys=True) if fields else '')
+                            + ('\x1fsessions:' + json.dumps(sessions, ensure_ascii=False, sort_keys=True) if sessions else '')
+                            + ('\x1fsession_diagnostics:' + json.dumps(detail.session_diagnostics)
+                               if detail.session_diagnostics else ''))
                 item = RawItem(
                     id=identity, source_id=source.id, source_type=SourceType.WEBSITE,
                     external_id=detail.external_id, content_type='webpage',
@@ -97,6 +101,10 @@ class WebsiteCollector:
                         'content_links': list(detail.links), 'transport': page.transport,
                         'listing_card_text': card.text if card else None,
                         'source_fields': fields,
+                        **({'source_sessions': sessions,
+                            'source_session_diagnostics': list(detail.session_diagnostics),
+                            'source_session_schema': 'jabama-react-router/1'}
+                           if detail.sessions or detail.session_diagnostics else {}),
                         **({'acquisition_strategy': 'linked_page', 'linked_from': list(linked_from.get(url, ()))}
                            if linked_from is not None else {}),
                     },

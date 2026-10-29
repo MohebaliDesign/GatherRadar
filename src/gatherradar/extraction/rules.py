@@ -19,6 +19,7 @@ from __future__ import annotations
 
 # Words that name an occurrence directly. One of these alone is still not an event.
 EVENT_TERMS_STRONG: tuple[str, ...] = (
+    "شب بازی",
     "رویداد",
     "ایونت",
     "ورکشاپ",
@@ -248,6 +249,8 @@ DURATION_NUMBER_WORDS: tuple[str, ...] = (
 # Time expressions are shaped, not vocabulary, so they are regexes over the folded
 # text: "18:30", "ساعت ۱۸", "از ساعت ۱۶ تا ۲۲", "7 pm".
 TIME_PATTERNS: tuple[str, ...] = (
+    r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?\s*m\.?(?!\w)",
+    r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?\s*m\.?(?!\w)",
     r"\b\d{1,2}:\d{2}\b",
     r"ساعت\s*\d{1,2}",
     r"\b\d{1,2}\s*(?:am|pm)\b",
@@ -515,6 +518,7 @@ LOCATION_DETAIL_TERMS: tuple[str, ...] = (
     "چهارراه",
     "سه راه",
     "تقاطع",
+    "نبش",
     "street",
     "st",
     "road",
@@ -545,6 +549,7 @@ CITY_LABELS: tuple[str, ...] = ("شهر", "city")
 AREA_LABELS: tuple[str, ...] = ("محله", "منطقه", "محدوده", "neighborhood", "neighbourhood", "area")
 # An explicit stated length, never derived from start/end clocks.
 DURATION_LABELS: tuple[str, ...] = (
+    "مدت زمان اجرا",
     "مدت زمان برنامه", "مدت زمان برگزاری", "مدت زمان", "مدت برگزاری", "مدت", "duration",
 )
 # Natural (unlabelled) venue constructions: "در گالری نگاه برگزار می‌شود",
@@ -555,19 +560,32 @@ NATURAL_VENUE_INTRODUCERS: tuple[str, ...] = ("در", "توی", "تو", "میز�
 # in the same clause, a branch, or a whole standalone location line.
 NATURAL_VENUE_HEADS: tuple[str, ...] = (
     "کافه گالری", "کافه", "گالری", "نگارخانه", "موزه", "فرهنگسرا", "تالار", "تماشاخانه",
-    "فضای هنری", "مرکز فرهنگی",
+    "فضای هنری", "مرکز فرهنگی", "آکادمی",
 )
 # Ordinary nouns that also head venue names ("در خانه بمانید", "در مرکز شهر").
 # Accepted only directly before holding wording ("... برگزار می‌شود") or with a branch.
-GENERIC_VENUE_HEADS: tuple[str, ...] = ("مجموعه", "سالن", "خانه", "مرکز", "باغ", "عمارت")
+GENERIC_VENUE_HEADS: tuple[str, ...] = ("مجموعه", "سالن", "خانه", "مرکز", "باغ", "عمارت", "کارگاه")
 VENUE_HOLDING_TERMS: tuple[str, ...] = ("برگزار",)
 # "شعبه‌ی لواسان کافه رئیس": the branch stays inside the venue wording; it is not
 # turned into an area or a city.
 VENUE_BRANCH_TERMS: tuple[str, ...] = ("شعبه",)
 # Words that end a natural venue name rather than continue it.
-VENUE_NAME_STOPWORDS: frozenset[str] = frozenset({"شهر", "خود", "اصلی", "بعدی", "قبلی", "جدید"})
-MAX_VENUE_NAME_TOKENS: int = 3
+VENUE_NAME_STOPWORDS: frozenset[str] = frozenset({"شهر", "خود", "اصلی", "بعدی", "قبلی", "جدید", "دور"})
+MAX_VENUE_NAME_TOKENS: int = 5
 MAX_VENUE_BRANCH_TOKENS: int = 2
+VENUE_NUMBER_WORDS: frozenset[str] = frozenset({"یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده"})
+VENUE_ATTENDANCE_SUFFIXES: tuple[str, ...] = ("دور هم جمع",)
+
+# These are structural title clues for already-classified Events; they do not
+# themselves classify a post. Ordinary promotional first lines remain excluded.
+TITLE_HEADING_HEADS: tuple[str, ...] = ("پروژه", "شب بازی", "بازی")
+TITLE_PERFORMANCE_HEADS: tuple[str, ...] = ("گروه",)
+TITLE_PERFORMANCE_ANNOUNCEMENTS: tuple[str, ...] = ("این بار در",)
+TITLE_QUOTED_CONTEXT: tuple[str, ...] = ("کاری از", "به کارگردانی", "نمایش", "تئاتر")
+TITLE_PROMOTIONAL_WORDS: tuple[str, ...] = (
+    "قراره", "میخوای", "میتونی", "میتونید", "بهترین", "تخفیف", "فالو", "کامنت",
+    "پیشنهاد", "بخرید", "فروش",
+)
 
 # Only an explicitly labelled organizer; authors and publishers are not organizers.
 ORGANIZER_LABELS: tuple[str, ...] = (
@@ -591,7 +609,7 @@ SOLD_OUT_PHRASES: frozenset[str] = frozenset({
 # Multi-session / recurring schedule wording. The sentence is preserved verbatim;
 # no occurrence is generated from it.
 RECURRENCE_TERMS: tuple[str, ...] = (
-    "هر هفته", "هفتگی", "هر روز", "همه روزه", "روزانه", "هر ماه", "جلسات",
+    "هر هفته", "هفتگی", "هر روز", "هر شب", "همه روزه", "روزانه", "هر ماه", "جلسات",
     "every", "weekly", "daily", "weekdays", "weekends",
 )
 # Two or more sessions; a single session is not a multi-session schedule.
@@ -608,6 +626,8 @@ LABEL_SEPARATORS: str = ":：–—-="
 # Only terms that can actually head a proper event name. "ایونت" heads one too, and
 # the stopword list below is what stops "ایونت نیست" from becoming a name.
 NAMED_EVENT_HEAD_TERMS: tuple[str, ...] = (
+    "تور",
+    "شب بازی",
     "رویداد",
     "ایونت",
     "افتتاحیه",

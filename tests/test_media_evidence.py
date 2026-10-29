@@ -46,6 +46,9 @@ class FakeDriver:
         self.index += 1
         return True
 
+    def has_next_carousel(self):
+        return self.index + 1 < len(self.visuals)
+
     def video_duration_ms(self):
         return self.duration
 
@@ -110,6 +113,8 @@ class CarouselCaptureTests(unittest.TestCase):
             max_slides=2,
         )
         self.assertEqual(len(result.artifacts), 2)
+        self.assertEqual(result.failures[0].category, 'slide_limit')
+        self.assertEqual(result.failures[0].slide_index, 2)
 
     def test_duplicate_visual_stops_the_carousel(self):
         result = capture_post_artifacts(
@@ -121,8 +126,10 @@ class CarouselCaptureTests(unittest.TestCase):
         result = capture_post_artifacts(
             FakeDriver([b'one', b'two', b'three'], fail_at={1}), raw_item(), self.store
         )
-        self.assertEqual([item.slide_index for item in result.artifacts], [0, 2])
+        self.assertEqual([item.slide_index for item in result.artifacts], [0])
         self.assertEqual(len(result.failures), 1)
+        self.assertEqual(result.failures[0].retry_count, 2)
+        self.assertEqual(result.failures[0].slide_index, 1)
 
     def test_capture_errors_do_not_echo_browser_details(self):
         driver = FakeDriver([b'one'])
@@ -210,13 +217,17 @@ class MediaPageDriverTests(unittest.TestCase):
         active.bounding_box.return_value = {'x': 222.9, 'y': 29.6, 'width': 483.1875, 'height': 599.95}
         page = mock.Mock()
         page.screenshot.return_value = b'active slide'
-        page.locator.return_value.count.return_value = 4
-        page.locator.return_value.nth.side_effect = [active, clipped, avatar, thumbnail]
+        page.wait_for_function.return_value.as_element.return_value = active
+        active.evaluate.side_effect = lambda script: ('IMG' if script == '(el) => el.tagName'
+            else 'source-a' if 'currentSrc ||' in script else 200000)
         self.assertEqual(PlaywrightMediaPageDriver(page).capture_current_visual(), b'active slide')
-        page.locator.assert_called_once_with('article img, main img')
-        active.scroll_into_view_if_needed.assert_called_once()
+        args = page.wait_for_function.call_args.kwargs['arg']
+        self.assertIn('main video', args['selector'])
+        self.assertIn('box.width * .98', page.wait_for_function.call_args.args[0])
+        active.wait_for_element_state.assert_called_once_with('stable', timeout=5000)
+        active.scroll_into_view_if_needed.assert_not_called()
         page.screenshot.assert_called_once_with(
-            type='png', clip={'x': 223, 'y': 30, 'width': 483, 'height': 599}
+            type='png', timeout=5000, clip={'x': 223, 'y': 30, 'width': 483, 'height': 599}
         )
         for image in (clipped, avatar, thumbnail):
             image.screenshot.assert_not_called()

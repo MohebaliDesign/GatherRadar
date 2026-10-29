@@ -3,11 +3,80 @@
 This document defines the records used by the MVP pipeline. Collectors may change, but these boundaries should remain stable unless the product contract changes.
 
 ```text
-Source → RawItem / Evidence → DiscoveryUnit → DiscoveryService
-       → EventCandidate | PlaceCandidate → NormalizationOutcome
-       → conservative canonicalization → review window → SQLite → XLSX / CSV / JSON
+Source → RawItem / Evidence → DiscoveryUnit
+       → DiscoveryService (Event detection / title resolution)
+       → EventCandidate | PlaceCandidate → NormalizationOutcome → conservative canonicalization
+       → admission → review window → SQLite → XLSX / CSV / JSON
        → optional manual Gemini bundle / Google Sheets API adapter
 ```
+
+## Event admission
+
+Event detection precedes title admission. The deterministic discovery provider
+combines activity identity with temporal/attendance/registration evidence and
+diagnoses ordinary promotion, retrospective-only content and ambiguous collections.
+A date, venue or isolated activity keyword is insufficient. Separately headed
+announcements with their own evidence can split into distinct caption units;
+collection covers cannot become extra Events.
+
+`review.eligibility` guards new canonical review persistence and every current
+Event export. A meaningful display title may be an explicit website/caption/OCR
+title, a named activity recovered from description, or a bounded factual descriptive
+transformation. Generic placeholders and unsupported text fail admission.
+`title` remains the display-title field for backward compatibility. Optional fields
+preserve the distinction without a destructive migration:
+
+| Field | Contract |
+| --- | --- |
+| `source_title` | Original explicit title/name; null for a purely descriptive title |
+| `display_title_origin` | `explicit_website`, `explicit_caption`, `explicit_media_ocr`, `extracted_from_description`, or `derived_from_source_description` |
+| `title_evidence_text` | Exact supporting source span; never represented as a quote of a derived title |
+| `display_title_evidence_ids` | Nonempty subset of this Event's `evidence_fragment_ids` |
+| `title_review_required` | Derived-title warning, independent of temporal relevance |
+| `event_detection_reason` | Explainable activity detection or investigation diagnostic |
+
+Title field provenance must still name this Event's own candidate IDs, source IDs
+and canonical URL. Discovery revalidates recovery against the candidate's actual
+fragments; admission revalidates derived transformations and fragment membership.
+Canonical merging carries the chosen title and its provenance together. No remote
+AI service, source-specific title table or unrestricted generated fallback is used.
+
+The SQLite `sync` boundary gates new Event facts, snapshots, identity mappings and
+review rows. Existing records are not deleted or rewritten. `load` projects old
+runs through the same rule before deserialization; XLSX/CSV/JSON/Gemini export
+boundaries and optional Sheets snapshot creation guard membership as well.
+Raw JSONL, captions, OCR fragments and provenance remain available for reprocessing.
+No evidence is rewritten. Re-export validates existing saved facts; it does not
+re-extract absent titles from a historical run. Offline raw/evidence reprocessing
+creates a separate review run while preserving historical IDs where anchors agree.
+
+Run summaries distinguish `discovered_event_count` (deduplicated candidates before
+admission), `excluded_event_count`, `canonical_event_count` (eligible persisted
+membership), `filtered` (all non-actionable schedule/status dispositions), and `event_count` (actionable).
+Thus discovered = excluded + canonical and canonical = filtered + displayed.
+`excluded_missing_title` aggregates missing, placeholder and unattributed titles;
+`title_exclusion_reasons` separates those cases. `excluded_missing_title_by_source`
+attributes each excluded Event once to each contributing source, so multi-source
+attributions can sum above the overall exclusion count. Legacy-run summaries are
+computed on read without changing saved metadata.
+
+Readiness is assessed only after admission for the current review dataset. Its
+missing-title reason remains useful for diagnosing transient or historical records;
+it does not authorize admission. No schema bump or destructive migration is needed.
+
+The run's `source_funnel` reports distinct units: selected RawItems, likely Event
+RawItems, confirmed non-Event RawItems, unclassified RawItems, extracted candidates,
+explicit/descriptive/unresolved titles, unique evidence fragments, normalized
+occurrences, canonical dispositions and media failures. These counts are not additive
+across units. Shared Events can contribute to multiple sources; the global canonical
+partition remains authoritative. Investigation entries retain source URLs and reasons.
+
+Explicit ongoing ranges remain discoverable with a visiting-hours warning.
+Distinct date/clock clauses and finite date lists retain separate Occurrences;
+date-only list members do not inherit another session's clock. English Gregorian
+month/day ranges require an explicit year. Relative today/tomorrow and bounded
+weekday pairs use trustworthy original publication time, never collection/run time.
+Unbounded recurrence, contradictory dates and absent dates stay reviewable.
 
 ## Source
 
@@ -132,6 +201,13 @@ discovery boundary. The detail text, a verified heading, the card text and these
 all join the content hash, so a changed card (for example newly sold out) appends a
 Changed revision and an unchanged rerun stays Existing.
 
+Jabama adapter `jabama-events/3` additionally retains `source_sessions`,
+`source_session_diagnostics` and `source_session_schema = jabama-react-router/1`.
+These are separate structured evidence, never injected into `raw_text` or treated as
+exact-slice `source_fields`. Validated session facts and their diagnostics also join the
+content hash; a seat-count, date or price change appends a revision without changing the
+RawItem identity. Unrelated script fields do not change the hash.
+
 Other metadata is provenance, not rule-engine input. Full HTML and review/profile text are not
 stored in RawItems. A metadata-only change does not alter the existing content hash and
 therefore does not append a new observation; this Stage 6 limitation preserves the shared
@@ -148,10 +224,38 @@ booking aside with the purchase control and exactly one price paragraph; ambigui
 Collection takes up to N valid details in source listing order (1–30, up to `min(3*N,30)`
 attempts, one listing, no pagination). Offline discovery instead takes latest observations
 in first-seen storage order; no capture-run manifest reconstructs later live list order.
-Missing/deleted events are not tombstoned. Recurring/multi-session pages are not split into
-individual occurrences. Related content must be excluded structurally by the adapter;
+Missing/deleted events are not tombstoned. One detail page remains one RawItem and one
+Event; supported explicit dates/sessions become occurrences within that Event.
+Related content must be excluded structurally by the adapter;
 arbitrary page segmentation and cross-page event merging are not implemented.
 See [source field coverage](SOURCE_FIELD_COVERAGE.md) for the per-adapter fact inventory.
+
+### Public embedded sessions
+
+`SourceSession` is a bounded, validated input record containing `source_session_id`,
+`source_event_id`, the original aware `start_iso` string, `source_locator`, optional
+decimal strings `duration_hours`, `price_per_person`, `unit_price`,
+`host_discount_pct`, `platform_discount_pct`, optional `remaining_seats`, and
+optional boolean `enabled`. The locator identifies
+`react-router:loaderData/routes/events.$id/sessions/<index>` on the observation's
+detail URL. These are the session's own facts; event-level prices and currency are
+never inherited.
+
+The parser supports the indexed JSON envelope actually inspected in previously saved
+public Jabama `/events/` HTML. It reads a single JSON string argument of the known
+React Router enqueue call as data, never executes JavaScript, follows imports, requests
+private APIs, or opens checkout. Only the page's route and whitelisted session facts are
+decoded. The embedded event ID must agree with the detail URL and every session's event
+ID. `firstSession` is deliberately ignored because it repeats a session. Identical
+session IDs deduplicate; conflicting facts for one ID are withheld with a diagnostic.
+
+Bounds apply to envelope size, reference table, field types and session count. Unknown
+envelopes/properties, invalid references, nonempty `timeslots`, invalid clocks,
+cross-event IDs and conflicting sessions produce explicit schema/identity diagnostics.
+Valid sibling sessions remain available with the incomplete-schedule diagnostic.
+Absent or empty data is reported rather than converted into dates. Older observations
+without retained session evidence stay unchanged; offline reanalysis cannot recover
+discarded script bytes.
 
 ## EvidenceFragment, EvidenceBundle, and DiscoveryUnit
 
@@ -268,6 +372,18 @@ independently. Grouping never classifies concatenations to decide whether to mer
 - A media fragment made only of isolated unlabelled clock/numeric-date lines is never
   support text. Beside an adjacent anchor it is collapsed as
   `ocr_fragment_insufficient_for_independent_event`; otherwise it is its own unit.
+  A split unlabelled OCR clock (`۳` followed by `am` on the next line) follows the same
+  rule rather than creating an independent event.
+- Repeated Reel anchors with an exact title, the same weekday, the same additional
+  multiword subtitle, mixed-script corrupt temporal text on both frames, and no other
+  facts can collapse with `repeated_anchor_with_unreliable_temporal_ocr`. This narrow
+  noise rule does not turn unreadable digits into dates or weaken conflict handling
+  for reliable temporal evidence.
+- An OCR title that matches an explicitly labelled caption venue (spacing/ZWNJ
+  normalization only), while the caption names a different Event, is collapsed only
+  when the media provides no independent reliable temporal facts. The diagnostic is
+  `source_venue_reclassified_from_ocr_title`. Its fragment provenance remains attached;
+  the mistaken title and unreadable text never become semantic evidence.
 - Failed/empty fragments and text rejected by the existing meaningful-content guard never
   supply unit text. They are not removed from storage. Unrecognized content words remain
   separate and may classify as Other; noise is not reliably detectable. No eligible text
@@ -346,6 +462,11 @@ key, no network access, no cost. See "Rule-based discovery" below.
 source configuration is supplied, `locale`, `timezone`, and `city_hint`. Adapter
 `raw_metadata` is not passed. Stage 9 adds optional `source_title`: only an explicitly
 verified website heading validated against the raw text, as detailed below.
+The current input also contains individually retained evidence `segments`,
+validated structural `source_fields`, and `source_sessions` plus
+`source_session_diagnostics`. It never receives arbitrary adapter metadata.
+Session admission requires the supported website adapter/schema, the matching
+`/events/<external_id>` path and a validated session identity.
 
 `DiscoveryFacts` carries `discovery_type`, `title`, `summary`, `category`, `source_date_text`,
 `venue_name`, `address`, `city`, `event_format`, `price_text`, `opening_hours_text`,
@@ -416,6 +537,10 @@ evidence:
   date, a date without a clock, a trusted listing alone, or free-text dates never qualify,
   so an Experiences listing is never promoted wholesale. Reason:
   `event: verified detail date/time slot with attendance or price evidence`.
+* **Verified public session** — a retained website heading plus at least one admitted
+  public bookable session establishes an Event even when visible prose contains no date
+  or otherwise describes a Place. A listing category, arbitrary script, unverified title
+  or missing session does not qualify.
 
 Path B exists because requiring a date made the first version of this engine too strict for a
 real and common shape: a post that says where to come and that they are waiting for you,
@@ -430,14 +555,23 @@ Retrospective wording (`برگزار شد`, `هفته گذشته`, `گزارش �
 penalty, never a veto: a post that recaps the last occurrence and announces the next can
 still be an event.
 
-**Named events and titles are conservative.** A title comes only from a validated
-`<head term> <name>` construction or an explicitly quoted name — otherwise it stays null,
+**Named events and titles are conservative.** Titles come from a validated
+`<head term> <name>` construction, an explicitly quoted name, or a supported compact
+heading after Event classification — otherwise they stay null,
 because an unknown title is better than an invented one. A construction is valid only when
 the head term is that exact word, opens its line, and is followed by words that are not
 grammatical continuations (a centralized stopword list), dates, or numbers. So
 `رویداد سرام` and `نمایشگاه «نام نمایشگاه»` are names, while `رویداد میتونید`,
 `رویداد جزو`, `رویدادهای تهران`, and `اینجا فقط ایونت نیست` are not. A rejected construction
 adds nothing to the event score.
+Trailing edition digits stay part of a valid title. A quoted title at the start of a
+line can be retained when supported by theatre-credit context. A compact project/game
+heading needs temporal and attendance/registration evidence; arbitrary first prose
+lines do not qualify. `missing_source_title`, `title_extraction_failed` and
+`ambiguous_event_title` remain in `extraction_diagnostics` and canonical `extraction:*`
+diagnostics when recovery is unresolved. A verified website heading still takes
+precedence without manufacturing a title.
+Named title heads also include `تور` and `شب بازی`.
 
 **Temporal wording is detected, never converted.** Persian weekdays and months, relative
 dates, Persian and Latin digits, times, and time ranges are recognized as signals and kept
@@ -450,18 +584,24 @@ numeric amount is produced.
 
 ### Source-supported review facts
 
-`DiscoveryFacts`, `EventCandidate` and `Event` carry six optional, source-worded facts.
+`DiscoveryFacts`, `EventCandidate` and `Event` carry optional, source-worded facts.
 Each is exact source text or null; none is generated, summarized or inferred.
 
 | Field | Meaning | Never |
 | --- | --- | --- |
-| `description_text` | The source's own description section, whitespace-normalized per line | a generated summary; `summary` stays reserved for a future summary contract |
+| `description_text` | The source's own description section or supported complete caption, whitespace-normalized per line | a generated summary; `summary` stays reserved for a future summary contract |
 | `area_text` | Neighborhood/district/approximate locality (`ایرانشهر - سمیه`) | a venue, a precise address, a city, or geocoded |
 | `duration_text` | An explicitly stated length (`۳ ساعت`, `۹۰ دقیقه`) | derived from start/end clocks, or read as a clock time |
 | `organizer_name` | A name behind an explicit organizer/host label or caption | an author, publisher, account or arbitrary person name |
 | `availability_text` | Explicit capacity/registration-state wording (`تکمیل ظرفیت`, `ظرفیت: ۲۰ نفر`) | inferred from a missing price or booking control; no invented capacity |
-| `source_schedule_text` | Exact multi-session/recurring/daily-window sentences (≤3, deduplicated) | expanded into occurrences or a continuous range |
+| `source_schedule_text` | Exact multi-session/recurring/daily-window sentences (≤3, deduplicated) | rewritten; expanded into arbitrary future dates or continuous attendance |
 | `source_category_text` | An explicit source category label (adapter-verified structural field) | inferred from prose; mapped to a category the taxonomy lacks |
+
+A caption contributes the complete `description_text` only to a discovery unit that
+contains that caption and names no more than one defensible Event. Multiple named
+Events leave description null with `ambiguous_caption_description`, avoiding
+cross-event copying. Unrelated media-only units never inherit the caption.
+Summarization, translation and factual rewriting are not performed.
 
 **Category precedence.** When `source_category_text` exists it outranks free-text keyword
 inference: `category` is its exact supported mapping in the controlled vocabulary
@@ -481,6 +621,15 @@ plus a clock, number or date other than the weekday itself; a title such as `(۴
 prose such as «چهارشنبه‌ها تجریش شلوغ است» do not qualify. A number written before
 `ساعت` with none after it (`۲ ساعت`, `یک ساعت و نیم`) is a length, never a time signal. A
 labelled venue whose whole value is a known city (`محل برگزاری: تهران`) is reported as city only.
+Pinned physical venues remain separate from street addresses and city-only locations.
+A named branch with Event context can retain the whole branch name; a natural
+`کارگاه` venue requires direct attendance wording with bounded compound-number
+handling. An organizer or publisher name alone never establishes the venue.
+Explicit inline locality wording (`📍 آکادمی نمونه، محدوده ولیعصر`) can supply a
+venue and separate area without inventing address/city. `نبش` marks street-address
+detail, leaving an independently supported named venue intact. Session-count wording
+with `سانس`, discrete `و` day lists and every-night wording retain their full source
+schedule; malformed enumeration punctuation is preserved for review.
 
 **Listing/detail precedence.** For price, venue, address, city, area, duration, organizer
 and availability, discovery reads each fragment of a website unit separately. An
@@ -493,7 +642,8 @@ and `field_conflicts` names it, which Stage 8 reports as `source_field_conflict`
 detail-only description — is kept. A structural detail header date (`source_date_text`)
 outranks a labelled recurrence phrase elsewhere on the page. Temporal wording otherwise uses
 the existing ranking over the whole unit; card/detail clock disagreement is not separately
-detected (documented limitation). No new field participates in classification.
+detected (documented limitation). These precedence rules do not by themselves establish
+an Event; the explicit structured-occurrence/session paths above handle that boundary.
 
 ## Event
 
@@ -567,7 +717,8 @@ Explicit Persian day ordinals (`اول`/`یکم` through `سی و یکم`) share
 date grammar. Safe whitespace/ZWNJ/harakat variants are parsing-only changes. Month
 names accept attached or separate `ماه`. Clear same-month ranges such as
 `یکم تا سوم مهرماه` resolve through the existing reference policy. `۱ و ۲ مهر` and
-textual discrete sessions remain unresolved.
+other supported discrete day lists become separate occurrences only when every date
+is established by an explicit year or the existing bounded year-inference policy.
 
 Discovery preserves these shapes for every Jalali month, so normalization receives them
 intact: the attached (`مهرماه`, `دیماه`) and separate (`مهر ماه`, `مهر‌ماه`) month forms are
@@ -576,21 +727,25 @@ one date signal; leading days may be Persian or ASCII numbers or ordinals joined
 `یکم تا سوم مهرماه`); a weekday, date and clock on one line stay one fragment; and a
 four-digit year directly after the month is kept. An ordinal run directly after an ordinary
 word (`هفته اول مهر`, `نیمه دوم مهر`) names part of a month, not a day, and is not attached.
-Comma day lists also populate `source_schedule_text`; listed days are never collapsed into a
-range or expanded into occurrences. When both appear, a concrete calendar fragment outranks
+Comma day lists also populate `source_schedule_text`; supported listed days become
+distinct occurrences, never a continuous range. When both appear, a concrete calendar fragment outranks
 an isolated clock in the existing fragment ranking. Calendar validation rejects impossible
 month days. For `یکم تا سوم مهرماه از ساعت ۱۰ تا ۲۲`, date and time components are
 retained with range precision and `multi_day_hours`; `starts_at`/`ends_at` remain null
 because daily attendance hours do not establish a continuous multi-day interval.
 
-The reference is `RawItem.published_at`, else `captured_at`, converted to the source timezone
-before obtaining the local reference date. `reference_at` and `reference_basis` are exposed.
-No wall clock is consulted. `امروز`/`فردا` and `today`/`tomorrow` can resolve against it.
+The calendar reference is `RawItem.published_at`, else `captured_at`, converted to the
+source timezone. `reference_at` and `reference_basis` are exposed. Relative expressions
+are stricter: `امروز`/`فردا` and `today`/`tomorrow` require `published_at`; missing
+publication produces `unknown_publication_reference`. Capture time never substitutes
+for announcement time. No wall clock is consulted.
 At the service boundary a **bare relative word** additionally requires a standalone or
 labelled temporal line in the corresponding discovery-unit text (or raw text for legacy
 caption discovery). This avoids normalizing a word extracted from a publisher name or
 ordinary prose. Missing unit context does not fall back to an unrelated caption.
-Broad weeks/weekends remain unresolved; there is no assumed Iran weekend rule.
+Broad weeks/weekends alone remain unresolved. Explicit weekday pairs/ranges can use
+the original publication week only with matching today/tomorrow, a matching first
+weekday or explicit this-week context. They never roll forward to the next weekend.
 
 For clear yearless day/month wording, enumerate the reference Jalali year and its adjacent
 years. Accept only one valid date within **45 days before or after** the stored local
@@ -606,6 +761,48 @@ an undated page was published.
 gaps and folds are invalid rather than choosing an arbitrary offset. Parsing has a
 4096-character per-field bound. Unconsumed temporal wording is reported and prevents
 datetime composition, even when safe calendar components remain available for review.
+
+### Events and occurrences
+
+`EventCandidate` and canonical `Event` append `occurrences`, `schedule_kind` and
+`recurrence_rule` without replacing Event identity. `schedule_kind` is `unknown`,
+`single`, `discrete`, `range`, `recurring` or `conflict`. Discovery retains validated
+`source_sessions` as input; normalization creates `EventOccurrence` records.
+
+Each occurrence has its own deterministic `occurrence_id`, required Gregorian
+`start_date` and IANA `timezone`, optional date bounds and local clocks, optional aware
+start/end instants, `date_precision`, original `source_schedule_text`, optional native
+`source_session_id`, stable `source_session_origin` and `source_locator`, and source-item/candidate/evidence-URL/fragment
+provenance. Own price, availability, seat count, enabled flag and diagnostics remain
+attached to that occurrence. The collector does not infer end instants; normalization
+may derive one from an explicit session duration, using elapsed time across timezone
+transitions.
+
+One explicit date creates one occurrence. Discrete days create separate occurrences;
+their parent Event has no arbitrary primary date. A date range retains bounds and any
+daily clock window without claiming uninterrupted attendance. Supported weekly wording
+can retain a bounded `FREQ=WEEKLY;BYDAY=...` rule; it never generates future dates.
+Unknown years, multiple ambiguous clocks and unsupported schedules stay unresolved.
+Date wording, schedule wording and public sessions are reconciled: contradictory
+evidence is retained with `schedule_kind=conflict`, never silently selected.
+
+Occurrence IDs combine the owning Event identity with a native session key scoped by
+source origin, or normalized temporal components. Mutable price/availability and
+additional evidence do not change that identity. Canonicalization combines provenance
+only for equivalent occurrences. Conflicting times for one session retain both
+representations with a conflict diagnostic and no parent primary date. Sharing a
+title, publisher, venue or registration URL alone never merges different occurrences.
+
+Session price evidence preserves its own decimal-string fields
+`price_per_person`, `unit_price`, `host_discount_pct` and `platform_discount_pct`.
+`price_text` stays null when the payload has no human-readable source phrase;
+internal key/value strings are never displayed as original source wording.
+Distinct price keys produce a conflict and no selected amount. Nonzero discounts
+preserve the modifier fields, leave final amount unresolved and emit a diagnostic.
+Currency stays null unless the session contract
+supports it; event-level starting prices and unrelated JSON-LD offers are not evidence
+for that session. `remaining_seats` and `enabled` stay typed source facts and do not
+silently rewrite the Event's publication or lifecycle status.
 
 ### Money
 
@@ -639,8 +836,8 @@ used by the separate Stage 9 local persistence/export service. Normalization its
 
 `deduplication.canonicalize(contexts)` is the source-neutral in-memory batch boundary.
 Each `CandidateContext` carries the `NormalizationOutcome`, original candidate, exact
-RawItem/Source, historical `first_seen_at` and stable evidence slot. No provenance metadata
-is added to `EventCandidate`. The result retains **all input contexts**, including rejected
+RawItem/Source, historical `first_seen_at` and stable evidence slot. Candidate and
+occurrence evidence references remain attached. The result retains **all input contexts**, including rejected
 inputs, plus canonical Events, automatic multi-member groups, all pair decisions, possible
 relationships, singleton Events, unchanged Place candidates and structured diagnostics.
 Events and Places are never compared or merged. No raw observation or candidate is deleted.
@@ -906,13 +1103,32 @@ stale removed media slots and A → B → A fragment recency are not solved here
 
 ### Review window and display
 
-Window: run-start date in `--review-timezone` (default Asia/Tehran) through that date
-plus `--days` (default 14; 1–90), inclusive. Normalized dates/ranges are retained on
-overlap, including known ongoing ranges. Dated Events outside the window are excluded
-only from the new snapshot. Inferred dates use their normalized interpretation and
-retain review diagnostics. Missing dates/unknown precision are included after dated
-Events. Sorting uses date, known time first, time, title, stable Event ID. Review
-reference timezone does not overwrite event timezone or source interpretation.
+Window: stored `run.started_at`, converted to `Asia/Tehran`, through that local date
+plus `--days` (default 14; 1–90), inclusive. No filtering stage reads its own wall clock.
+`--review-timezone` controls presentation only. Supported occurrences outrank parent
+dates; explicit date ranges outrank single dates. An end timestamp at or before the
+reference excludes a session; date-only Events remain through their own local day.
+A start-only Event today remains eligible without an invented end. Ongoing ranges
+remain even when extending beyond the future horizon. Daily opening hours are not a
+continuous interval, but a reliable final-day closing time can establish expiry.
+Missing/ambiguous dates and recurrence without verified dated instances go to
+`schedule_review`, never the actionable `events` array. A verified future occurrence
+can keep an Event eligible after earlier sessions end. Only relevant occurrences
+appear in its current export; SQLite keeps the complete original occurrence array.
+Cancellation/postponement excludes actionability; sold-out and capacity remain
+availability facts. Inferred dates keep their diagnostics. Event timezones are never
+overwritten; date-only boundaries are interpreted in the Event's own IANA timezone.
+
+Each eligible canonical Event has exactly one `event_dispositions` entry with a
+reason and, when present, individual occurrence outcomes. `disposition_counts` sums
+`actionable`, `expired`, `beyond_horizon`, `needs_schedule_review`, `otherwise_excluded`.
+`event_count=actionable`; `filtered=canonical_event_count-actionable`;
+`undated=needs_schedule_review`. The stored reference is exposed as
+`schedule_reference_at`. Repository loads recompute legacy projections at their
+stored run timestamp without rewriting snapshots, review decisions or old metadata.
+New SQLite `visible` membership is actionable only; all eligible canonical facts
+remain persisted. XLSX/CSV/JSON/Gemini use the same guarded projection. A future
+publishing adapter must consume `events`, never the investigation or history data.
 
 Visible dates are explicit Persian Jalali text using `persiantools`; weekdays come
 from the normalized Gregorian date. Hidden ISO components remain machine-safe.
@@ -921,7 +1137,7 @@ IRR or other currency without conversion. Explicit zero may display `رایگا�
 missing price is blank. Canonical status is translated without inventing cancellation,
 sold-out or postponement. Quality labels reflect missing data/diagnostics, not ranking.
 
-### SQLite schema version 1 (records schema 2)
+### SQLite schema version 1 (records schema 3)
 
 `CanonicalRepository` extends the reusable snapshot persistence seam;
 `SqliteCanonicalRepository` implements it using standard-library sqlite3. SQL is
@@ -956,11 +1172,14 @@ merge/split repair or cross-ID review inheritance is introduced. New runs can co
 same Event; repeating a committed run ID creates no new rows. Exact run timestamps
 are stored in ISO form; no OS-specific provenance paths are required.
 
-The source-completeness pass required no DDL change: Event payloads are versioned JSON
-records (records/export schema 2 adds the six source-supported facts). A Stage 9 database
-written before them opens unchanged (`user_version` stays 1, reopen is a no-op, newer
-versions are still refused) and older payloads load with those fields null. No database is
-recreated.
+Event payloads are versioned JSON records. Records/export schema 2 added source-supported
+review facts; schema 3 adds occurrences, schedule metadata and readiness assessments.
+SQLite DDL remains version 1. Existing databases open without destructive migration;
+older payloads receive additive defaults in memory, not rewritten historical snapshots.
+Absent occurrences load as an empty tuple, schedule kind as unknown and recurrence rule
+as null. Readiness is recomputed from retained facts and current run context. Historical
+Runs, stable Event IDs, owner decisions/notes and duplicate-review rows remain intact.
+Unsupported newer databases are still refused.
 
 Keep SQLite local with one active writer. The workflow lock is an exclusive local file,
 not a distributed lock. Network/synced-folder multi-writer databases are unsupported.
@@ -977,7 +1196,14 @@ Event visible columns in order (shared with the optional Sheets row serializer):
 `تصمیم من`, `عنوان`, `دسته‌بندی`, `وضعیت رویداد`, `تاریخ شمسی شروع`, `روز`, `ساعت شروع`,
 `تاریخ شمسی پایان`, `ساعت پایان`, `زمان‌بندی اعلام‌شده`, `مکان`, `منطقه / محله`, `شهر`,
 `آدرس`, `مدت`, `هزینه`, `ظرفیت / وضعیت ثبت‌نام`, `فرمت`, `توضیحات / معرفی`, `برگزارکننده`,
-`ثبت‌نام / خرید`, `منبع اصلی`, `همه منابع`, `تعداد منابع`, `کیفیت داده`, `یادداشت من`.
+`ثبت‌نام / خرید`, `منبع اصلی`, `همه منابع`, `تعداد منابع`, `کیفیت داده`, `یادداشت من`,
+`آمادگی داده`, `دلیل بررسی`, `جلسه‌ها`.
+
+`جلسه‌ها` presents source-supported dates/clocks, prices and availability separately.
+`آمادگی داده` and its explanation provide filters for ready, enrichment, schedule
+review and source-unavailable groups within the existing run snapshot. Historical
+tabs are not multiplied or rewritten. Workbook version remains 3; column additions use
+header-based import, preserving existing decision/note round trips.
 
 `خلاصه` is no longer shown: `summary` is a reserved, normally empty machine field.
 `زمان‌بندی اعلام‌شده` shows `source_schedule_text` when present; otherwise it shows
@@ -1000,6 +1226,9 @@ Hidden Event columns:
 `canonical_source_url`, `diagnostics`, `first_seen_at`, `last_seen_at`,
 `duplicate_group_id`, `field_provenance`, `extraction_confidence`, `category`,
 `event_format`, `status`, `registration_url`, `review_token`.
+Occurrence/schedule/readiness fields are additionally retained in hidden columns:
+`occurrences`, `schedule_kind`, `recurrence_rule`, `data_readiness`,
+`readiness_reasons` and `quality_indicators`.
 
 Place visible columns: `تصمیم من`, `نام مکان`, `دسته‌بندی`, `شهر`, `آدرس`,
 `ساعات فعالیت`, `هزینه`, `خلاصه`, `منبع`, `یادداشت من`. Hidden: `candidate_id`,
@@ -1088,7 +1317,24 @@ schemas are never reset. XLSX text limits fail visibly rather than truncate sour
 except the explicitly marked description cell above. Edits to area, description, duration,
 organizer, availability or schedule cells are visual only and never imported.
 
-### Portable export schema version 2
+### Data readiness
+
+Readiness is an explainable assessment, separate from owner decisions, publication
+status, availability and channel health:
+
+| Value | Persian label | Meaning |
+| --- | --- | --- |
+| `ready_for_review` | `آماده بررسی` | Actionable retained facts without a critical unresolved issue; not human verification |
+| `needs_enrichment` | `نیاز به تکمیل` | Missing defensible title/valid evidence URL, evidence conflict or known incomplete recovery |
+| `needs_schedule_review` | `نیاز به بررسی زمان‌بندی` | Missing, inferred, conflicting or partially parsed schedule/session evidence |
+| `source_unavailable` | `منبع در دسترس نیست` | All contributing source channels unavailable in the selected run context |
+
+`readiness_reasons`, Persian `readiness_explanation` and `quality_indicators` retain
+auditable explanations. Optional unpublished facts such as price do not lower readiness.
+Incomplete Events are retained; assessments never create source facts, change owner
+decisions or imply a calibrated completeness probability.
+
+### Portable export schema version 3
 
 `ReviewExporter.export(document)` consumes persisted structured review data. Exporters
 are isolated from collection, matching and SQL. `ExcelReviewExporter` additionally uses
@@ -1097,6 +1343,10 @@ the repository's review-token/queue methods; CSV/JSON do not import openpyxl.
 JSON top level: `schema_version`, `run`, `events`, `places`, `possible_duplicates`.
 Version 2 adds `description_text`, `area_text`, `duration_text`, `organizer_name`,
 `availability_text` and `source_schedule_text` (appended CSV columns, stable English keys).
+Version 3 adds structured `occurrences`, `schedule_kind`, `recurrence_rule`,
+`data_readiness`, readiness explanations/reasons and quality indicators. CSV stores
+occurrence arrays as compact JSON; JSON and Gemini preserve the identical structured
+values. Multiple occurrences do not create arbitrary parent dates or duplicate Event rows.
 Event records contain canonical domain fields, Jalali dates/weekday/data-quality labels,
 and separate `review_decision`, `review_notes`, `review_updated_at`. Place records contain
 candidate fields, source ID and review state. Duplicate records contain stable pair and
@@ -1128,7 +1378,8 @@ fact invention, factual rewriting, silent row removal and automatic duplicate me
 JSON owns structured IDs/arrays; CSV is a table convenience. Source text is untrusted data.
 They also require: description kept whole as untrusted content (never instructions, never
 shortened or moved into `summary`), area kept separate from venue/address and never turned
-into an address, schedule wording kept visible and never expanded, availability kept as
+into an address, schedule wording kept visible and no additional occurrences invented,
+existing normalized occurrence records preserved with their own evidence, availability kept as
 source wording with no invented capacity, and duration/organizer never derived.
 
 The bundle is generated locally by default and with `export gemini`. No API, upload,

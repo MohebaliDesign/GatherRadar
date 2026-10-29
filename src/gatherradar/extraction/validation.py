@@ -5,6 +5,7 @@ from dataclasses import fields, replace
 from urllib.parse import urlparse
 
 from ..domain import DiscoveryType
+from ..domain.website import SourceSession
 from .base import InvalidExtractionOutputError
 from .models import EVENT_FORMATS, DiscoveryEvidence, DiscoveryFacts
 
@@ -12,14 +13,15 @@ _TEXT_FIELDS = tuple(
     field.name
     for field in fields(DiscoveryFacts)
     if field.name not in ("discovery_type", "extraction_confidence", "evidence", "field_conflicts",
-                          "reference_urls")
+                          "reference_urls", "extraction_diagnostics", "source_sessions",
+                          "source_session_diagnostics", "title_review_required")
 )
 
 # Fields that only make sense for one kind of result. A place has no occurrence and
 # no registration; an event has no opening hours. Mixing them would let a provider
 # smuggle invented facts into the wrong record.
 _EVENT_ONLY_FIELDS = ("source_date_text", "event_format", "registration_url", "description_text",
-                      "area_text", "duration_text", "organizer_name", "availability_text",
+                      "area_text", "location_context", "duration_text", "organizer_name", "availability_text",
                       "source_schedule_text", "source_category_text")
 _PLACE_ONLY_FIELDS = ("opening_hours_text",)
 
@@ -37,8 +39,20 @@ def validate_discovery_facts(facts: object) -> DiscoveryFacts:
         )
     if not isinstance(facts.discovery_type, DiscoveryType):
         raise InvalidExtractionOutputError("discovery_type must be a DiscoveryType")
+    if type(facts.title_review_required) is not bool:
+        raise InvalidExtractionOutputError('title_review_required must be boolean')
     if facts.evidence is not None and not isinstance(facts.evidence, DiscoveryEvidence):
         raise InvalidExtractionOutputError("evidence must be DiscoveryEvidence or null")
+    for name in ('extraction_diagnostics', 'source_session_diagnostics'):
+        values = getattr(facts, name)
+        if not isinstance(values, tuple) or any(not isinstance(v, str) or not v.strip() for v in values):
+            raise InvalidExtractionOutputError(f"{name} must be a tuple of diagnostic codes")
+        if values and facts.discovery_type is not DiscoveryType.EVENT:
+            raise InvalidExtractionOutputError(f"{name} is only reported for events")
+    if (not isinstance(facts.source_sessions, tuple)
+            or any(not isinstance(s, SourceSession) for s in facts.source_sessions)
+            or (facts.source_sessions and facts.discovery_type is not DiscoveryType.EVENT)):
+        raise InvalidExtractionOutputError("source_sessions must contain event SourceSession values")
 
     cleaned: dict[str, object] = {}
     for name in _TEXT_FIELDS:

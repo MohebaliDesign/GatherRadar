@@ -96,7 +96,8 @@ class WindowTests(OfflineCase):
 
     def test_inclusive_horizon_and_expired(self):
         dates = [date(2026, 9, 24), date(2026, 9, 25), date(2026, 10, 9), date(2026, 10, 10)]
-        events = tuple(self.event(event_id=str(i), start_date=d, date_precision=DatePrecision.DAY) for i, d in enumerate(dates))
+        events = tuple(self.event(event_id=str(i), start_date=d, starts_at=None, ends_at=None,
+                                 date_precision=DatePrecision.DAY) for i, d in enumerate(dates))
         result = review_window(events, STAMP, 14)
         self.assertEqual([e.event_id for e in result.events], ['1', '2'])
         self.assertEqual(result.filtered, 2)
@@ -110,14 +111,16 @@ class WindowTests(OfflineCase):
         late = self.event(event_id='late', start_time=time(19))
         early = self.event(event_id='early', start_time=time(9))
         result = review_window((unknown, late, early), STAMP)
-        self.assertEqual([e.event_id for e in result.events], ['early', 'late', 'unknown'])
+        self.assertEqual([e.event_id for e in result.events], ['early', 'late'])
+        self.assertEqual(result.schedule_review, (unknown,))
         self.assertEqual(result.undated, 1)
 
     def test_review_timezone_determines_today(self):
         start = datetime(2026, 9, 24, 22, tzinfo=timezone.utc)
-        e = self.event(start_date=date(2026, 9, 24), date_precision=DatePrecision.DAY)
+        e = self.event(start_date=date(2026, 9, 24), start_time=None, end_time=None,
+                       starts_at=None, ends_at=None, timezone='Asia/Tehran', date_precision=DatePrecision.DAY)
         self.assertEqual(review_window((e,), start, review_timezone='Asia/Tehran').filtered, 1)
-        self.assertEqual(review_window((e,), start, review_timezone='UTC').filtered, 0)
+        self.assertEqual(review_window((e,), start, review_timezone='UTC').filtered, 1)
 
     def test_invalid_windows_and_naive_clock_rejected(self):
         for days in (0, 91, True, '14'):

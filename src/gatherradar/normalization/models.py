@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from ..domain import EventCandidate, PlaceCandidate
 from ..domain.temporal import DatePrecision
+from ..domain.occurrence import EventOccurrence, ScheduleKind
 
 
 class NormalizationStatus(StrEnum):
@@ -54,10 +55,13 @@ class TemporalResult:
     reference_at: datetime | None = None
     reference_basis: str | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
+    occurrences: tuple[EventOccurrence, ...] = ()
+    schedule_kind: ScheduleKind = ScheduleKind.UNKNOWN
+    recurrence_rule: str | None = None
 
     @property
     def status(self) -> NormalizationStatus:
-        return status_for(self.start_date is not None or self.start_time is not None, self.diagnostics)
+        return status_for(bool(self.occurrences) or self.start_date is not None or self.start_time is not None, self.diagnostics)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +86,6 @@ class NormalizationOutcome:
     def status(self) -> NormalizationStatus:
         has_values = self.price.price_amount is not None or (
             self.temporal is not None and
-            (self.temporal.start_date is not None or self.temporal.start_time is not None)
+            (bool(self.temporal.occurrences) or self.temporal.start_date is not None or self.temporal.start_time is not None)
         )
         return status_for(bool(has_values), self.diagnostics)
