@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import urlsplit
 
-from ...domain.website import SESSION_UNVERIFIED_PROPERTIES, SourceSession
+from ...domain.website import (SESSION_UNVERIFIED_PROPERTIES, TIMESLOT_OUTSIDE_PARENT_WINDOW,
+                               TIMESLOT_PARENT_WINDOW_UNKNOWN, MAX_SESSION_RECORDS, SourceSession,
+                               parse_source_instant)
 from .html import Node
 
 _ENQUEUE = 'window.__reactRouterContext.streamController.enqueue'
@@ -26,7 +29,14 @@ _FIELDS = (
     'remainingSeats', 'enabled',
 )
 _SESSION_KEYS = frozenset((*_FIELDS, 'capacityLimit', 'bookedCount', 'inventoryMode',
-                           'layoutId', 'timeslots', 'hostDiscountPct', 'platformDiscountPct'))
+                           'layoutId', 'timeslots', 'hostDiscountPct', 'platformDiscountPct',
+                           'soldOut'))
+# The child timeslot shape confirmed by the owner's value-free v3 report: exactly
+# these twelve keys. Any other key refuses the timeslot rather than guessing.
+_TIMESLOT_KEYS = frozenset(('id', 'sessionId', 'startAt', 'endAt', 'enabled', 'capacityLimit',
+                            'bookedCount', 'remainingSeats', 'pricePerPerson', 'unitPrice',
+                            'hostDiscountPct', 'platformDiscountPct'))
+_MAX_TIMESLOTS = 50
 
 
 _DRIFT_KEY = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,39}')
@@ -183,8 +193,78 @@ def _decimal(value: object) -> str | None:
     return format(Decimal(str(value)), 'f')
 
 
+def _count(value: object) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or not 0 <= value <= 1_000_000:
+        raise _SchemaError('invalid timeslot count', 'timeslot_type')
+    return value
+
+
+def _discounts(table: _Table, obj: dict[str, object], reason: str = 'field') -> tuple[str | None, str | None]:
+    # A discount changes the meaning of a base price: validated, never applied.
+    values = []
+    for key in ('hostDiscountPct', 'platformDiscountPct'):
+        discount = table.scalar(obj, key)
+        if discount is not None and (type(discount) not in (int, Decimal)
+                                     or not Decimal(discount).is_finite() or not 0 <= discount <= 100):
+            raise _SchemaError('invalid discount', reason)
+        values.append(_decimal(discount))
+    return values[0], values[1]
+
+
+def _timeslot(table: _Table, reference: object, parent: dict, locator: str) -> SourceSession:
+    """One strictly typed child timeslot. Ownership and order are proven here;
+    whether a timeslot is an attendable occurrence is decided after review."""
+    try:
+        obj = table.object(reference)
+    except _SchemaError as error:
+        raise _SchemaError('timeslot is not an object', 'timeslots') from error
+    extra = set(obj) - _TIMESLOT_KEYS
+    if extra:
+        raise _SchemaError('new timeslot properties', 'timeslot_new_properties',
+                           tuple(sorted(k for k in extra if _DRIFT_KEY.fullmatch(k)))[:_MAX_DRIFT_KEYS])
+    if _TIMESLOT_KEYS - set(obj):
+        raise _SchemaError('missing timeslot properties', 'timeslot_missing_properties')
+    values = {key: table.scalar(obj, key) for key in _TIMESLOT_KEYS}
+    for key in ('id', 'sessionId', 'startAt', 'endAt'):
+        if not isinstance(values[key], str):
+            raise _SchemaError('invalid timeslot text field', 'timeslot_type')
+    if values['sessionId'] != parent['id']:
+        raise _SchemaError('timeslot belongs to a different session', 'timeslot_ownership')
+    if type(values['enabled']) is not bool:
+        raise _SchemaError('invalid timeslot enabled flag', 'timeslot_type')
+    try:
+        start, end = parse_source_instant(values['startAt']), parse_source_instant(values['endAt'])
+    except ValueError as error:
+        raise _SchemaError('invalid timeslot timestamp', 'timeslot_timestamp') from error
+    if end <= start:
+        raise _SchemaError('timeslot end does not follow its start', 'timeslot_order')
+    for key in ('pricePerPerson', 'unitPrice'):
+        if values[key] is not None and (type(values[key]) not in (int, Decimal) or values[key] < 0):
+            raise _SchemaError('invalid timeslot price', 'timeslot_type')
+    host, platform = _discounts(table, obj, 'timeslot_type')
+    capacity, booked, remaining = (_count(values[k]) for k in ('capacityLimit', 'bookedCount', 'remainingSeats'))
+    status = TIMESLOT_PARENT_WINDOW_UNKNOWN
+    if parent['duration_hours'] is not None:
+        # The parent window is its start plus its stated duration. A timeslot
+        # duration is its own start/end; it is never assumed equal to the parent's.
+        window_start = parse_source_instant(parent['start_iso'])
+        window_end = window_start + timedelta(hours=float(parent['duration_hours']))
+        status = None if window_start <= start and end <= window_end else TIMESLOT_OUTSIDE_PARENT_WINDOW
+    return SourceSession(
+        source_session_id=parent['id'], source_event_id=parent['event_id'], start_iso=values['startAt'],
+        source_locator=locator, price_per_person=_decimal(values['pricePerPerson']),
+        unit_price=_decimal(values['unitPrice']), host_discount_pct=host, platform_discount_pct=platform,
+        remaining_seats=remaining, enabled=values['enabled'], schema_status=status,
+        source_timeslot_id=values['id'], end_iso=values['endAt'], capacity_limit=capacity,
+        booked_count=booked, sold_out=parent['sold_out'])
+
+
 def _session(table: _Table, reference: object, event_id: str, index: int,
-             tolerate: bool = False) -> SourceSession:
+             tolerate: bool = False) -> tuple[tuple[SourceSession, ...], tuple[Exception, ...]]:
+    """The documented session itself, or one record per validated child timeslot,
+    plus the errors of refused timeslots."""
     obj = table.object(reference)
     # Extra session properties can change booking semantics, unlike unrelated
     # event fields. Strictly they are refused; tolerantly only the session's own
@@ -198,30 +278,44 @@ def _session(table: _Table, reference: object, event_id: str, index: int,
               for key in _FIELDS}
     if values['eventId'] != event_id:
         raise _SchemaError('session belongs to a different event')
-    if 'timeslots' not in obj or table.value(obj['timeslots']) != []:
+    sold_out = table.value(obj['soldOut']) if 'soldOut' in obj else None
+    if sold_out is not None and type(sold_out) is not bool:
+        # A non-boolean flag is not interpreted, neither as true nor as false.
+        raise _SchemaError('invalid soldOut flag', 'sold_out_type')
+    if 'timeslots' not in obj:
+        raise _SchemaError('missing session timeslots', 'timeslots')
+    slots = table.value(obj['timeslots'])
+    if not isinstance(slots, list) or len(slots) > _MAX_TIMESLOTS or (slots and extra):
         raise _SchemaError('unsupported session timeslots', 'timeslots')
-    # A session discount changes the meaning of its base price. Retain the
-    # schedule but omit neither ambiguity nor the price silently.
-    for key in ('hostDiscountPct', 'platformDiscountPct'):
-        discount = table.scalar(obj, key)
-        if discount is not None and (type(discount) not in (int, Decimal)
-                                     or not Decimal(discount).is_finite() or not 0 <= discount <= 100):
-            raise _SchemaError('invalid session discount')
+    host, platform = _discounts(table, obj)
+    locator = f'react-router:loaderData/routes/events.$id/sessions/{index}'
+    if not isinstance(values['id'], str) or not isinstance(values['startIso'], str):
+        raise _SchemaError('invalid session identity')
+    if slots:
+        parent = {'id': values['id'], 'event_id': values['eventId'], 'start_iso': values['startIso'],
+                  'duration_hours': _decimal(values['durationHours']), 'sold_out': sold_out}
+        parse_source_instant(values['startIso'])
+        kept, refused = [], []
+        for position, ref in enumerate(slots):
+            # Independent children: one unreadable timeslot never hides another.
+            try:
+                kept.append(_timeslot(table, ref, parent, f'{locator}/timeslots/{position}'))
+            except (ValueError, KeyError, TypeError, OverflowError) as error:
+                refused.append(error)
+        return tuple(kept), tuple(refused)
     if extra:
-        return SourceSession(
+        return (SourceSession(
             source_session_id=values['id'], source_event_id=values['eventId'], start_iso=values['startIso'],
-            source_locator=f'react-router:loaderData/routes/events.$id/sessions/{index}',
-            duration_hours=_decimal(values['durationHours']), schema_status=SESSION_UNVERIFIED_PROPERTIES)
-    return SourceSession(
+            source_locator=locator, duration_hours=_decimal(values['durationHours']),
+            schema_status=SESSION_UNVERIFIED_PROPERTIES),), ()
+    return (SourceSession(
         source_session_id=values['id'], source_event_id=values['eventId'],
-        start_iso=values['startIso'],
-        source_locator=f'react-router:loaderData/routes/events.$id/sessions/{index}',
+        start_iso=values['startIso'], source_locator=locator,
         duration_hours=_decimal(values['durationHours']),
         price_per_person=_decimal(values['pricePerPerson']), unit_price=_decimal(values['unitPrice']),
-        host_discount_pct=_decimal(table.scalar(obj, 'hostDiscountPct')),
-        platform_discount_pct=_decimal(table.scalar(obj, 'platformDiscountPct')),
-        remaining_seats=values['remainingSeats'], enabled=values['enabled'],
-    )
+        host_discount_pct=host, platform_discount_pct=platform,
+        remaining_seats=values['remainingSeats'], enabled=values['enabled'], sold_out=sold_out,
+    ),), ()
 
 
 def extract_sessions(root: Node, page_url: str) -> SessionResult:
@@ -270,8 +364,8 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
         stage = 'session_list'
         if not refs:
             return SessionResult(diagnostics=('embedded_sessions_empty',), present=True)
-        sessions: dict[str, SourceSession] = {}
-        conflicts: set[str] = set()
+        sessions: dict[tuple[str, str | None], SourceSession] = {}
+        conflicts: set[tuple[str, str | None]] = set()
         diagnostics: list[str] = []
         drift_keys: set[str] = set()
         shapes: list[dict] = []
@@ -279,10 +373,19 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
         def keep_shape(reference: object) -> None:
             if len(shapes) < _MAX_SHAPES:
                 shapes.append(value_shape(table, reference))
+        def refuse(error: Exception, reference: object = None) -> None:
+            # The generic code stays for compatibility; a specific, value-free
+            # code says which documented expectation the public shape broke.
+            reason = getattr(error, 'reason', 'field')
+            diagnostics.append('embedded_session_schema_drift')
+            diagnostics.append('embedded_session_drift_' + reason)
+            drift_keys.update(getattr(error, 'keys', ()))
+            if reference is not None and reason in ('new_properties', 'timeslots', 'sold_out_type'):
+                keep_shape(reference)
         for index, reference in enumerate(refs):
             try:
                 try:
-                    session = _session(table, reference, event_id, index)
+                    found, refused = _session(table, reference, event_id, index)
                 except _SchemaError as error:
                     if error.reason != 'new_properties':
                         raise
@@ -291,31 +394,60 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
                     drift_keys.update(error.keys)
                     diagnostics.append('embedded_session_drift_new_properties')
                     keep_shape(reference)
-                    session = _session(table, reference, event_id, index, tolerate=True)
+                    found, refused = _session(table, reference, event_id, index, tolerate=True)
                     diagnostics.append('embedded_session_unverified_shape')
-                if session.source_session_id in sessions:
-                    before, after = sessions[session.source_session_id].to_dict(), session.to_dict()
-                    before.pop('source_locator')
-                    after.pop('source_locator')
-                    if before != after:
-                        conflicts.add(session.source_session_id)
-                        diagnostics.append('embedded_session_identity_conflict')
-                    continue
-                sessions[session.source_session_id] = session
-                if session.price_per_person is not None or session.unit_price is not None:
-                    diagnostics.append('embedded_session_price_unit_unknown')
-                obj = table.object(reference)
-                if session.schema_status is None and any(table.scalar(obj, key) not in (None, 0)
-                       for key in ('hostDiscountPct', 'platformDiscountPct')):
-                    diagnostics.append('embedded_session_discount_unresolved')
-            except (ValueError, KeyError, TypeError, OverflowError) as error:
-                # The generic code stays for compatibility; a specific, value-free
-                # code says which documented expectation the public shape broke.
-                diagnostics.append('embedded_session_schema_drift')
-                diagnostics.append('embedded_session_drift_' + getattr(error, 'reason', 'field'))
-                drift_keys.update(getattr(error, 'keys', ()))
-                if getattr(error, 'reason', 'field') in ('new_properties', 'timeslots'):
+                for error in refused:
+                    refuse(error)
+                if refused:
                     keep_shape(reference)
+                for session in found:
+                    if session.source_timeslot_id is not None:
+                        diagnostics.append('embedded_session_timeslots')
+                        if session.schema_status is not None:
+                            diagnostics.append('embedded_' + session.schema_status)
+                        if (None not in (session.capacity_limit, session.booked_count, session.remaining_seats)
+                                and session.capacity_limit - session.booked_count != session.remaining_seats):
+                            # Contradictory seat counts: none of them is kept.
+                            diagnostics.append('embedded_timeslot_availability_inconsistent')
+                            session = replace(session, capacity_limit=None, booked_count=None, remaining_seats=None)
+                    key = (session.source_session_id, session.source_timeslot_id)
+                    if session.source_timeslot_id is not None:
+                        owners = [k for k in sessions if k[1] == session.source_timeslot_id]
+                        if owners:
+                            before, after = sessions[owners[0]].to_dict(), session.to_dict()
+                            before.pop('source_locator')
+                            after.pop('source_locator')
+                            diagnostics.append('embedded_timeslot_duplicate_id')
+                            if before != after:
+                                conflicts.update(owners)
+                                conflicts.add(key)
+                                diagnostics.append('embedded_timeslot_identity_conflict')
+                            continue
+                    elif any(k[0] == session.source_session_id for k in sessions):
+                        previous = next(v for k, v in sessions.items() if k[0] == session.source_session_id)
+                        before, after = previous.to_dict(), session.to_dict()
+                        before.pop('source_locator')
+                        after.pop('source_locator')
+                        if before != after:
+                            conflicts.update(k for k in sessions if k[0] == session.source_session_id)
+                            diagnostics.append('embedded_session_identity_conflict')
+                        continue
+                    if (session.source_timeslot_id is not None
+                            and any(k[0] == session.source_session_id and k[1] is None for k in sessions)):
+                        conflicts.add(key)
+                        diagnostics.append('embedded_session_identity_conflict')
+                        continue
+                    sessions[key] = session
+                    if session.price_per_person is not None or session.unit_price is not None:
+                        diagnostics.append('embedded_session_price_unit_unknown')
+                    if session.schema_status != SESSION_UNVERIFIED_PROPERTIES and any(
+                            value is not None and Decimal(value) != 0
+                            for value in (session.host_discount_pct, session.platform_discount_pct)):
+                        diagnostics.append('embedded_session_discount_unresolved')
+            except (ValueError, KeyError, TypeError, OverflowError) as error:
+                refuse(error, reference)
+        if len(sessions) > MAX_SESSION_RECORDS:
+            raise _SchemaError('too many session records')
         return SessionResult(tuple(value for key, value in sessions.items() if key not in conflicts),
                              tuple(dict.fromkeys(diagnostics)), True,
                              tuple(sorted(drift_keys))[:_MAX_DRIFT_KEYS], tuple(shapes))

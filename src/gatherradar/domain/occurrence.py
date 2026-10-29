@@ -54,6 +54,11 @@ class EventOccurrence:
     remaining_seats: int | None = None
     enabled: bool | None = None
     diagnostics: tuple[str, ...] = ()
+    # A child timeslot of the parent ``source_session_id``; the parent session's
+    # public sold-out flag and the timeslot's own capacity stay separate facts.
+    source_timeslot_id: str | None = None
+    source_sold_out: bool | None = None
+    capacity_limit: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.occurrence_id, str) or not self.occurrence_id.strip() or type(self.start_date) is not date:
@@ -103,6 +108,13 @@ class EventOccurrence:
             raise ValueError("remaining seats must be a nonnegative integer or null")
         if self.enabled is not None and type(self.enabled) is not bool:
             raise ValueError("session enabled must be a boolean or null")
+        if self.source_sold_out is not None and type(self.source_sold_out) is not bool:
+            raise ValueError("session sold-out flag must be a boolean or null")
+        if self.capacity_limit is not None and (type(self.capacity_limit) is not int or self.capacity_limit < 0):
+            raise ValueError("capacity must be a nonnegative integer or null")
+        if self.source_timeslot_id is not None and (not self.source_session_id
+                                                    or not isinstance(self.source_timeslot_id, str)):
+            raise ValueError("a timeslot requires its parent session")
 
 
 def occurrence_key(value: EventOccurrence) -> tuple[str, ...]:
@@ -110,6 +122,9 @@ def occurrence_key(value: EventOccurrence) -> tuple[str, ...]:
     if value.source_session_id:
         origin = value.source_session_origin or (urlsplit(value.evidence_urls[0]).netloc if value.evidence_urls else "")
         key = ("session", origin, value.source_session_id)
+        if value.source_timeslot_id:
+            # Absent for whole sessions, so their identities are unchanged.
+            key += ("timeslot", value.source_timeslot_id)
         if "occurrence_temporal_conflict" in value.diagnostics:
             key += ("conflict", value.start_date.isoformat(),
                     value.start_time.isoformat() if value.start_time else "",

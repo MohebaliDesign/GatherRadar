@@ -16,6 +16,33 @@ STRUCTURED_FIELDS = frozenset({
 FIELD_ORIGINS = ('detail', 'listing')
 MAX_CARD_TEXT = 1500
 SESSION_UNVERIFIED_PROPERTIES = 'unverified_properties'
+# Child timeslot statuses: ownership and start/end order were validated, but the
+# timeslot does not lie inside, or cannot be placed against, its parent window.
+TIMESLOT_OUTSIDE_PARENT_WINDOW = 'timeslot_outside_parent_window'
+TIMESLOT_PARENT_WINDOW_UNKNOWN = 'timeslot_parent_window_unknown'
+# Whole sessions plus child timeslots retained from one page (observed maximum 324).
+MAX_SESSION_RECORDS = 2_000
+SESSION_SCHEMA_STATUSES = (None, SESSION_UNVERIFIED_PROPERTIES, TIMESLOT_OUTSIDE_PARENT_WINDOW,
+                           TIMESLOT_PARENT_WINDOW_UNKNOWN)
+# Added after the first stored shape; omitted from serialization while unset so
+# documented sessions serialize, and therefore hash, exactly as before.
+_OPTIONAL_KEYS = frozenset(('schema_status', 'source_timeslot_id', 'end_iso', 'capacity_limit',
+                            'booked_count', 'sold_out'))
+_ISO = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})'
+_LOCATOR = r'react-router:loaderData/routes/events\.\$id/sessions/[0-9]{1,3}'
+
+
+def parse_source_instant(value: object) -> datetime:
+    """An exact public ISO instant with an explicit offset (``Z`` or ``±HH:MM``)."""
+    if not isinstance(value, str) or len(value) > 40 or not re.fullmatch(_ISO, value):
+        raise ValueError('invalid source session timestamp')
+    try:
+        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as exc:
+        raise ValueError('invalid source session timestamp') from exc
+    if instant.utcoffset() is None:
+        raise ValueError('source session timestamp requires an offset')
+    return instant
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +52,11 @@ class SourceSession:
     The source's ISO spelling and separate price keys are retained. No currency,
     end time, event-level price or availability is inferred by the collector.
     ``source_locator`` identifies the precise embedded-data path on the detail URL.
+
+    A child timeslot keeps its parent's ``source_session_id`` and adds its own
+    ``source_timeslot_id``, explicit ``end_iso`` and its own capacity facts.
+    ``sold_out`` is the parent session's public flag, kept separate from the
+    timeslot's ``enabled`` and seat counts; false never proves availability.
     """
 
     source_session_id: str
@@ -42,27 +74,30 @@ class SourceSession:
     # carried properties whose meaning was not inspected: only its identity, start
     # and duration were kept, and it is never actionable until reviewed.
     schema_status: str | None = None
+    source_timeslot_id: str | None = None
+    end_iso: str | None = None
+    capacity_limit: int | None = None
+    booked_count: int | None = None
+    sold_out: bool | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_status not in (None, SESSION_UNVERIFIED_PROPERTIES):
+        if self.schema_status not in SESSION_SCHEMA_STATUSES:
             raise ValueError('invalid source session schema status')
-        for value in (self.source_session_id, self.source_event_id):
+        timeslot = self.source_timeslot_id is not None
+        if (self.schema_status in (TIMESLOT_OUTSIDE_PARENT_WINDOW, TIMESLOT_PARENT_WINDOW_UNKNOWN)
+                and not timeslot):
+            raise ValueError('timeslot status requires a timeslot')
+        for value in (self.source_session_id, self.source_event_id, *((self.source_timeslot_id,) if timeslot else ())):
             if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value):
                 raise ValueError('invalid source session identity')
-        if (not isinstance(self.source_locator, str)
-                or not re.fullmatch(r'react-router:loaderData/routes/events\.\$id/sessions/[0-9]{1,3}',
-                                    self.source_locator)):
+        locator = _LOCATOR + (r'/timeslots/[0-9]{1,3}' if timeslot else '')
+        if not isinstance(self.source_locator, str) or not re.fullmatch(locator, self.source_locator):
             raise ValueError('invalid source session locator')
-        if (not isinstance(self.start_iso, str) or len(self.start_iso) > 40
-                or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})',
-                                    self.start_iso)):
-            raise ValueError('invalid source session timestamp')
-        try:
-            instant = datetime.fromisoformat(self.start_iso.replace('Z', '+00:00'))
-        except ValueError as exc:
-            raise ValueError('invalid source session timestamp') from exc
-        if instant.utcoffset() is None:
-            raise ValueError('source session timestamp requires an offset')
+        start = parse_source_instant(self.start_iso)
+        if timeslot != (self.end_iso is not None):
+            raise ValueError('a timeslot, and only a timeslot, states its own end')
+        if timeslot and parse_source_instant(self.end_iso) <= start:
+            raise ValueError('timeslot end must follow its start')
         for name in ('duration_hours', 'price_per_person', 'unit_price',
                      'host_discount_pct', 'platform_discount_pct'):
             value = getattr(self, name)
@@ -81,14 +116,17 @@ class SourceSession:
         if (self.remaining_seats is not None
                 and (type(self.remaining_seats) is not int or not 0 <= self.remaining_seats <= 1_000_000)):
             raise ValueError('invalid source session remaining seats')
-        if self.enabled is not None and type(self.enabled) is not bool:
-            raise ValueError('invalid source session enabled flag')
+        for name in ('capacity_limit', 'booked_count'):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or not 0 <= value <= 1_000_000):
+                raise ValueError('invalid source session capacity fact')
+        for name in ('enabled', 'sold_out'):
+            if getattr(self, name) is not None and type(getattr(self, name)) is not bool:
+                raise ValueError('invalid source session flag')
 
     def to_dict(self) -> dict[str, object]:
-        # schema_status is omitted when unset so documented sessions serialize,
-        # and therefore hash, exactly as before it existed.
         return {name: getattr(self, name) for name in self.__dataclass_fields__
-                if name != 'schema_status' or self.schema_status is not None}
+                if name not in _OPTIONAL_KEYS or getattr(self, name) is not None}
 
     @classmethod
     def from_mapping(cls, value: object) -> SourceSession:

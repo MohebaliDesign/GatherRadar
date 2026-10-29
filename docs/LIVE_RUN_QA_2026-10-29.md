@@ -208,3 +208,37 @@ no crawl:
 .\.venv\Scripts\python.exe -m gatherradar refresh --all-enabled --stored --limit 5 --days 14 --db data\replay\state.sqlite3 --workbook data\replay\GatherRadar.xlsx --export-dir data\replay\exports
 .\.venv\Scripts\python.exe -m gatherradar export all --run latest --db data\replay\state.sqlite3 --workbook data\replay\GatherRadar.xlsx --export-dir data\replay\exports
 ```
+
+## Follow-up: evidence-grounded Jabama timeslots
+
+The owner's v3 structural report (`jabama-session-schema-v3.json`, two saved pages, 81 and
+7 sessions) confirmed `soldOut` as a boolean (false in all 88) and the twelve timeslot keys.
+It carried no values, so ownership, timestamps and seat relationships remain unverified.
+Implemented: typed `soldOut`, strict independent timeslot records with parent and child
+identity, a parent-window check, seat-count consistency, duplicate-ID handling and a
+publication gate (`VERIFIED_SESSION_SEMANTICS`, empty). Timeslots and `soldOut=true` are held
+in Schedule Review; `soldOut=false` sessions with empty timeslots are handled as documented
+sessions again. See [the contract](DATA_CONTRACTS.md#jabama-session-evidence-boundary-2026-10-29).
+
+Relationship check of the same browser-saved pages (read-only; writes only the report;
+booleans and counts per page position, no file names or values):
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar diagnose jabama-timeslots --html "$HOME\Downloads\page-81-sessions.html" --html "$HOME\Downloads\page-7-sessions.html" --output data\exports\jabama-timeslot-relationships.json
+```
+
+Replace the two paths with the saved files used for the v3 report. Please share the JSON.
+The gate is opened only if every `session_id_equals_parent_id` is `true`, `start_before_end`
+is all `true`, `timestamp_form` has no `unparseable`, `parent_window` is all `within`, and
+`availability` has no `inconsistent`; `sold_out` additionally needs a `soldOut=true` example.
+
+Offline replay into an isolated database (no crawl). Stored observations keep the session
+records parsed at collection time: October 29 `soldOut` sessions stay `unverified_properties`
+and refused timeslot sessions stay absent. This replay therefore checks compatibility (no
+lost Events, identities, decisions or exports), not the new parsing. Both take effect after
+the next normal local collection of `jabama_events_website` and `jabama_experiences_website`,
+which appends a new revision because the parsed session records changed.
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar refresh --all-enabled --stored --limit 5 --days 14 --db data\replay-timeslots\state.sqlite3 --workbook data\replay-timeslots\GatherRadar.xlsx --export-dir data\replay-timeslots\exports
+```

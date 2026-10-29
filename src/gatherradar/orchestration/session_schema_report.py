@@ -14,12 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..collectors.websites.html import parse_html
+from ..collectors.websites.jabama_relationships import relationship_report
 from ..collectors.websites.jabama_sessions import describe_embedded_sessions
 from ..storage import JsonlRawItemStore
 
 REPORT_VERSION = 1
 MAX_HTML_BYTES = 5_000_000
-_SAFE = re.compile(r'[A-Za-z0-9_.:-]{1,120}')
+_SAFE = re.compile(r'[A-Za-z0-9_.:/-]{1,120}')
 
 
 def _safe(value: object) -> str | None:
@@ -97,4 +98,35 @@ def build_report(data_dir: str | Path = 'data', html: list[str | Path] = ()) -> 
     }
 
 
-__all__ = ['build_report', 'html_report', 'observation_report']
+def build_relationship_report(paths: list[str | Path]) -> dict:
+    """Booleans and counts per saved page, identified only by its position."""
+    pages = []
+    summary: dict = {}
+    for position, path in enumerate(map(Path, paths), start=1):
+        entry: dict = {'page': position}
+        try:
+            if path.stat().st_size > MAX_HTML_BYTES:
+                entry['error'] = 'file_too_large'
+            else:
+                entry.update(relationship_report(parse_html(path.read_text(encoding='utf-8', errors='replace'))))
+        except OSError:
+            entry['error'] = 'unreadable_file'
+        pages.append(entry)
+        for key, value in entry.items():
+            if key == 'page':
+                continue
+            if isinstance(value, int) and not isinstance(value, bool):
+                summary[key] = summary.get(key, 0) + value
+            elif isinstance(value, dict) and all(isinstance(v, int) for v in value.values()):
+                bucket = summary.setdefault(key, {})
+                for name, count in value.items():
+                    bucket[name] = bucket.get(name, 0) + count
+    return {
+        'report': 'gatherradar-jabama-timeslot-relationships', 'version': REPORT_VERSION,
+        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'privacy': 'Booleans and counts only: no file names, identifiers, timestamps, prices or text.',
+        'summary': dict(sorted(summary.items())), 'pages': pages,
+    }
+
+
+__all__ = ['build_relationship_report', 'build_report', 'html_report', 'observation_report']

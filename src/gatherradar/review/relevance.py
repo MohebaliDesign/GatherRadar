@@ -13,7 +13,14 @@ DISPOSITIONS = ('actionable', 'expired', 'beyond_horizon', 'needs_schedule_revie
 TEMPORAL_FIELDS = {'temporal', 'source_date_text', 'source_schedule_text', 'occurrences',
                    'source_sessions', 'start_date', 'end_date', 'start_time', 'end_time', 'timezone'}
 UNSAFE = ('conflict', 'unresolved', 'weekday_mismatch', 'invalid', 'unparsed', 'ambiguous',
-          'schema_drift', 'unreliable_temporal_ocr', 'unverified_shape')
+          'schema_drift', 'unreliable_temporal_ocr', 'unverified_shape', 'sold_out_unverified')
+# Booking facts not yet verified. They hold an upcoming session in review but
+# never question its own source date, so a passed session still expires.
+HELD = ('unverified_shape', 'sold_out_unverified')
+
+
+def _held(code: str) -> bool:
+    return any(word in code for word in HELD)
 
 
 @dataclass(frozen=True)
@@ -99,11 +106,14 @@ def assess_relevance(event: Event, started_at: datetime, days: int = 14,
     if event.occurrences:
         def session(o):
             codes = [c for c in o.diagnostics if not any(w in c for w in ('price', 'discount', 'availability'))]
-            kind, reason = _dated(o, reference, horizon, [c for c in codes if 'unverified_shape' not in c])
+            kind, reason = _dated(o, reference, horizon, [c for c in codes if not _held(c)])
             # An unverified session shape leaves its booking facts unknown, never its
             # own source date: a session that has ended is expired, otherwise review.
-            if kind != 'expired' and len(codes) != len([c for c in codes if 'unverified_shape' not in c]):
-                return o.occurrence_id, 'needs_schedule_review', 'unverified_session_shape'
+            if kind != 'expired' and any(_held(c) for c in codes):
+                return o.occurrence_id, 'needs_schedule_review', (
+                    'unverified_timeslot' if any('timeslot' in c for c in codes) else
+                    'unverified_session_shape' if any('unverified_shape' in c for c in codes)
+                    else 'unverified_sold_out')
             return o.occurrence_id, kind, reason
         sessions = tuple(session(o) for o in event.occurrences)
         ids = tuple(key for key, kind, _ in sessions if kind == 'actionable')
@@ -112,7 +122,7 @@ def assess_relevance(event: Event, started_at: datetime, days: int = 14,
         kinds = {kind for _, kind, _ in sessions}
         bounded_range = all(o.end_date is not None and not _unsafe(o.diagnostics) for o in event.occurrences)
         # Unverified session shape is judged per session above, by its own date.
-        event_codes = [c for c in codes if 'unverified_shape' not in c]
+        event_codes = [c for c in codes if not _held(c)]
         if 'needs_schedule_review' in kinds or (_unsafe(event_codes) and not bounded_range) or event.schedule_kind == 'recurring':
             return result('needs_schedule_review', 'unresolved_sessions', occurrences=sessions)
         if 'beyond_horizon' in kinds:

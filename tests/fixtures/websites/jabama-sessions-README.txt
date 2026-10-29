@@ -40,3 +40,10 @@ public snapshot before any new session shape is supported.
 `timeslots` on 48751310, 01519540 and 86400491 (Experiences). Names only were
 retained; types are unverified. Tests use synthetic values; see
 docs/DATA_CONTRACTS.md "Jabama session evidence boundary".
+
+2026-10-29 v3 structural report: soldOut is a boolean; timeslots are objects with
+twelve keys (id, sessionId, startAt, endAt, enabled, capacityLimit, bookedCount,
+remainingSeats, pricePerPerson, unitPrice, hostDiscountPct, platformDiscountPct).
+tests/test_jabama_timeslots.py builds synthetic pages in that shape; no saved HTML
+or real identifier is committed. Value relationships await the owner's
+`diagnose jabama-timeslots` report.

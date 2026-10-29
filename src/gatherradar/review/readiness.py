@@ -34,6 +34,10 @@ REASON_LABELS = {
     "invalid_source_url": "پیوند منبع معتبر نیست",
     "missing_schedule": "تاریخ یا زمان‌بندی مشخص نیست",
     "source_sessions_unverified": "تاریخ جلسه‌ها از صفحه منبع خوانده شد ولی داده جلسه ویژگی‌های جدید و بررسی‌نشده دارد؛ پیش از انتشار تاریخ، قیمت و ظرفیت را در منبع تأیید کنید",
+    "source_timeslots_unverified": "زمان‌های جلسه (تایم‌اسلات) از داده منبع خوانده شد ولی معنای آن‌ها هنوز با گزارش محلی تأیید نشده یا با بازه جلسه اصلی سازگار نیست؛ پیش از انتشار در صفحه منبع بررسی کنید",
+    "source_sold_out_unverified": "منبع این جلسه را «تکمیل ظرفیت» علامت زده ولی معنای این علامت هنوز تأیید نشده است؛ وضعیت ظرفیت را در صفحه منبع بررسی کنید",
+    "source_availability_conflict": "علامت تکمیل ظرفیت با تعداد صندلی باقی‌مانده در داده منبع ناسازگار است",
+    "source_seat_counts_inconsistent": "ظرفیت، رزروشده و باقی‌مانده در داده منبع با هم جور نیستند؛ هیچ‌کدام نگه داشته نشد",
     "source_sessions_unreadable": "جلسه‌های صفحه منبع در قالب جدیدی منتشر شده و خوانده نشد؛ تاریخ‌ها را در صفحه منبع بررسی کنید",
     "unresolved_schedule": "زمان‌بندی به بررسی نیاز دارد",
     "inferred_year": "سال تاریخ نیاز به تأیید دارد",
@@ -145,12 +149,23 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
     if evidence_incomplete or any("ocr" in c and ("failed" in c or "incomplete" in c) for c in codes):
         indicators.append("ocr_evidence_incomplete")
         reasons.append("evidence_incomplete")
-    if any("unverified_shape" in c for c in codes) or any(
-            "unverified_shape" in c for o in event.occurrences for c in o.diagnostics):
-        reasons.append("source_sessions_unverified")
+    session_codes = codes | {c for o in event.occurrences for c in o.diagnostics}
+    held = []
+    if any("timeslot_unverified_shape" in c or "timeslot_parent_window_conflict" in c for c in session_codes):
+        held.append("source_timeslots_unverified")
+    if any("session_unverified_shape" in c for c in session_codes):
+        held.append("source_sessions_unverified")
+    if any("sold_out_unverified" in c for c in session_codes):
+        held.append("source_sold_out_unverified")
+    if any("sold_out_conflict" in c for c in session_codes):
+        held.append("source_availability_conflict")
+    if held:
+        reasons.extend(held)
         schedule_unresolved = True
         if "schedule_unresolved" not in indicators:
             indicators.append("schedule_unresolved")
+    if any("availability_inconsistent" in c for c in codes):
+        reasons.append("source_seat_counts_inconsistent")
     if any("session_schema_drift" in c or "sessions_schema_drift" in c for c in codes) and not any(
             o.source_session_id for o in event.occurrences):
         # Public session data exists but its shape is unsupported: never guess

@@ -155,6 +155,11 @@ def build_parser() -> argparse.ArgumentParser:
     sessions.add_argument('--html', action='append', default=[],
                           help='A browser-saved public Jabama detail page to describe; repeatable.')
     sessions.add_argument('--output', help='Write the JSON report here instead of printing it.')
+    timeslots = diagnose_kinds.add_parser(
+        'jabama-timeslots', help='Booleans and counts relating saved Jabama sessions to their timeslots.')
+    timeslots.add_argument('--html', action='append', required=True,
+                           help='A browser-saved public Jabama detail page; repeatable.')
+    timeslots.add_argument('--output', help='Write the JSON report here instead of printing it.')
 
     ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
     ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
@@ -563,8 +568,10 @@ def main(
     if args.command == 'diagnose':
         import json
         from pathlib import Path
-        from .orchestration.session_schema_report import build_report
-        report = json.dumps(build_report(args.data_dir, args.html), ensure_ascii=False, indent=2, sort_keys=True)
+        from .orchestration.session_schema_report import build_relationship_report, build_report
+        value = (build_relationship_report(args.html) if args.diagnose_kind == 'jabama-timeslots'
+                 else build_report(args.data_dir, args.html))
+        report = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
         if args.output:
             output = Path(args.output)
             if output.suffix.lower() != '.json' or output.exists() and output.is_dir():

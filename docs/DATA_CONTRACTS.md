@@ -1407,30 +1407,91 @@ Defects confirmed in the owner's live run; see [the live-run QA report](LIVE_RUN
 
 ### Jabama session evidence boundary (2026-10-29)
 
-The owner's October 29 crawl reported the unknown session property `soldOut` on all ten
-Jabama pages and non-empty `timeslots` on three Experiences pages. Only property *names*
-were retained, so their types and meaning are not verified and neither is supported yet:
+The owner's October 29 crawl reported the session property `soldOut` on all ten Jabama
+pages and non-empty `timeslots` on three Experiences pages. The owner's value-free v3
+structural report (two saved pages: 81 and 7 sessions) then confirmed the *shapes*:
+`soldOut` is a boolean (false in all 88 sessions), and every timeslot is an object with
+exactly twelve keys. It did not show value relationships (whether `sessionId` equals the
+parent `id`, actual timestamps, or any `soldOut=true` example). Support is therefore
+typed and strict, while publication waits for the owner's local relationship report.
 
-- A session with `soldOut` (any type) keeps `schema_status = "unverified_properties"`:
-  its own id/start/duration only; no availability, seats, price or status is read from
-  `soldOut` or any other key. It is reviewable, never actionable, and never sets the Event
-  status to sold out or expired. A session whose own date has passed is `expired`
-  (unverified shape no longer forces schedule review after the session ended).
-- Non-empty `timeslots` remain refused (`embedded_session_drift_timeslots`); no slot
-  becomes an occurrence and no booking window becomes a duration.
-- Envelope failures add a value-free stage code after `embedded_sessions_schema_drift`:
-  `embedded_sessions_drift_{payload_count,payload_size,call_shape,table,route,event_identity,sessions,session_list}`.
-- New observations retain up to three value-free `source_session_drift_shapes`: per key
-  the type, string *form* (`iso_datetime`, `iso_date`, `clock`, `digits`, `identifier`,
-  `text`, …) and length bucket, number kind and sign, boolean value, array length and
-  item shapes, nested key names (depth ≤ 4, ≤ 30 keys). No string, price or identifier value.
-- `python -m gatherradar diagnose jabama-sessions [--html saved.html] [--output r.json]`
-  reads the local raw store (and optionally browser-saved public pages) and writes only a
-  sanitized structural JSON report. It opens no browser and contacts no source.
+**`soldOut` (parent session).** A boolean is documented (`SourceSession.sold_out`), kept
+separate from `enabled`, `remainingSeats`, timeslot capacity and page availability wording.
+Any other type refuses the session (`embedded_session_drift_sold_out_type`, value-free
+shape retained); JSON null is no flag. `false` proves nothing and adds nothing, so a
+documented session with `soldOut: false` and `timeslots: []` is handled exactly like
+the earlier documented shape. `true` never sets the Event status by itself:
 
-Support is added only after a report shows, for `soldOut`: one consistent type, and its
-relation to `remainingSeats`/`enabled`; for `timeslots`: element type and keys, start
-fields' form and timezone, any link to the session ID, and per-slot capacity/price keys.
+| Record | Occurrence code | Schedule effect |
+| --- | --- | --- |
+| `true` and the same record has remaining seats > 0 | `embedded_session_sold_out_conflict` | Schedule Review |
+| `true`, meaning unverified (default) | `embedded_session_sold_out_unverified` | Schedule Review while upcoming; expired once its own date passed |
+| `true`, meaning verified, no contradiction | `source_session_sold_out` | Actionable; Event `sold_out` only when every occurrence carries it |
+
+An upcoming sold-out Event is never `expired`.
+
+**Timeslots (child records).** Allowlisted keys, all required: `id`, `sessionId`, `startAt`,
+`endAt` (strings), `enabled` (boolean), `capacityLimit`, `bookedCount`, `remainingSeats`
+(non-negative integer or null), `pricePerPerson`, `unitPrice` (non-negative number or null),
+`hostDiscountPct`, `platformDiscountPct` (0–100 or null). Each timeslot is validated on its
+own: an unknown or missing key, a wrong type, `sessionId` different from the parent `id`, a
+timestamp without an explicit offset, or `endAt` not after `startAt` refuses only that
+timeslot (`embedded_session_drift_timeslot_{new_properties,missing_properties,type,ownership,timestamp,order}`);
+its siblings remain. A parent with unknown keys *and* timeslots is refused
+(`embedded_session_drift_timeslots`), as is a non-object timeslot.
+
+Each accepted timeslot is one `SourceSession` with the parent's `source_session_id`, its
+own `source_timeslot_id`, `end_iso`, capacity facts and locator
+`react-router:loaderData/routes/events.$id/sessions/{i}/timeslots/{j}`. The parent itself is
+not also an occurrence. `duration_hours` stays null: the parent `durationHours` is never
+assumed to be a timeslot length. The parent window is `startIso` + `durationHours`:
+
+- inside it: no status (`embedded_session_timeslots` on the page);
+- outside it: `timeslot_outside_parent_window` → occurrence code
+  `embedded_timeslot_parent_window_conflict` (always Schedule Review);
+- parent duration missing: `timeslot_parent_window_unknown` (always Schedule Review).
+
+Seat counts are kept only when consistent: if `capacityLimit − bookedCount ≠ remainingSeats`,
+all three are dropped (`embedded_timeslot_availability_inconsistent`). Missing capacity is
+never derived. Timeslot IDs must be unique on the page: an identical repeat is kept once
+(`embedded_timeslot_duplicate_id`); differing records with one ID are all dropped
+(`embedded_timeslot_identity_conflict`). A page keeps at most 2,000 session records.
+
+`EventOccurrence` gains optional `source_timeslot_id`, `source_sold_out` and `capacity_limit`.
+Occurrence identity adds `("timeslot", id)` only for timeslots, so existing session
+identities, stored records (which lack the fields) and raw hashes are unchanged: new
+`SourceSession` keys are omitted from serialization while null.
+
+**Publication gate.** `normalization.schedules.VERIFIED_SESSION_SEMANTICS` is empty. Until it
+contains `"timeslots"`, every timeslot occurrence carries `embedded_timeslot_unverified_shape`
+and waits in Schedule Review with readiness reason `source_timeslots_unverified` (Persian
+label in `readiness.py`); until it contains `"sold_out"`, `soldOut=true` stays unverified as
+above. A timeslot whose own end has passed is `expired`. The gate is applied during
+normalization, so after a code change `refresh --stored` re-projects stored observations
+offline, with no new collection.
+
+**Owner relationship check.** `python -m gatherradar diagnose jabama-timeslots --html a.html
+[--html b.html] --output r.json` reads browser-saved public pages and writes only booleans
+and counts per page position: session/timeslot counts and timeslots per session;
+`sessionId == parent id`; `eventId` == page Event; timestamp forms (UTC `Z` / explicit offset /
+unparseable); start before end; parent window within/overlapping/disjoint; starts at parent
+start; ends at parent end; timeslot length equal to `durationHours`; same Tehran date as the
+parent; crossing local midnight; overlapping siblings; seat-count consistency and remaining
+above capacity; `enabled` and `soldOut` values and their contradictions with seat counts;
+duplicate session/timeslot IDs; unknown/missing keys and per-key type mismatches; and what
+the conservative parser accepted. File names, identifiers, timestamps, prices and text are
+never written. The gate is opened only after this report shows ownership holding for every
+timeslot, ordered timestamps with explicit offsets, timeslots inside their parent windows
+and consistent seat counts; `"sold_out"` additionally needs at least one `soldOut=true`
+example whose seat counts agree.
+
+Envelope failures still add a value-free stage code after `embedded_sessions_schema_drift`:
+`embedded_sessions_drift_{payload_count,payload_size,call_shape,table,route,event_identity,sessions,session_list}`.
+New observations retain up to three value-free `source_session_drift_shapes` (type, string
+form, length bucket, number kind/sign, boolean value, array length/item shapes, nested key
+names; depth ≤ 4, ≤ 30 keys). `python -m gatherradar diagnose jabama-sessions [--html saved.html]
+[--output r.json]` still writes the structural report; it now also shows adapter and schema
+names containing `/`.
 
 ### Data readiness
 

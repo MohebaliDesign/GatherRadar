@@ -41,6 +41,14 @@ ordered weekday lists, two corroborated venue forms, reviewable Jabama sessions 
 unknown additive properties, and the optional local OCR fallback chain. See
 [the live-run QA report](docs/LIVE_RUN_QA_2026-10-29.md).
 
+**Jabama timeslots (2026-10-29):** `soldOut` is a typed boolean and child timeslots are
+parsed strictly (twelve allowlisted keys, parent ownership, explicit-offset ordered
+timestamps, unique IDs, parent-window check), each kept as its own occurrence with parent
+and timeslot identity. Value relationships are not yet verified, so timeslots and
+`soldOut=true` stay in Schedule Review behind `VERIFIED_SESSION_SEMANTICS` until the owner's
+local `diagnose jabama-timeslots` report confirms them. See
+[the data contracts](docs/DATA_CONTRACTS.md#jabama-session-evidence-boundary-2026-10-29).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile

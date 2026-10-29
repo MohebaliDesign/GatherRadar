@@ -25,6 +25,17 @@ _SESSION_CLOCKS = re.compile(
 
 
 UNVERIFIED_SHAPE = "embedded_session_unverified_shape"
+TIMESLOT_UNVERIFIED = "embedded_timeslot_unverified_shape"
+TIMESLOT_WINDOW_CONFLICT = "embedded_timeslot_parent_window_conflict"
+SOLD_OUT_UNVERIFIED = "embedded_session_sold_out_unverified"
+SOLD_OUT_CONFLICT = "embedded_session_sold_out_conflict"
+SOLD_OUT = "source_session_sold_out"
+# Public session semantics confirmed by the owner's local relationship report.
+# "timeslots": a validated child timeslot inside its parent window is an
+# attendable occurrence. "sold_out": soldOut=true means the session is sold out.
+# Until a name is added here those records stay in Schedule Review; adding one
+# takes effect on an offline `refresh --stored`, with no new collection.
+VERIFIED_SESSION_SEMANTICS: frozenset[str] = frozenset()
 
 
 def _covers(a: EventOccurrence, b: EventOccurrence) -> bool:
@@ -182,7 +193,10 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
     for session in candidate.source_sessions:
         start = datetime.fromisoformat(session.start_iso.replace("Z", "+00:00")).astimezone(zone)
         end = None
-        if session.duration_hours is not None:
+        if session.end_iso is not None:
+            # A timeslot states its own end; the parent duration is not reused.
+            end = datetime.fromisoformat(session.end_iso.replace("Z", "+00:00")).astimezone(zone)
+        elif session.duration_hours is not None:
             # Duration is elapsed time; arithmetic in UTC also handles DST changes.
             seconds = Decimal(session.duration_hours) * Decimal(3600)
             end = (start.astimezone(timezone.utc) + timedelta(seconds=float(seconds))).astimezone(zone)
@@ -190,10 +204,26 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
         discounted = any(value is not None and Decimal(value) != 0
                          for value in (session.host_discount_pct, session.platform_discount_pct))
         own_codes = []
-        if session.schema_status is not None:
+        if session.source_timeslot_id is not None:
+            # Ownership and order were proven by the collector. Outside its parent
+            # window it is contradictory; otherwise it waits for verified semantics.
+            if session.schema_status == "timeslot_outside_parent_window":
+                own_codes.append(TIMESLOT_WINDOW_CONFLICT)
+            elif session.schema_status is not None or "timeslots" not in VERIFIED_SESSION_SEMANTICS:
+                own_codes.append(TIMESLOT_UNVERIFIED)
+        elif session.schema_status is not None:
             # Dated by the source's own session, but its unknown properties were
             # not inspected: reviewable, never actionable as is.
             own_codes.append(UNVERIFIED_SHAPE)
+        if session.sold_out is True:
+            # False proves nothing. True is a status only once its meaning is
+            # verified and no seat count on the same record contradicts it.
+            if session.remaining_seats:
+                own_codes.append(SOLD_OUT_CONFLICT)
+            elif "sold_out" in VERIFIED_SESSION_SEMANTICS:
+                own_codes.append(SOLD_OUT)
+            else:
+                own_codes.append(SOLD_OUT_UNVERIFIED)
         if len(prices) > 1:
             own_codes.append("session_price_conflict")
             diagnostics.append(Diagnostic("session_price_conflict", "source_sessions",
@@ -216,7 +246,8 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
             price_per_person=session.price_per_person, unit_price=session.unit_price,
             host_discount_pct=session.host_discount_pct, platform_discount_pct=session.platform_discount_pct,
             remaining_seats=session.remaining_seats, enabled=session.enabled,
-            diagnostics=tuple(own_codes),
+            diagnostics=tuple(own_codes), source_timeslot_id=session.source_timeslot_id,
+            source_sold_out=session.sold_out, capacity_limit=session.capacity_limit,
         )
         values.append(identify_occurrence(occurrence, candidate.candidate_id))
     occurrences = tuple(sorted(values, key=lambda o: (o.start_date, o.start_time, o.occurrence_id)))
