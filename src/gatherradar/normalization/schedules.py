@@ -15,7 +15,8 @@ from .models import Diagnostic, Severity, TemporalResult
 from .temporal import _local_datetime, normalize_temporal
 from .text import fold
 from .times import parse_times
-from .dates import _DISCRETE, _WEEKDAYS, _WEEKDAY_TEXT
+from .dates import _DAY, _DISCRETE, _SINGLE, _WEEKDAYS, _WEEKDAY_TEXT, MONTHS
+from .ordinals import parse_day
 
 _SESSION_CLOCKS = re.compile(
     r"(?:در\s+)?(?:(?P<count>دو|سه|چهار|[2-9])\s+)?سانس(?:\s*های)?\s*(?:ساعت\s*)?"
@@ -303,13 +304,160 @@ def _prose_dated_sessions(primary: TemporalResult, wording: str, raw: RawItem,
     return _choose(replace(parsed, occurrences=tuple(values)), primary)
 
 
+_LIST_SEPARATOR = re.compile(r"\s*(?:،|,|و)\s*")
+_HOLDING_TAIL = re.compile(r"\s*برگزار\s*(?:خواهد شد|می شود|میشود|می شه|میشه|شد)?\s*[.!]*\s*$")
+_LIST_PREFIX = re.compile(r"(?:^|\s)به تاریخ\s*[:،,]?\s*$")
+
+
+def _date_list(text: str) -> tuple[int, int, list[tuple[int, int, int | None]]] | None:
+    """One explicit list: "5، 12، 19 و 26 آبان" or "5 آبان، 12 آبان، … و 26 آبان".
+
+    Returns its span and (day, month, year) items. Anything else, including a
+    second separate date expression, is not a list.
+    """
+    discrete = list(_DISCRETE.finditer(text))
+    singles = list(_SINGLE.finditer(text))
+    if len(discrete) == 1:
+        match = discrete[0]
+        if any(not (match.start() <= s.start() < match.end()) for s in singles):
+            return None
+        year = int(match["year"]) if match["year"] else None
+        days = [parse_day(token[0]) for token in re.finditer(_DAY, match["days"])]
+        return match.start(), match.end(), [(day, MONTHS[match["month"]], year) for day in days]
+    if discrete or len(singles) < 2:
+        return None
+    if any(not _LIST_SEPARATOR.fullmatch(text[a.end():b.start()]) for a, b in zip(singles, singles[1:])):
+        return None
+    years = {s["year"] for s in singles}
+    if len(years) != 1:
+        return None
+    return singles[0].start(), singles[-1].end(), [
+        (parse_day(s["day"]), MONTHS[s["month"]], int(s["year"]) if s["year"] else None) for s in singles]
+
+
+def _list_dates(items: list[tuple[int, int, int | None]], reference) -> tuple[tuple, bool] | None:
+    """Dates for every item with one safe year (explicit, or within 45 reference days)."""
+    from persiantools.jdatetime import JalaliDate
+    try:
+        if items[0][2] is not None:
+            return tuple(JalaliDate(y, m, d).to_gregorian() for d, m, y in items), False
+        year = JalaliDate(reference).year
+        possible = []
+        for candidate_year in (year - 1, year, year + 1):
+            try:
+                dates = tuple(JalaliDate(candidate_year, m, d).to_gregorian() for d, m, _ in items)
+            except ValueError:
+                continue
+            if all(abs((day - reference).days) <= 45 for day in dates):
+                possible.append(dates)
+        return (possible[0], True) if len(possible) == 1 else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def _shared_clock(text: str):
+    """The one clock (range) stated after a date list, or None if absent/unsupported."""
+    text = _HOLDING_TAIL.sub("", text).strip(" ،,.:؛")
+    text = re.sub(r"^(?:از\s+)?", "", text)
+    if not text:
+        return "absent"
+    morning = re.fullmatch(r"(.*?)\s*صبح", text)
+    if morning:
+        text = morning[1]
+    parsed = parse_times(text)
+    if parsed.diagnostics or parsed.start is None:
+        return None
+    if morning and (parsed.start.hour >= 12 or (parsed.end is not None and parsed.end.hour > 12)):
+        return None
+    return parsed
+
+
+def _listed_sessions(primary: TemporalResult, wording: str, raw: RawItem,
+                     source: Source) -> TemporalResult | None:
+    """An explicit finite date list, with at most one clock shared by every date.
+
+    "به تاریخ ۵ آبان، ۱۲ آبان، ۱۹ آبان و ۲۶ آبان ساعت ۱۹ الی ۲۰:۳۰" states the
+    same clock for each listed date. A detail-header date must be one of the
+    listed dates. When the header clock and the shared clock disagree, every
+    date is kept date-only with `schedule_clock_conflict`: neither clock is
+    chosen and no session hour is overridden. Without a shared clock, the header
+    clock stays on its own date only. Weekdays must agree with every date.
+    """
+    text = fold(wording)
+    found = _date_list(text)
+    if found is None or len(found[2]) < 2 or len(found[2]) > 12:
+        return None
+    start, end, items = found
+    prefix = text[:start]
+    bare = re.sub(rf"(?:{_WEEKDAY_TEXT})(?:\s*ها)?|زمان|تاریخ|[:：،,\s📅🗓⏰🕒🚨]", "", prefix)
+    if bare and not _LIST_PREFIX.search(prefix):
+        return None
+    clock = _shared_clock(text[end:])
+    if clock is None:
+        return None
+    clock = None if clock == "absent" else clock
+    zone = ZoneInfo(source.timezone)
+    reference = (raw.published_at or raw.captured_at).astimezone(zone).date()
+    resolved = _list_dates(items, reference)
+    if resolved is None:
+        return None
+    dates, inferred = resolved
+    if list(dates) != sorted(set(dates)):
+        return None
+    weekdays = {_WEEKDAYS[w] for w in re.findall(_WEEKDAY_TEXT, prefix)}
+    if weekdays and (len(weekdays) != 1 or any(day.weekday() not in weekdays for day in dates)):
+        return TemporalResult(timezone=source.timezone, diagnostics=(Diagnostic(
+            'weekday_contradiction', 'source_schedule_text', 'Listed dates disagree with their stated weekday.'),))
+    diagnostics = []
+    if inferred:
+        diagnostics.append(Diagnostic("inferred_year", "source_schedule_text",
+                                      "Every listed date falls within 45 days of the stored reference; review required."))
+    header = primary.occurrences
+    if header and (len(header) != 1 or header[0].start_date not in dates or header[0].end_date is not None):
+        return None
+    header_clock = (header[0].start_time, header[0].end_time) if header and header[0].start_time else None
+    conflict = bool(clock and header_clock and (
+        clock.start != header_clock[0] or (header_clock[1] is not None and clock.end != header_clock[1])))
+    if conflict:
+        diagnostics.append(Diagnostic("schedule_clock_conflict", "source_schedule_text",
+            "The detail header clock and the listed sessions' clock disagree; no clock was chosen."))
+    values = []
+    for day in dates:
+        if conflict:
+            times = (None, None)
+        elif clock is not None:
+            times = (clock.start, clock.end)
+        elif header_clock and day == header[0].start_date:
+            times = header_clock
+        else:
+            times = (None, None)
+        starts = _local_datetime(day, times[0], zone) if times[0] is not None else None
+        ends = _local_datetime(day, times[1], zone) if starts is not None and times[1] is not None else None
+        if times[0] is not None and (starts is None or (times[1] is not None and ends is None)):
+            return None  # A DST gap/fold is never resolved by choosing an offset.
+        precision = (DatePrecision.INFERRED if inferred else DatePrecision.EXACT if starts else DatePrecision.DAY)
+        occurrence = EventOccurrence(
+            "pending", day, source.timezone, start_time=times[0], end_time=times[1],
+            starts_at=starts, ends_at=ends, date_precision=precision, source_schedule_text=wording,
+            source_item_ids=(raw.id,), evidence_urls=(raw.content_url,),
+            diagnostics=tuple(sorted({d.code for d in diagnostics})))
+        values.append(identify_occurrence(occurrence, raw.id))
+    return TemporalResult(
+        timezone=source.timezone, reference_at=raw.published_at or raw.captured_at,
+        reference_basis="published_at" if raw.published_at else "captured_at",
+        occurrences=tuple(values), schedule_kind=ScheduleKind.DISCRETE,
+        diagnostics=tuple(dict.fromkeys((*diagnostics, *(
+            d for d in primary.diagnostics if d.code not in {"missing_date", "inferred_year"})))))
+
+
 def normalize_schedule(candidate: EventCandidate, raw: RawItem, source: Source) -> TemporalResult:
     relative = _publication_schedule(candidate, raw, source)
     result = relative or normalize_temporal(candidate.source_date_text, raw, source)
     schedule = candidate.source_schedule_text
     if schedule and relative is None and fold(schedule) != fold(candidate.source_date_text or ""):
         sessions = (_dated_session_clocks(result, schedule)
-                    or _prose_dated_sessions(result, schedule, raw, source))
+                    or _prose_dated_sessions(result, schedule, raw, source)
+                    or _listed_sessions(result, schedule, raw, source))
         secondary = sessions or normalize_temporal(schedule, raw, source)
         if sessions is not None and sessions.occurrences:
             result = sessions

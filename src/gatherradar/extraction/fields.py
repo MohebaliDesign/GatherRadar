@@ -878,6 +878,34 @@ def duration_text(found: SignalSet) -> str | None:
     return next(iter(values.values())) if len(values) == 1 else None
 
 
+_LENGTH_WORDS = {"یک": 1, "دو": 2, "سه": 3, "چهار": 4, "پنج": 5, "شش": 6, "هفت": 7, "هشت": 8, "نه": 9, "ده": 10}
+_LENGTH = re.compile(r"(?:(?P<number>\d{1,3}|" + "|".join(_LENGTH_WORDS) + r")\s*)?(?P<unit>ساعت|دقیقه)"
+                     r"(?P<half>\s*و\s*نیم)?")
+
+
+def duration_minutes(value: str) -> int | None:
+    """Minutes of an explicit length ("۲ ساعت", "یک ساعت و نیم", "۹۰ دقیقه"), else None."""
+    folded = " ".join(normalize(value).split())
+    if folded in {"نیم ساعت"}:
+        return 30
+    match = _LENGTH.fullmatch(folded)
+    if match is None or match["number"] is None:
+        return None
+    number = int(match["number"]) if match["number"].isdigit() else _LENGTH_WORDS[match["number"]]
+    minutes = number * (60 if match["unit"] == "ساعت" else 1)
+    return minutes + (30 if match["half"] and match["unit"] == "ساعت" else 0) if not (
+        match["half"] and match["unit"] == "دقیقه") else None
+
+
+def narrative_durations(found: SignalSet) -> tuple[str, ...]:
+    """Lengths stated in prose as "به مدت <length>", exactly as written."""
+    values = []
+    for match in re.finditer(r"(?<!\w)به\s+مدت\s+((?:\d{1,3}|" + "|".join(_LENGTH_WORDS)
+                             + r"|نیم)\s*(?:ساعت|دقیقه)(?:\s*و\s*نیم)?)(?!\w)", found.normalized):
+        values.append(found.text[match.start(1):match.end(1)])
+    return tuple(dict.fromkeys(values))
+
+
 def organizer_name(found: SignalSet) -> str | None:
     """Explicit organizer label or event-is-held-by wording; never the publisher."""
     labelled = _short_labelled(found, "organizer", 120)
@@ -916,6 +944,8 @@ _SESSIONS = re.compile(r"(?<!\w)(?:[2-9]|[1-9]\d+|" + "|".join(rules.SESSION_COU
 _DAY_LIST = re.compile(r"(?<!\d)\d{1,2}(?:\s*(?:[،,]|و)\s*\d{1,2})+\s*(?:" + _MONTH + r")(?:\s*ماه)?(?!\w)")
 _RECURRENCE = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(normalize(t)) for t in rules.RECURRENCE_TERMS) + r")(?!\w)")
 _SENTENCE = re.compile(r"(?:[^\n.!?؟؛;]|\.(?=\s*\d))+")
+_NEXT_CLOCK_LINE = re.compile(r"[ \t]*\n[ \t]*((?:ساعت\s*)?\d{1,2}(?::\d{2})?\s*(?:تا|الی|-|–)\s*\d{1,2}(?::\d{2})?"
+                              r"(?:\s*(?:صبح|ظهر|عصر|شب))?)[ \t]*(?=\n|$)")
 _ONLY_WEEKDAYS = re.compile(r"(?:\s|[،,\-–]|و|(?:" + _WEEKDAY + r")(?:\s?ها)?)+")
 
 
@@ -953,6 +983,11 @@ def source_schedule_text(found: SignalSet, exclude: str | None = None) -> str | 
         # when a card prefixes it with its city.
         if (_DAY_LIST.search(folded) or (marked and has_temporal)) and not any(
                 key in other or other in key for other in kept):
+            # A clock-only line directly under a date list ("۵ تا ۸ صبح") is
+            # that list's stated hours; keep both lines as one exact slice.
+            clock = _NEXT_CLOCK_LINE.match(found.normalized, end) if _DAY_LIST.search(folded) else None
+            if clock:
+                value = found.text[start:clock.end(1)]
             kept[key] = value
         if len(kept) == rules.MAX_SCHEDULE_SENTENCES:
             break

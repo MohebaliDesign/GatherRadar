@@ -241,6 +241,14 @@ def _merge_evidence(facts: DiscoveryFacts, extraction_input: ExtractionInput) ->
             conflicts.append(name)
             continue
         updates[name] = min(found_values, key=lambda item: _ORIGIN_ORDER.get(item[0], 2))[1]
+    if updates.get("duration_text") and "duration_text" not in conflicts:
+        # A header length and an explicit "به مدت …" sentence on the same item
+        # that disagree are both source facts; neither is chosen.
+        stated = fields.duration_minutes(updates["duration_text"])
+        others = {fields.duration_minutes(v) for v in fields.narrative_durations(analyze(extraction_input.raw_text))}
+        if stated is not None and others - {None, stated}:
+            updates["duration_text"] = None
+            conflicts.append("duration_text")
     if "source_category_text" in structural:
         # An explicit source category label outranks free-text keyword inference:
         # the canonical category is only its supported exact mapping, else null.
