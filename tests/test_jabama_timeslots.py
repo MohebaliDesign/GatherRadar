@@ -435,3 +435,18 @@ class RelationshipReportTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class BookingPresentationTests(unittest.TestCase):
+    """X03: booking facts are shown as source facts, separate from temporal relevance."""
+
+    def test_booking_column_describes_source_facts_without_promising_a_seat(self):
+        from gatherradar.review.serialization import booking
+        self.assertIn('صندلی باقی‌مانده طبق منبع: ۸', booking(event_of([ONE])))
+        self.assertIn('امکان رزرو را در منبع بررسی کنید', booking(event_of([ONE])))
+        sold = event_of([{**ONE, 'soldOut': True, 'timeslots': [{**t, 'remainingSeats': 0, 'bookedCount': 8}
+                                                               for t in ONE['timeslots']]}])
+        self.assertEqual(booking(sold), 'منبع همه جلسه‌ها را «تکمیل ظرفیت» علامت زده است')
+        self.assertIn('ناسازگار', booking(event_of([{**ONE, 'soldOut': True}])))
+        # The page's own wording always wins over derived session facts.
+        self.assertEqual(booking(event_of([ONE], '</div><div>تکمیل ظرفیت')), 'تکمیل ظرفیت')

@@ -137,7 +137,20 @@ def run(args: argparse.Namespace) -> int:
             counts = run_summary.get('data_readiness_counts', {})
             print('Data readiness: ' + '; '.join(f'{name}={counts.get(name, 0)}' for name in (
                 'ready_for_review', 'needs_enrichment', 'needs_schedule_review', 'source_unavailable')))
-            print(f'Database: {database}\nWorkbook: {workbook}\nExports: {exports}\nGemini: {exports / "gemini/latest"}')
+            # Collection, persistence and each export are separate outcomes; a
+            # workbook path is printed only when the workbook was written.
+            print(f'Collection: {snapshot.status}')
+            print(f'Persistence: committed (run {run_id}); Database: {database}')
+            xlsx_failed = any(e.startswith(('ExcelReviewExporter', 'XLSX')) for e in result.export_failures)
+            other_failed = [e for e in result.export_failures if not e.startswith(('ExcelReviewExporter', 'XLSX'))]
+            if xlsx_failed:
+                print('Workbook: NOT written (see Export error). Stored facts are intact; recover offline with:')
+                print(f'  python -m gatherradar export all --run {run_id} --db "{database}" '
+                      f'--workbook "{workbook}" --export-dir "{exports}"')
+            else:
+                print(f'Workbook: {workbook}')
+            print(f'Exports: {exports}' + (' (with errors)' if other_failed else ''))
+            print(f'Gemini: {exports / "gemini/latest"}')
             for error in result.export_failures:
                 print(f'Export error (canonical state committed): {error}', file=sys.stderr)
             return int(snapshot.status != 'success' or bool(result.export_failures))

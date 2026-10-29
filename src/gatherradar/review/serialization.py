@@ -95,6 +95,34 @@ def price(event: Event) -> str:
     return f'{persian(format(event.price_amount, "f"))} {unit}'.strip()
 
 
+def booking(event: Event) -> str:
+    """Booking status in plain Persian, kept apart from temporal relevance.
+
+    The source's own availability wording wins. Otherwise per-session source
+    facts are described as facts, never as a promise that a seat can be booked:
+    a sellout flag, a flag contradicted by seat counts, or the first listed
+    session's remaining seats.
+    """
+    if event.availability_text:
+        return event.availability_text
+    ordered = sorted(event.occurrences, key=lambda o: (o.start_date, o.start_time is None,
+                                                       o.start_time or time.min, o.occurrence_id))
+    if any('sold_out_availability_conflict' in c for o in ordered for c in o.diagnostics):
+        return 'علامت «تکمیل ظرفیت» و تعداد صندلی در منبع ناسازگار است؛ در منبع بررسی کنید'
+    flagged = [o for o in ordered if o.source_sold_out is True]
+    if flagged:
+        if len(flagged) == len(ordered):
+            return 'منبع همه جلسه‌ها را «تکمیل ظرفیت» علامت زده است'
+        return f'منبع {persian(len(flagged))} از {persian(len(ordered))} جلسه را «تکمیل ظرفیت» علامت زده است'
+    seats = next((o for o in ordered if o.remaining_seats is not None), None)
+    if seats is not None:
+        when = jalali(seats.start_date) + (('، ' + persian(seats.start_time.strftime('%H:%M')))
+                                           if seats.start_time else '')
+        return (f'صندلی باقی‌مانده طبق منبع: {persian(seats.remaining_seats)} (جلسه {when})؛ '
+                'امکان رزرو را در منبع بررسی کنید')
+    return ''
+
+
 def schedule(event: Event) -> str:
     """Visible source schedule wording, without repeating a fully modelled date.
 
@@ -120,7 +148,7 @@ def event_row(event: Event, run_id: str, human: tuple[str, str] | None = None) -
         persian(event.start_time.strftime('%H:%M')) if event.start_time else '', jalali(event.end_date),
         persian(event.end_time.strftime('%H:%M')) if event.end_time else '', schedule(event),
         event.venue_name, event.area_text, event.city, event.address, event.duration_text, price(event),
-        event.availability_text, FORMATS.get(event.event_format, ''), event.description_text,
+        booking(event), FORMATS.get(event.event_format, ''), event.description_text,
         event.organizer_name, url(event.registration_url), url(event.canonical_source_url), '\n'.join(links),
         len(event.source_ids) or len(links), quality(event), note,
         readiness.label, readiness.explanation, occurrence_text(event)]
