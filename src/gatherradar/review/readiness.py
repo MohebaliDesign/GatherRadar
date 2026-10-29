@@ -39,6 +39,7 @@ REASON_LABELS = {
     "temporal_conflict": "شواهد زمان‌بندی ناسازگار است",
     "source_conflict": "شواهد منبع ناسازگار است",
     "duration_conflict": "مدت اعلام‌شده در منبع ناسازگار است؛ مدت سرصفحه و متن توضیحات را در منبع بررسی کنید",
+    "ambiguous_meridiem": "ساعت بدون «صبح/عصر/شب» نوشته شده و می‌تواند صبح یا بعدازظهر باشد؛ تاریخ حفظ شده و ساعتی انتخاب نشده است",
     "schedule_clock_conflict": "ساعت سرصفحه با ساعت جلسه‌های فهرست‌شده ناسازگار است؛ تاریخ‌ها حفظ شده و ساعتی انتخاب نشده است",
     "extraction_issue": "بخشی از اطلاعات منبع بازیابی نشده است",
     "evidence_incomplete": "شواهد تصویری کامل نیست",
@@ -124,6 +125,8 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
         reasons.append("temporal_conflict" if any("conflict" in c for c in temporal) else "source_conflict")
     if any(d.code == "source_field_conflict" and d.field == "duration_text" for d in event.diagnostics):
         reasons.append("duration_conflict")
+    if any("ambiguous_meridiem" in c for c in codes):
+        reasons.append("ambiguous_meridiem")
     if any("schedule_clock_conflict" in c for c in codes):
         reasons.append("schedule_clock_conflict")
     if any("extraction_failed" in c or "extraction_bug" in c for c in codes):

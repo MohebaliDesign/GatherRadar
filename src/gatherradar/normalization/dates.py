@@ -153,6 +153,11 @@ def _parse_discrete(match: re.Match, text: str, reference: date) -> ParsedDates:
     """Expand only an explicit same-month list with one safe year for every day."""
     prefix = text[:match.start()].strip(" :：,،📅🗓")
     remaining = text[:match.start()] + " " + text[match.end():]
+    # "جمعه و شنبه ۸ و ۹ آبان": one weekday per listed day, checked in order below.
+    listed_weekdays = (re.fullmatch(rf"{_WEEKDAY_TEXT}(?:\s*(?:و|،|,)\s*{_WEEKDAY_TEXT})+", prefix)
+                       and re.findall(_WEEKDAY_TEXT, prefix))
+    if listed_weekdays:
+        prefix = ""
     if prefix not in {"", "تاریخ", "زمان"}:
         return ParsedDates(None, None, text, (_diagnostic(
             "ambiguous_date_context", "A discrete date list has unsupported qualifying wording."),), True)
@@ -189,5 +194,10 @@ def _parse_discrete(match: re.Match, text: str, reference: date) -> ParsedDates:
     except (ValueError, OverflowError):
         return ParsedDates(None, None, remaining, (_diagnostic(
             "invalid_date", "A listed calendar date is invalid.", True),), True)
+    if listed_weekdays and [_WEEKDAYS[w] for w in listed_weekdays] != [day.weekday() for day in values]:
+        return ParsedDates(None, None, remaining, (_diagnostic(
+            "weekday_contradiction", "Listed weekdays do not match the listed dates in order.", True),), True)
+    if listed_weekdays:
+        remaining = text[match.end():]
     return ParsedDates(None, None, remaining, tuple(diagnostics),
                        discrete_dates=tuple(sorted(set(values))))

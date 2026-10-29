@@ -30,6 +30,7 @@ _LEADING_NUMBERS = re.compile(
     r"((?<!\w)" + _DAY_WORD + r"(?:\s*(?:و|,|،|-|–|تا|الی)\s*" + _DAY_WORD + r")*\s*)$"
 )
 # A trailing range that belongs with the time it follows: "از ساعت ۱۶ تا ۲۲".
+_TRAILING_PART = re.compile(r"^(\s*(?:صبح|بامداد|ظهر|بعد\s?از\s?ظهر|عصر|شب))(?!\w)")
 _TRAILING_RANGE = re.compile(r"^(\s*(?:تا|الی|to|-|–|—)\s*\d{1,2}(?::\d{2})?)")
 _ENGLISH_DATE = re.compile(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:\s*(?:to|[-–—])\s*\d{1,2})?,?\s+\d{4}\b', re.I)
 # An explicit year written right after the month it belongs to: "۱۷ مهر ۱۴۰۵".
@@ -203,9 +204,16 @@ def _temporal_fragments(found: SignalSet) -> list[_TemporalFragment]:
             if leading and _leading_day_context(found.normalized[line_start:line_start + leading.start(1)],
                                                 leading.group(1)):
                 start = line_start + leading.start(1)
+            part = _TRAILING_PART.match(found.normalized[end:line_end]) if any(
+                s.kind == "time" for s in cluster) else None
+            if part:  # "ساعت ۵ عصر": the day-part word belongs to the clock.
+                end += part.end(1)
             trailing = _TRAILING_RANGE.match(found.normalized[end:line_end])
             if trailing:
                 end += trailing.end(1)
+                part = _TRAILING_PART.match(found.normalized[end:line_end])
+                if part:
+                    end += part.end(1)
             elif max(cluster, key=lambda item: item.end).term in _MONTH_TERMS:
                 year = _TRAILING_YEAR.match(found.normalized[end:line_end])
                 if year:

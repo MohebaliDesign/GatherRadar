@@ -71,7 +71,7 @@ def normalize_temporal(source_text: str | None, raw_item: RawItem, source: Sourc
     remainder = dates.remainder.strip()
     if dates.start is not None or dates.discrete_dates:
         remainder = re.sub(r"^(?:از\s+)?(?:تاریخ\s*[:：]?\s*)?", "", remainder).strip()
-        remainder = remainder.lstrip(" :：|,،؛;.📅🗓⏰🕒")
+        remainder = remainder.lstrip(" :：|,،؛;.·•📅🗓⏰🕒")
         # A dash separates the date and a labelled clock; it is not a negative
         # hour. Keep negative/malformed standalone clocks rejected.
         remainder = re.sub(r"^[-–—|]\s*(?=(?:از\s+)?ساعت\b|[0-9]{1,2}:[0-9]{2}\b)", "", remainder).strip()

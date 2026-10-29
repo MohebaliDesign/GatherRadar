@@ -361,13 +361,8 @@ def _shared_clock(text: str):
     text = re.sub(r"^(?:از\s+)?", "", text)
     if not text:
         return "absent"
-    morning = re.fullmatch(r"(.*?)\s*صبح", text)
-    if morning:
-        text = morning[1]
-    parsed = parse_times(text)
+    parsed = parse_times(text)  # Persian day-part words ("۵ تا ۸ صبح") are bounded there.
     if parsed.diagnostics or parsed.start is None:
-        return None
-    if morning and (parsed.start.hour >= 12 or (parsed.end is not None and parsed.end.hour > 12)):
         return None
     return parsed
 
