@@ -1189,7 +1189,8 @@ Exports may live in synced folders. See [recovery and backup policy](LOCAL_REVIE
 
 Default: `data/review/GatherRadar.xlsx`. Permanent sheets: `راهنما`, `تاریخچه اجراها`,
 `بررسی تکراری‌ها`; hidden `_meta` contains schema version, latest generated run,
-and generation timestamp. Database tables are not exposed as tabs.
+and generation timestamp. Hidden `_overflow` appears only when a value exceeds the cell
+limit (see below). Database tables are not exposed as tabs.
 
 Event visible columns in order (shared with the optional Sheets row serializer):
 
@@ -1213,7 +1214,7 @@ treatment and stays separate from `وضعیت رویداد`. `توضیحات / �
 source description, wrapped, in a bounded-width column with the usual 60-point row cap;
 open the cell to read it all. Only a description over the 32,767-character XLSX cell limit
 is cut, with an explicit `… [متن کامل در review.json و events.csv]` marker; SQLite, JSON and
-CSV keep it whole. Only link columns become hyperlinks, so text starting with a URL stays text.
+CSV keep it whole, and the workbook keeps it whole in hidden `_overflow` (below). Only link columns become hyperlinks, so text starting with a URL stays text.
 
 Where several supporting URLs exist, extra `پیوند منبع N` columns make each URL
 clickable with ordinary hyperlinks. No generated hyperlink formulas or macros.
@@ -1313,9 +1314,20 @@ canonical persistence and portable exports. The source engine never consumes hum
 
 Save in memory to a temporary sibling, reopen/verify cells, then replace atomically.
 A file lock/replacement failure leaves old bytes and committed SQLite intact. Unsupported
-schemas are never reset. XLSX text limits fail visibly rather than truncate source values,
-except the explicitly marked description cell above. Edits to area, description, duration,
-organizer, availability or schedule cells are visual only and never imported.
+schemas are never reset. XLSX text limits never truncate values silently. A snapshot value
+over the 32,767-character cell limit (e.g. the serialized `occurrences` of an Event with
+dozens of sessions) is stored losslessly in the hidden permanent `_overflow` sheet
+(`sheet`, `record_id`, `field`, `sha256`, `length`, `chunk`, `chunks`, `text`; chunks of at
+most 32,000 characters), keyed by snapshot sheet, Event/candidate ID and column. The
+snapshot cell then holds `[[gatherradar-overflow sha256=… length=… chunks=…]]` for a hidden
+technical column, or a readable prefix with a visible marker for a visible column (the
+description keeps its `… [متن کامل در review.json و events.csv]` marker). Reassembly checks
+chunk order, length and SHA-256. Overflow rows are appended with a new snapshot and never
+rewritten; `_overflow` is never imported. Reviewer-owned decision/note values are never
+shortened: an over-limit value fails with the sheet, record ID, field and length, as does
+any remaining unfitted cell. Workbooks without `_overflow` remain readable; the workbook
+schema stays version 3. Edits to area, description, duration, organizer, availability or
+schedule cells are visual only and never imported.
 
 ### Cloud field hardening (2026-10-29)
 

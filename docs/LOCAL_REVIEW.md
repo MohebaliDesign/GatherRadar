@@ -152,7 +152,9 @@ a changed projection gets a new sheet and preserves the old one.
 The former `خلاصه` column was always empty and is no longer shown; `summary` stays a
 reserved machine field. Descriptions are complete in the cell but rows stay at most 60
 points; open or expand the cell to read it. Only a description longer than Excel's
-32,767-character cell limit is cut, with a visible marker; JSON/CSV keep all of it.
+32,767-character cell limit is cut, with a visible marker; JSON/CSV keep all of it. Any
+value over that limit (for example the session list of an Event with dozens of sessions)
+is also kept whole, in order, in the hidden `_overflow` sheet; the cell refers to it.
 Additional supporting-source columns appear only for multiple source URLs, so each
 has its own clickable hyperlink. Original URLs remain in hidden `evidence_urls` and
 portable exports. Labels are compact publisher names; hyperlink targets remain exact.
@@ -257,7 +259,9 @@ empty, and compact JSON for nested arrays/objects. Formula-risk values beginning
 `=`, `+`, `-`, `@` (including whitespace-concealed prefixes) receive an apostrophe;
 leading tab/newline also gets a prefix. JSON preserves the original string. XLSX writes
 source/review strings as explicit literal cells. Text exceeding XLSX's 32,767-character
-cell limit fails export rather than silently truncating. Empty CSV tables retain headers.
+cell limit is never silently truncated: snapshot values go losslessly to hidden `_overflow`;
+an over-limit reviewer note or any unfitted cell fails export with its sheet, record ID,
+field and length. Empty CSV tables retain headers.
 CSV is an interchange format; it carries no badge/font/color styling. JSON/CSV and
 SQLite DDL remains version 1. Record migration is additive on read: legacy records
 get empty occurrences and unknown schedule kind, never fabricated sessions. Stored

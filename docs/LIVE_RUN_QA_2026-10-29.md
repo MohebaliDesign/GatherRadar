@@ -144,3 +144,32 @@ for path in sorted(pathlib.Path("data/raw/website").glob("jabama_*.jsonl")):
             print(item_id, meta.get("source_session_diagnostics"), meta.get("source_session_drift_keys"))
 '@ | .\.venv\Scripts\python.exe -
 ```
+
+## Follow-up: XLSX export failure in run `ca3548cb65534d868277f140cdc92855`
+
+The run persisted 28 canonical Events (13 actionable, 11 schedule review), but XLSX export
+stopped with `A review cell exceeds the XLSX text limit`. Cause: the Jabama Event
+`تجربه ساخت ماگ شخصی با سفال` (`legacy-941`) now has 50 embedded sessions; its hidden
+`occurrences` cell serialized to 56,591 characters (limit 32,767). SQLite, CSV and JSON
+were complete.
+
+Fix: oversized snapshot values are stored losslessly in a hidden `_overflow` sheet (chunks
+≤ 32,000 characters with SHA-256 and length) and the cell refers to them; see
+[the data contracts](DATA_CONTRACTS.md#workbook-schema-version-3). Reviewer-owned values are
+never shortened, and remaining failures name sheet, record ID, field and length.
+
+Acceptance on the owner's `review.json` (rebuilt into an isolated SQLite in Cloud): export
+succeeds; the reopened workbook has 13 rows in the main sheet and 11 in Schedule Review;
+all 50 occurrences reassemble byte-identically from `_overflow` and match SQLite, CSV and
+JSON; a decision and note round-trip through import; a same-run re-export adds no sheet or
+overflow row. The 4 expired Events are not in `review.json`, so that isolated DB has 24.
+
+The optional Google Sheets adapter sends the same serialized value and has its own
+per-cell limit (not changed or validated here).
+
+Offline re-export with your stored state (no crawl; close the workbook first). Replace the
+paths with your isolated database and workbook:
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar export all --run ca3548cb65534d868277f140cdc92855 --db "data\state\gatherradar.sqlite3" --workbook "data\review\GatherRadar.xlsx" --export-dir "data\exports"
+```
