@@ -34,8 +34,9 @@ REASON_LABELS = {
     "invalid_source_url": "پیوند منبع معتبر نیست",
     "missing_schedule": "تاریخ یا زمان‌بندی مشخص نیست",
     "source_sessions_unverified": "تاریخ جلسه‌ها از صفحه منبع خوانده شد ولی داده جلسه ویژگی‌های جدید و بررسی‌نشده دارد؛ پیش از انتشار تاریخ، قیمت و ظرفیت را در منبع تأیید کنید",
-    "source_timeslots_unverified": "زمان‌های جلسه (تایم‌اسلات) از داده منبع خوانده شد ولی معنای آن‌ها هنوز با گزارش محلی تأیید نشده یا با بازه جلسه اصلی سازگار نیست؛ پیش از انتشار در صفحه منبع بررسی کنید",
-    "source_sold_out_unverified": "منبع این جلسه را «تکمیل ظرفیت» علامت زده ولی معنای این علامت هنوز تأیید نشده است؛ وضعیت ظرفیت را در صفحه منبع بررسی کنید",
+    "source_timeslots_unverified": "زمان‌های جلسه (سانس‌ها) از داده منبع خوانده شد ولی با بازه جلسه اصلی سازگار نیست یا قابل سنجش نیست؛ پیش از انتشار در صفحه منبع بررسی کنید",
+    "source_sold_out_flag": "منبع برای جلسه علامت «تکمیل ظرفیت» گذاشته است؛ امکان رزرو را در صفحه منبع بررسی کنید",
+    "session_window_conflict": "بازه جلسه‌ها در داده منبع با مدت اعلام‌شده فعالیت نمی‌خواند؛ تاریخ‌ها حفظ شده ولی ساعت دقیق حضور باید در منبع بررسی شود",
     "source_availability_conflict": "علامت تکمیل ظرفیت با تعداد صندلی باقی‌مانده در داده منبع ناسازگار است",
     "source_seat_counts_inconsistent": "ظرفیت، رزروشده و باقی‌مانده در داده منبع با هم جور نیستند؛ هیچ‌کدام نگه داشته نشد",
     "source_sessions_unreadable": "جلسه‌های صفحه منبع در قالب جدیدی منتشر شده و خوانده نشد؛ تاریخ‌ها را در صفحه منبع بررسی کنید",
@@ -155,15 +156,19 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
         held.append("source_timeslots_unverified")
     if any("session_unverified_shape" in c for c in session_codes):
         held.append("source_sessions_unverified")
-    if any("sold_out_unverified" in c for c in session_codes):
-        held.append("source_sold_out_unverified")
-    if any("sold_out_conflict" in c for c in session_codes):
-        held.append("source_availability_conflict")
+    if any("session_window_duration_conflict" in c for c in session_codes):
+        held.append("session_window_conflict")
     if held:
         reasons.extend(held)
         schedule_unresolved = True
         if "schedule_unresolved" not in indicators:
             indicators.append("schedule_unresolved")
+    # Booking facts are explained, never a schedule problem: a source sold-out
+    # flag does not make a dated session less current.
+    if any("sold_out_unverified" in c for c in session_codes):
+        reasons.append("source_sold_out_flag")
+    if any("sold_out_availability_conflict" in c for c in session_codes):
+        reasons.append("source_availability_conflict")
     if any("availability_inconsistent" in c for c in codes):
         reasons.append("source_seat_counts_inconsistent")
     if any("session_schema_drift" in c or "sessions_schema_drift" in c for c in codes) and not any(
@@ -182,6 +187,7 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
         status = DataReadiness.UNAVAILABLE
         reasons.insert(0, "source_unavailable")
     elif any(r in reasons for r in ("missing_title", "invalid_source_url", "source_conflict",
+                                    "source_availability_conflict", "source_seat_counts_inconsistent",
                                     "extraction_issue", "evidence_incomplete", "session_price_unresolved",
                                     "ambiguous_description")):
         status = DataReadiness.ENRICHMENT

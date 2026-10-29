@@ -77,8 +77,8 @@ ONE = parent('111', '2026-09-30T06:30:00.000Z', [
     slot('902', '111', '2026-09-30T09:30:00.000Z', '2026-09-30T11:30:00.000Z')])
 
 
-def event_of(sessions):
-    _, outcome = pipeline(collected(page(sessions)))
+def event_of(sessions, extra=''):
+    _, outcome = pipeline(collected(page(sessions, extra)))
     event, = outcome.events
     return event
 
@@ -201,49 +201,118 @@ class TimeslotParsingTests(unittest.TestCase):
 
 
 class TimeslotScheduleTests(unittest.TestCase):
-    def test_validated_timeslots_wait_in_schedule_review(self):
+    """The owner's relationship report (88 parents / 295 timeslots) verified the
+    Jabama timeslot relationships, so validated timeslots are dated occurrences."""
+
+    def test_validated_timeslots_are_dated_occurrences(self):
         event = event_of([ONE])
         self.assertEqual([(o.source_session_id, o.source_timeslot_id) for o in event.occurrences],
                          [('111', '901'), ('111', '902')])
         self.assertEqual(len({o.occurrence_id for o in event.occurrences}), 2)
+        self.assertTrue(all(o.diagnostics == () for o in event.occurrences))
+        # Each child keeps its own interval; the 8-hour parent duration is not used.
+        self.assertEqual([(o.start_time, o.end_time) for o in event.occurrences],
+                         [(time(10), time(12)), (time(13), time(15))])
+        decision = assess_relevance(event, RUN)
+        self.assertEqual((decision.disposition, len(decision.occurrence_ids)), ('actionable', 2))
+        self.assertEqual(assess_readiness(event).status, DataReadiness.READY)
+        # A passed timeslot expires by its own source date.
+        self.assertEqual(assess_relevance(event, RUN + timedelta(days=10)).disposition, 'expired')
+
+    def test_horizon_applies_per_timeslot(self):
+        event = event_of(day_sessions(81, 4))
+        self.assertEqual(len(event.occurrences), 324)
+        decision = assess_relevance(event, RUN)  # 2026-09-26; first parent day 2026-09-28
+        kinds = {kind for _, kind, _ in decision.occurrence_dispositions}
+        self.assertEqual(kinds, {'actionable', 'beyond_horizon'})
+        # 28 Sep .. 10 Oct (Tehran) inclusive: 13 days of four timeslots each.
+        self.assertEqual(len(decision.occurrence_ids), 13 * 4)
+        later = assess_relevance(event, RUN + timedelta(days=30))
+        self.assertIn('expired', {kind for _, kind, _ in later.occurrence_dispositions})
+        self.assertEqual(later.disposition, 'actionable')  # later sessions still count
+
+    def test_closed_gate_still_holds_timeslots_for_review(self):
+        with patch(VERIFIED, frozenset()):
+            event = event_of([ONE])
         self.assertTrue(all(o.diagnostics == ('embedded_timeslot_unverified_shape',) for o in event.occurrences))
         decision = assess_relevance(event, RUN)
         self.assertEqual(decision.disposition, 'needs_schedule_review')
         self.assertEqual({reason for *_, reason in decision.occurrence_dispositions}, {'unverified_timeslot'})
-        readiness = assess_readiness(event)
-        self.assertEqual(readiness.status, DataReadiness.SCHEDULE)
-        self.assertIn('source_timeslots_unverified', readiness.reasons)
-        # A passed timeslot still expires by its own source date.
-        self.assertEqual(assess_relevance(event, RUN + timedelta(days=10)).disposition, 'expired')
+        self.assertIn('source_timeslots_unverified', assess_readiness(event).reasons)
 
-    def test_verified_semantics_promote_only_timeslots_inside_the_window(self):
-        with patch(VERIFIED, frozenset({'timeslots'})):
-            event = event_of([ONE])
-            outside = event_of([parent('111', '2026-09-30T06:30:00Z', [
-                slot('901', '111', '2026-09-30T13:30:00Z', '2026-09-30T15:30:00Z')], hours=2)])
-        self.assertTrue(all(o.diagnostics == () for o in event.occurrences))
-        decision = assess_relevance(event, RUN)
-        self.assertEqual((decision.disposition, len(decision.occurrence_ids)), ('actionable', 2))
-        self.assertEqual(assess_readiness(event).status, DataReadiness.READY)
+    def test_outside_or_unmeasurable_parent_window_stays_in_review(self):
+        outside = event_of([parent('111', '2026-09-30T06:30:00Z', [
+            slot('901', '111', '2026-09-30T13:30:00Z', '2026-09-30T15:30:00Z')], hours=2)])
         self.assertEqual(outside.occurrences[0].diagnostics, ('embedded_timeslot_parent_window_conflict',))
         self.assertEqual(assess_relevance(outside, RUN).disposition, 'needs_schedule_review')
+        self.assertIn('source_timeslots_unverified', assess_readiness(outside).reasons)
+        unknown = event_of([parent('111', '2026-09-30T06:30:00Z', [
+            slot('901', '111', '2026-09-30T06:30:00Z', '2026-09-30T08:30:00Z')], hours=None)])
+        self.assertEqual(unknown.occurrences[0].diagnostics, ('embedded_timeslot_unverified_shape',))
+        self.assertEqual(assess_relevance(unknown, RUN).disposition, 'needs_schedule_review')
+
+    def test_shorter_timeslot_inside_parent_is_not_a_conflict(self):
+        # The wheel page: every timeslot shorter than its parent duration, all inside.
+        event = event_of([parent('111', '2026-09-30T06:30:00Z', [
+            slot('901', '111', '2026-09-30T07:30:00Z', '2026-09-30T09:00:00Z')], hours=8)])
+        self.assertEqual(event.occurrences[0].diagnostics, ())
+        self.assertEqual(assess_relevance(event, RUN).disposition, 'actionable')
 
     def test_sold_out_vs_upcoming_vs_actionable(self):
         sold = [{**ONE, 'soldOut': True, 'timeslots': [{**t, 'remainingSeats': 0, 'bookedCount': 8}
                                                        for t in ONE['timeslots']]}]
-        with patch(VERIFIED, frozenset({'timeslots'})):
-            unverified = event_of(sold)
+        unverified = event_of(sold)
+        # The flag is shown, never a status; the sessions stay current by date.
         self.assertNotEqual(unverified.status, EventStatus.SOLD_OUT)
-        self.assertEqual(assess_relevance(unverified, RUN).disposition, 'needs_schedule_review')
+        self.assertTrue(all(o.source_sold_out is True and 'embedded_session_sold_out_unverified' in o.diagnostics
+                            for o in unverified.occurrences))
+        self.assertEqual(assess_relevance(unverified, RUN).disposition, 'actionable')
+        self.assertIn('source_sold_out_flag', assess_readiness(unverified).reasons)
+        self.assertEqual(assess_relevance(unverified, RUN + timedelta(days=10)).disposition, 'expired')
         with patch(VERIFIED, frozenset({'timeslots', 'sold_out'})):
             verified = event_of(sold)
-            contradicted = event_of([{**ONE, 'soldOut': True}])  # 8 seats remain on each timeslot
         self.assertEqual(verified.status, EventStatus.SOLD_OUT)
         # Upcoming and sold out: still a dated, current Event, never expired.
         self.assertEqual(assess_relevance(verified, RUN).disposition, 'actionable')
+        contradicted = event_of([{**ONE, 'soldOut': True}])  # 8 seats remain on each timeslot
         self.assertNotEqual(contradicted.status, EventStatus.SOLD_OUT)
-        self.assertTrue(all('embedded_session_sold_out_conflict' in o.diagnostics for o in contradicted.occurrences))
-        self.assertEqual(assess_relevance(contradicted, RUN).disposition, 'needs_schedule_review')
+        self.assertTrue(all('embedded_session_sold_out_availability_conflict' in o.diagnostics
+                            and o.remaining_seats is None for o in contradicted.occurrences))
+        self.assertEqual(assess_relevance(contradicted, RUN).disposition, 'actionable')
+        readiness = assess_readiness(contradicted)
+        self.assertEqual(readiness.status, DataReadiness.ENRICHMENT)
+        self.assertIn('source_availability_conflict', readiness.reasons)
+
+
+class SessionWindowTests(unittest.TestCase):
+    """legacy-941: whole sessions 08:00-17:00 while the activity states 2 hours.
+    The pottery reports do not validate this page; dates stay, clocks are reviewed."""
+
+    def window_event(self, hours, duration='۲ ساعت'):
+        whole = {'id': '7001', 'eventId': 'demo-event', 'startIso': '2026-09-30T04:30:00Z',
+                 'durationHours': hours, 'capacityLimit': None, 'bookedCount': 0, 'remainingSeats': None,
+                 'enabled': True, 'inventoryMode': 'timeslot_capacity', 'layoutId': None, 'timeslots': [],
+                 'pricePerPerson': None, 'unitPrice': None, 'hostDiscountPct': None,
+                 'platformDiscountPct': None, 'soldOut': False}
+        extra = f'</div><div>مدت زمان: {duration}' if duration else ''
+        return event_of([whole, {**whole, 'id': '7002', 'startIso': '2026-10-01T04:30:00Z'}], extra)
+
+    def test_nine_hour_window_against_two_hour_activity_is_reviewed(self):
+        event = self.window_event(9)
+        self.assertEqual(event.duration_text, '۲ ساعت')
+        self.assertTrue(all('session_window_duration_conflict' in o.diagnostics for o in event.occurrences))
+        self.assertEqual([o.start_date.isoformat() for o in event.occurrences], ['2026-09-30', '2026-10-01'])
+        self.assertEqual(assess_relevance(event, RUN).disposition, 'needs_schedule_review')
+        self.assertIn('session_window_conflict', assess_readiness(event).reasons)
+        # No synthetic two-hour slots were created.
+        self.assertEqual(len(event.occurrences), 2)
+
+    def test_matching_or_close_windows_stay_actionable(self):
+        for hours, duration in ((2, '۲ ساعت'), (1.5, '75 دقیقه'), (9, None)):
+            with self.subTest(hours=hours, duration=duration):
+                event = self.window_event(hours, duration)
+                self.assertFalse(any('session_window' in c for o in event.occurrences for c in o.diagnostics))
+                self.assertEqual(assess_relevance(event, RUN).disposition, 'actionable')
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -296,26 +365,32 @@ class LargeTimeslotExportTests(LocalCase):
         _, self.result = pipeline(collected(page(day_sessions(81, 4))))
         self.persist('slots')
         document = self.repo.load('slots')
-        record, = document['schedule_review']
-        self.assertEqual(len(record['occurrences']), 324)
+        # Validated timeslots inside the horizon make this one current Event row.
+        # The current view carries only in-horizon sessions; SQLite keeps all 324.
+        record, = document['events']
+        self.assertEqual(len(record['occurrences']), 13 * 4)
+        self.assertEqual(record['remaining_session_count'], 13 * 4)
+        self.assertEqual((record['next_session_date'], record['next_session_start_time']), ('2026-09-28', '10:00:00'))
+        stored, = self.repo.load('slots', include_filtered=True)['events']
+        self.assertEqual(len(stored['occurrences']), 324)
         paths, warnings = local_workspace(self.repo, self.book, self.root / 'exports').export('slots')
         self.assertEqual(warnings, ())
         workbook = load_workbook(self.book)
         self.addCleanup(workbook.close)
-        sheet = next(s for s in workbook if s.title.startswith('زمان‌بندی') and s.max_row > 1)
+        sheet = next(s for s in workbook if s.title.startswith('رویدادها') and s.max_row > 1)
         self.assertTrue(all(len(v) <= XLSX_CELL_LIMIT for s in workbook for row in s.iter_rows(values_only=True)
                             for v in row if isinstance(v, str)))
         restored = json.loads(overflow_value(workbook, sheet.title, record['event_id'], 'occurrences'))
         latest = self.root / 'exports' / 'latest'
         csv.field_size_limit(1_000_000)  # the reader's default; the written cell is complete
-        with (latest / 'schedule_review.csv').open(encoding='utf-8-sig', newline='') as stream:
+        with (latest / 'events.csv').open(encoding='utf-8-sig', newline='') as stream:
             row = next(r for r in csv.DictReader(stream) if r['event_id'] == record['event_id'])
-        exported = json.loads((latest / 'review.json').read_text(encoding='utf-8'))['schedule_review'][0]
+        exported = json.loads((latest / 'review.json').read_text(encoding='utf-8'))['events'][0]
         keys = lambda values: [(o['source_session_id'], o['source_timeslot_id']) for o in values]
         self.assertEqual(keys(restored), keys(record['occurrences']))
         self.assertEqual(keys(json.loads(row['occurrences'])), keys(record['occurrences']))
         self.assertEqual(keys(exported['occurrences']), keys(record['occurrences']))
-        self.assertEqual(len(set(keys(restored))), 324)
+        self.assertEqual(len(set(keys(restored))), 13 * 4)
 
 
 class RelationshipReportTests(unittest.TestCase):

@@ -60,17 +60,17 @@ class SoldOutBoundaryTests(unittest.TestCase):
                 self.assertIn('embedded_session_drift_sold_out_type', result.diagnostics)
                 self.assertEqual(result.drift_shapes[0]['keys']['soldOut']['type'], expected)
 
-    def test_upcoming_sold_out_session_is_reviewed_not_expired_and_not_a_status(self):
+    def test_upcoming_sold_out_session_stays_current_with_a_flag_not_a_status(self):
         raw = collected(page([{**SESSION, 'soldOut': True, 'remainingSeats': 0}]))
         _, outcome = pipeline(raw)
         event, = outcome.events
         self.assertIn('embedded_session_sold_out_unverified', event.occurrences[0].diagnostics)
         self.assertIs(event.occurrences[0].source_sold_out, True)
         self.assertNotEqual(event.status, EventStatus.SOLD_OUT)
+        # A sellout flag is a booking fact: never schedule review, never expiry.
         decision = assess_relevance(event, BEFORE)
-        self.assertEqual(decision.disposition, 'needs_schedule_review')
-        self.assertEqual(decision.occurrence_dispositions[0][2], 'unverified_sold_out')
-        self.assertIn('source_sold_out_unverified', assess_readiness(event).reasons)
+        self.assertEqual(decision.disposition, 'actionable')
+        self.assertIn('source_sold_out_flag', assess_readiness(event).reasons)
         # Once the session's own date has passed it is expired, sold out or not.
         self.assertEqual(assess_relevance(event, AFTER).disposition, 'expired')
 
@@ -86,10 +86,12 @@ class SoldOutBoundaryTests(unittest.TestCase):
     def test_sold_out_contradicted_by_remaining_seats_is_a_conflict(self):
         _, outcome = pipeline(collected(page([{**SESSION, 'soldOut': True}])))  # 45 seats remain
         event, = outcome.events
-        self.assertIn('embedded_session_sold_out_conflict', event.occurrences[0].diagnostics)
+        occurrence, = event.occurrences
+        self.assertIn('embedded_session_sold_out_availability_conflict', occurrence.diagnostics)
+        self.assertIsNone(occurrence.remaining_seats)  # contradicted counts are not published
         self.assertNotEqual(event.status, EventStatus.SOLD_OUT)
         self.assertIn('source_availability_conflict', assess_readiness(event).reasons)
-        self.assertEqual(assess_relevance(event, BEFORE).disposition, 'needs_schedule_review')
+        self.assertEqual(assess_relevance(event, BEFORE).disposition, 'actionable')
 
     def test_page_sold_out_wording_and_session_flag_are_not_merged(self):
         raw = collected(page([{**SESSION, 'soldOut': False}], '</div><div>تکمیل ظرفیت'))

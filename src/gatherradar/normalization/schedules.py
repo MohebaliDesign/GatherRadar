@@ -15,6 +15,7 @@ from .models import Diagnostic, Severity, TemporalResult
 from .temporal import _local_datetime, normalize_temporal
 from .text import fold
 from .times import parse_times
+from ..extraction.fields import duration_minutes
 from .dates import _DAY, _DISCRETE, _SINGLE, _WEEKDAYS, _WEEKDAY_TEXT, MONTHS
 from .ordinals import parse_day
 
@@ -28,14 +29,21 @@ UNVERIFIED_SHAPE = "embedded_session_unverified_shape"
 TIMESLOT_UNVERIFIED = "embedded_timeslot_unverified_shape"
 TIMESLOT_WINDOW_CONFLICT = "embedded_timeslot_parent_window_conflict"
 SOLD_OUT_UNVERIFIED = "embedded_session_sold_out_unverified"
-SOLD_OUT_CONFLICT = "embedded_session_sold_out_conflict"
+# Named "availability" so it never questions the session's own date.
+SOLD_OUT_CONFLICT = "embedded_session_sold_out_availability_conflict"
 SOLD_OUT = "source_session_sold_out"
-# Public session semantics confirmed by the owner's local relationship report.
-# "timeslots": a validated child timeslot inside its parent window is an
-# attendable occurrence. "sold_out": soldOut=true means the session is sold out.
-# Until a name is added here those records stay in Schedule Review; adding one
-# takes effect on an offline `refresh --stored`, with no new collection.
-VERIFIED_SESSION_SEMANTICS: frozenset[str] = frozenset()
+SESSION_WINDOW_CONFLICT = "session_window_duration_conflict"
+# Public session semantics confirmed by owner-produced local evidence.
+# "timeslots": a child timeslot that passed the collector's strict Jabama checks
+# (12 typed keys, sessionId == parent id, explicit offsets, start < end, unique
+# IDs, inside the parent window) is a dated occurrence with its own start/end.
+# Evidence: the 2026-10-29 relationship report over two saved public pages
+# (88 parents / 295 timeslots): every link, order, containment and seat-count
+# check held, all 590 endpoints were UTC "Z". This is temporal eligibility only,
+# never a claim that a seat can be booked.
+# "sold_out" (soldOut=true means sold out) stays absent: all 88 inspected
+# parents were false, so true is shown as the source's flag and never a status.
+VERIFIED_SESSION_SEMANTICS: frozenset[str] = frozenset({"timeslots"})
 
 
 def _covers(a: EventOccurrence, b: EventOccurrence) -> bool:
@@ -215,15 +223,26 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
             # Dated by the source's own session, but its unknown properties were
             # not inspected: reviewable, never actionable as is.
             own_codes.append(UNVERIFIED_SHAPE)
+        remaining_seats = session.remaining_seats
         if session.sold_out is True:
             # False proves nothing. True is a status only once its meaning is
             # verified and no seat count on the same record contradicts it.
+            # Either way it is a booking fact, never the session's expiry.
             if session.remaining_seats:
                 own_codes.append(SOLD_OUT_CONFLICT)
+                remaining_seats = None  # contradicted counts are never published
             elif "sold_out" in VERIFIED_SESSION_SEMANTICS:
                 own_codes.append(SOLD_OUT)
             else:
                 own_codes.append(SOLD_OUT_UNVERIFIED)
+        if session.source_timeslot_id is None and session.duration_hours is not None:
+            # A whole-session window much longer (or shorter) than the activity's
+            # own stated length is an opening/booking window, not attendance time:
+            # its dates stay, the exact attendance clock goes to review.
+            activity = duration_minutes(candidate.duration_text) if candidate.duration_text else None
+            window = Decimal(session.duration_hours) * 60
+            if activity and (window < activity or window >= 2 * activity and window - activity >= 60):
+                own_codes.append(SESSION_WINDOW_CONFLICT)
         if len(prices) > 1:
             own_codes.append("session_price_conflict")
             diagnostics.append(Diagnostic("session_price_conflict", "source_sessions",
@@ -245,11 +264,15 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
             price_amount=next(iter(prices)) if len(prices) == 1 and not discounted else None,
             price_per_person=session.price_per_person, unit_price=session.unit_price,
             host_discount_pct=session.host_discount_pct, platform_discount_pct=session.platform_discount_pct,
-            remaining_seats=session.remaining_seats, enabled=session.enabled,
+            remaining_seats=remaining_seats, enabled=session.enabled,
             diagnostics=tuple(own_codes), source_timeslot_id=session.source_timeslot_id,
             source_sold_out=session.sold_out, capacity_limit=session.capacity_limit,
         )
         values.append(identify_occurrence(occurrence, candidate.candidate_id))
+    if any(SESSION_WINDOW_CONFLICT in o.diagnostics for o in values):
+        diagnostics.append(Diagnostic(SESSION_WINDOW_CONFLICT, "source_sessions",
+                                      "Session windows disagree with the stated activity length; "
+                                      "the attendance clock is unresolved."))
     occurrences = tuple(sorted(values, key=lambda o: (o.start_date, o.start_time, o.occurrence_id)))
     result = TemporalResult(
         timezone=source.timezone, occurrences=occurrences,
