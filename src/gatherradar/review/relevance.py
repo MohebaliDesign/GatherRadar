@@ -161,10 +161,13 @@ def relevant_document(document: dict, *, include_filtered: bool = False) -> dict
                     datetime.combine(date.fromisoformat(o['start_date']), time.min,
                                      tzinfo=ZoneInfo(o['timezone'])), o['occurrence_id']))
             next_session = upcoming[0] if upcoming else {}
+            # An ongoing range has no countable instances: "not applicable"
+            # (null), never a misleading zero remaining sessions.
+            countable = any(not o.get('end_date') for o in projected['occurrences'])
             projected.update(next_session_date=next_session.get('start_date'),
                 next_session_start_time=next_session.get('start_time'),
                 next_session_end_time=next_session.get('end_time'),
-                remaining_session_count=len(upcoming))
+                remaining_session_count=len(upcoming) if countable else None)
             actionable.append(projected)
         elif decision_record['disposition'] == 'needs_schedule_review':
             review.append(projected)

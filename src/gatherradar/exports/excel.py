@@ -211,7 +211,7 @@ class ExcelReviewExporter:
                     event_rows.append([values[h] for h in LOCAL_EVENT_VISIBLE] +
                         [jalali(datetime.fromisoformat(item['next_session_date']).date()) if item.get('next_session_date') else '',
                          persian((item.get('next_session_start_time') or '')[:5]),
-                         persian((item.get('next_session_end_time') or '')[:5]), item.get('remaining_session_count', 0),
+                         persian((item.get('next_session_end_time') or '')[:5]), item.get('remaining_session_count'),
                          item.get('location_context') or ''] +
                         (links + [''] * (link_count-len(links)) if link_count else []) +
                         [values[h] for h in EVENT_HEADERS[len(EVENT_VISIBLE):]] +

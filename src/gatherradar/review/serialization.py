@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -141,7 +141,10 @@ def event_row(event: Event, run_id: str, human: tuple[str, str] | None = None) -
 
 def occurrence_text(event: Event) -> str:
     rows = []
-    for occurrence in event.occurrences:
+    # Chronological for reading; stored occurrence order and identity are unchanged.
+    ordered = sorted(event.occurrences, key=lambda o: (o.start_date, o.start_time is None,
+                                                       o.start_time or time.min, o.occurrence_id))
+    for occurrence in ordered:
         text = jalali(occurrence.start_date)
         if occurrence.end_date:
             text += ' تا ' + jalali(occurrence.end_date)
