@@ -24,6 +24,9 @@ _SESSION_CLOCKS = re.compile(
 )
 
 
+UNVERIFIED_SHAPE = "embedded_session_unverified_shape"
+
+
 def _covers(a: EventOccurrence, b: EventOccurrence) -> bool:
     if (a.end_date is None) != (b.end_date is None):
         return False
@@ -57,6 +60,12 @@ def _overlay_sessions(primary: TemporalResult, schedule: TemporalResult) -> Temp
                 for field in ("end_date", "start_time", "end_time", "starts_at", "ends_at")
                 if getattr(value, field) is None and getattr(matching[0], field) is not None
             })
+            if (UNVERIFIED_SHAPE in value.diagnostics and matching[0].start_time is not None
+                    and matching[0].start_time == value.start_time):
+                # The page's own visible date and clock state this session, so its
+                # date is not in doubt; its price/availability were never read.
+                value = replace(value, diagnostics=tuple(sorted(
+                    (set(value.diagnostics) - {UNVERIFIED_SHAPE}) | {"embedded_session_corroborated_by_page_text"})))
         values.append(value)
     values.extend(a for a in primary.occurrences if not any(compatible(a, b) for b in schedule.occurrences))
     values.sort(key=lambda o: (o.start_date, o.start_time is None, o.start_time or datetime.min.time(), o.occurrence_id))
@@ -184,7 +193,7 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
         if session.schema_status is not None:
             # Dated by the source's own session, but its unknown properties were
             # not inspected: reviewable, never actionable as is.
-            own_codes.append("embedded_session_unverified_shape")
+            own_codes.append(UNVERIFIED_SHAPE)
         if len(prices) > 1:
             own_codes.append("session_price_conflict")
             diagnostics.append(Diagnostic("session_price_conflict", "source_sessions",

@@ -130,6 +130,29 @@ class JabamaSessionDriftTests(unittest.TestCase):
         again = collected(self.page(newShape=1, pricePerPerson=999))
         self.assertEqual(raw.content_hash, again.content_hash)  # stable rerun
 
+    def test_unverified_sessions_matching_visible_page_dates_stay_actionable(self):
+        from datetime import datetime, timezone
+        from test_jabama_session_pipeline import collected, pipeline
+        from test_jabama_sessions import SESSION, _page
+        from gatherradar.review.relevance import assess_relevance
+        sessions = [{**SESSION, 'id': 'a', 'startIso': '2026-09-30T11:30:00Z', 'newShape': 1},
+                    {**SESSION, 'id': 'b', 'startIso': '2026-10-01T11:30:00Z', 'newShape': 1}]
+        page = _page(sessions).replace('<h1>کارگاه نمونه</h1>', '<h1>کارگاه نمونه</h1><p>۸ و ۹ مهر - ساعت ۱۵ الی ۱۷</p>')
+        _, result = pipeline(collected(page))
+        event, = result.events
+        self.assertEqual([(o.source_session_id, o.start_time.isoformat()) for o in event.occurrences],
+                         [('a', '15:00:00'), ('b', '15:00:00')])
+        self.assertTrue(all('embedded_session_corroborated_by_page_text' in o.diagnostics for o in event.occurrences))
+        self.assertTrue(all(o.price_amount is None for o in event.occurrences))
+        run = datetime(2026, 9, 26, tzinfo=timezone.utc)
+        self.assertEqual(assess_relevance(event, run).disposition, 'actionable')
+        # A session at a clock the page does not state stays unverified.
+        sessions[1] = {**sessions[1], 'startIso': '2026-10-01T14:30:00Z'}
+        page = _page(sessions).replace('<h1>کارگاه نمونه</h1>', '<h1>کارگاه نمونه</h1><p>۸ و ۹ مهر - ساعت ۱۵ الی ۱۷</p>')
+        _, result = pipeline(collected(page))
+        event, = result.events
+        self.assertTrue(any('embedded_session_unverified_shape' in o.diagnostics for o in event.occurrences))
+
     def test_unreadable_sessions_route_to_schedule_review_with_explicit_reason(self):
         from test_jabama_session_pipeline import collected, pipeline
         from gatherradar.review.readiness import DataReadiness, REASON_LABELS, assess_readiness
