@@ -379,7 +379,7 @@ def venue_name(found: SignalSet) -> str | None:
     compound = _compound_location(found)
     return ((compound[1] if compound else None) or _visual_venue(found) or _corroborated_venue(found)
             or _address_agreed_venue(found) or _natural_venue(found) or _trailing_head_venue(found)
-            or _standalone_venue_line(found))
+            or _standalone_venue_line(found) or _address_component_venue(found))
 
 
 def _compound_location(found: SignalSet) -> tuple[str, str, str] | None:
@@ -437,6 +437,7 @@ _VENUE_HEADS = _folded_tokens(rules.NATURAL_VENUE_HEADS)
 _GENERIC_VENUE_HEADS = _folded_tokens(rules.GENERIC_VENUE_HEADS)
 _VENUE_BRANCHES = _folded_tokens(rules.VENUE_BRANCH_TERMS)
 _VENUE_HOLDING = frozenset(normalize(term) for term in rules.VENUE_HOLDING_TERMS)
+_VENUE_PRESENCE = frozenset(normalize(term) for term in rules.VENUE_PRESENCE_PREDICATES)
 _NOT_A_NAME = (frozenset(normalize(word) for word in rules.NAME_STOPWORDS | rules.VENUE_NAME_STOPWORDS)
                | frozenset(t for phrase in rules.DATE_TERMS for t in phrase_tokens(phrase)) | CITY_TOKENS)
 _PAST_CLAUSE = re.compile(r"(?<!\w)(?:قبلی|گذشته|پیشین|قبلا|بودیم|previous|last)(?!\w)")
@@ -557,6 +558,11 @@ def _natural_venue(found: SignalSet) -> str | None:
         after = last < len(tokens) and tokens[last].text in _VENUE_HOLDING and not _crosses(text, end, tokens[last].start)
         after = after or bool(intro and found.dates and _phrase_at(
             tokens, last, _folded_tokens(rules.VENUE_ATTENDANCE_SUFFIXES), text))
+        # "از ۶ تا ۸ آبان، توی عمارت زیرخاکی منتظر …": the clause gives the
+        # event's own dates and the name is directly followed by a presence verb.
+        after = after or bool(intro and last < len(tokens) and not _crosses(text, end, tokens[last].start)
+                              and tokens[last].text in _VENUE_PRESENCE
+                              and any(clause[0] <= s.start < clause[1] for s in found.dates))
         hosted = intro and tokens[index].text.startswith("میزبان")
         in_clause = hosted or any(clause[0] <= s.start < clause[1] for s in attendance)
         rest = (text[line_start:tokens[index].start] + " " + text[end:line_end])
@@ -656,6 +662,53 @@ def _address_agreed_venue(found: SignalSet) -> str | None:
     return None
 
 
+def _address_component_venue(found: SignalSet) -> str | None:
+    """A prose "در/توی <name>" that is a building named in the labelled address.
+
+    "توی فصل پنجم ایونت ویرا در تیدا سنتر، قراره …" plus an address component
+    "مجتمع تجاری تیدا سنتر": the event clause places itself at exactly the name
+    that the address gives a building head. The prose wording is the venue; the
+    building, floor and street stay in the address. The clause must carry an
+    event noun or the event's dates and must not be about an office, sponsor
+    or the past. A name without such an address component is not enough.
+    """
+    street_address = address(found)
+    if not street_address or not has_address_detail(street_address):
+        return None
+    heads = sorted((tuple(phrase_tokens(h)) for h in rules.ADDRESS_BUILDING_HEADS), key=len, reverse=True)
+    buildings = set()
+    for part in re.split("[،,]", street_address):
+        words = tuple(phrase_tokens(part.strip(_TRIM)))
+        head = next((h for h in heads if words[:len(h)] == h), None)
+        if head and 1 <= len(words) - len(head) <= 4:
+            buildings.add(words[len(head):])
+    if not buildings:
+        return None
+    span = _labelled_span(found, "address") or _ambiguous_venue_address_span(found)
+    nouns = tuple(normalize(n) for n in rules.DURATION_EVENT_NOUNS)
+    values = {}
+    for name in buildings:
+        if any(token in CITY_TOKENS for token in name):
+            continue
+        pattern = (r"(?<![\w‌])(?:در|توی)\s+(" + r"\s+".join(re.escape(t) for t in name)
+                   + r")(?=\s*[،,.!؛\n]|\s+(?:" + "|".join(re.escape(normalize(p)) for p in
+                                                      (*rules.VENUE_PRESENCE_PREDICATES, *rules.VENUE_HOLDING_TERMS))
+                   + r")(?!\w))")
+        for match in re.finditer(pattern, found.normalized):
+            if span is not None and span[0] <= match.start() < span[1]:
+                continue
+            bounds = _clause_bounds(found.text, match.start())
+            clause = found.normalized[slice(*bounds)]
+            if _PAST_CLAUSE.search(clause) or _OFFICE_OR_SPONSOR.search(clause):
+                continue
+            if not (any(noun in clause for noun in nouns)
+                    or any(bounds[0] <= s.start < bounds[1] for s in found.dates)):
+                continue
+            value = found.text[match.start(1):match.end(1)]
+            values.setdefault(" ".join(name), value)
+    return next(iter(values.values())) if len(values) == 1 else None
+
+
 def _standalone_venue_line(found: SignalSet) -> str | None:
     """A whole line "در/توی <head> <name>" directly under an event title line.
 
@@ -728,8 +781,11 @@ def city(found: SignalSet) -> str | None:
         for token in found.tokens:
             if address_start <= token.start < address_end and token.text in CITY_TOKENS:
                 return found.text[token.start : token.end]
+    # A promotional hashtag or handle ("#ایونت_تهران") does not say where the
+    # event is; only ordinary written text can.
+    tags = [m.span() for m in re.finditer(r"[#@][\w‌]+", found.text)]
     for token in found.tokens:
-        if token.text in CITY_TOKENS:
+        if token.text in CITY_TOKENS and not any(a <= token.start < b for a, b in tags):
             return found.text[token.start : token.end]
     return _explicit_event_city(found)
 
@@ -929,8 +985,10 @@ _LENGTH = re.compile(r"(?:(?P<number>\d{1,3}|" + "|".join(_LENGTH_WORDS) + r")\s
 
 
 def duration_minutes(value: str) -> int | None:
-    """Minutes of an explicit length ("۲ ساعت", "یک ساعت و نیم", "۹۰ دقیقه"), else None."""
-    folded = " ".join(normalize(value).split())
+    """Minutes of an explicit length ("۲ ساعت", "یک ساعت و نیم", "۹۰ دقیقه",
+    "سه‌ساعته"), else None."""
+    folded = " ".join(normalize(value).replace("‌", " ").split())
+    folded = re.sub(r"(ساعت|دقیقه)(?:ه|\s?ای)$", r"\1", folded)
     if folded in {"نیم ساعت"}:
         return 30
     match = _LENGTH.fullmatch(folded)
@@ -943,10 +1001,16 @@ def duration_minutes(value: str) -> int | None:
 
 
 def narrative_durations(found: SignalSet) -> tuple[str, ...]:
-    """Lengths stated in prose as "به مدت <length>", exactly as written."""
+    """Lengths stated in prose, exactly as written: "به مدت <length>", or a
+    length adjective directly after an activity noun ("تجربه‌ای سه‌ساعته")."""
     values = []
     for match in re.finditer(r"(?<!\w)به\s+مدت\s+((?:\d{1,3}|" + "|".join(_LENGTH_WORDS)
                              + r"|نیم)\s*(?:ساعت|دقیقه)(?:\s*و\s*نیم)?)(?!\w)", found.normalized):
+        values.append(found.text[match.start(1):match.end(1)])
+    nouns = "|".join(re.escape(normalize(n)) for n in (*rules.DURATION_EVENT_NOUNS, *rules.NARRATIVE_DURATION_NOUNS))
+    numbers = "|".join(re.escape(w) for w in _LENGTH_WORDS)
+    for match in re.finditer(r"(?<!\w)(?:" + nouns + r")(?:[\s‌]?ای)?\s+((?:\d{1,2}|" + numbers
+                             + r")[\s‌]?(?:ساعته|دقیقه‌ای|دقیقه ای))(?!\w)", found.normalized):
         values.append(found.text[match.start(1):match.end(1)])
     return tuple(dict.fromkeys(values))
 

@@ -65,11 +65,22 @@ INDICATOR_LABELS = {
 }
 
 
+# Persian names for fields whose disagreeing source wordings are shown verbatim.
+CONFLICT_FIELD_LABELS = {
+    "duration_text": "مدت", "price_text": "هزینه", "source_date_text": "تاریخ", "availability_text": "ظرفیت",
+    "venue_name": "مکان", "address": "آدرس", "area_text": "محله", "city": "شهر",
+    "organizer_name": "برگزارکننده", "registration_url": "پیوند ثبت‌نام", "description_text": "توضیحات",
+    "source_category_text": "دسته‌بندی منبع", "event_format": "فرمت",
+}
+
+
 @dataclass(frozen=True)
 class ReadinessAssessment:
     status: DataReadiness
     reasons: tuple[str, ...]
     indicators: tuple[str, ...]
+    # Plain-language source facts behind the reasons (e.g. both conflicting values).
+    details: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
@@ -77,7 +88,16 @@ class ReadinessAssessment:
 
     @property
     def explanation(self) -> str:
-        return "؛ ".join(REASON_LABELS[r] for r in self.reasons)
+        return "؛ ".join((*(REASON_LABELS[r] for r in self.reasons), *self.details))
+
+
+def conflict_details(event: Event) -> tuple[str, ...]:
+    """"مدت در منبع: «۲ ساعت» / «سه‌ساعته»" for every field left null by a conflict."""
+    grouped: dict[str, list[str]] = {}
+    for field, value in event.conflicting_values:
+        grouped.setdefault(field, []).append(value)
+    return tuple(f"{CONFLICT_FIELD_LABELS.get(field, field)} در منبع: " + " / ".join(f"«{v}»" for v in values)
+                 for field, values in grouped.items() if len(values) > 1)
 
 
 def _valid_url(value: str) -> bool:
@@ -196,7 +216,7 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
     else:
         status = DataReadiness.READY
         reasons.append("supported_facts_preserved")
-    return ReadinessAssessment(status, tuple(dict.fromkeys(reasons)), tuple(indicators))
+    return ReadinessAssessment(status, tuple(dict.fromkeys(reasons)), tuple(indicators), conflict_details(event))
 
 
 def readiness_record(event: Event, *, source_unavailable: bool = False,

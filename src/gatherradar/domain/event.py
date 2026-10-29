@@ -123,6 +123,9 @@ class Event:
     evidence_fragment_ids: tuple[str, ...] = ()
     title_review_required: bool = False
     event_detection_reason: str | None = None
+    # Disagreeing source wordings (field, value) behind a `source_field_conflict`
+    # whose field stayed null: both assertions are kept, neither is chosen.
+    conflicting_values: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.event_id.strip() or not self.canonical_source_url.strip():

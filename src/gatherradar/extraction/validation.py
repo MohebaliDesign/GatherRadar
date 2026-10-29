@@ -13,6 +13,7 @@ _TEXT_FIELDS = tuple(
     field.name
     for field in fields(DiscoveryFacts)
     if field.name not in ("discovery_type", "extraction_confidence", "evidence", "field_conflicts",
+                          "field_conflict_values",
                           "reference_urls", "extraction_diagnostics", "source_sessions",
                           "source_session_diagnostics", "title_review_required")
 )
@@ -97,6 +98,12 @@ def validate_discovery_facts(facts: object) -> DiscoveryFacts:
         raise InvalidExtractionOutputError("field_conflicts must name distinct, unset text fields")
     if conflicts and facts.discovery_type is not DiscoveryType.EVENT:
         raise InvalidExtractionOutputError("field_conflicts are only reported for events")
+    values = facts.field_conflict_values
+    if not isinstance(values, tuple) or any(
+            not isinstance(item, tuple) or len(item) != 2 or item[0] not in conflicts
+            or not isinstance(item[1], str) or not item[1].strip() or len(item[1]) > 500
+            for item in values) or len(set(values)) != len(values):
+        raise InvalidExtractionOutputError("field_conflict_values must be distinct source wordings of conflicts")
 
     _reject_mismatched_fields(facts.discovery_type, cleaned)
     return replace(facts, **cleaned)

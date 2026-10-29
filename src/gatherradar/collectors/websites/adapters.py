@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
-from ...domain.website import MAX_CARD_TEXT, SourceSession, WebsiteConfig
+from ...domain.website import MAX_CARD_TEXT, SourceSession, WebsiteConfig, is_source_slice
 from ..base import SourceConfigurationError, SourceUnavailableError
 from .html import Node, content_text, excluded, parse_html
 from .transport import Page
@@ -59,7 +59,7 @@ class WebsiteAdapter(Protocol):
 def _verified(fields: Fields, text: str) -> Fields:
     """Keep only structural values that are exact, bounded slices of retained text."""
     return tuple(dict.fromkeys((name, value) for name, value in fields
-                               if value and value.strip() and value in text))
+                               if value and value.strip() and is_source_slice(name, value, text)))
 
 
 class GenericAdapter:
@@ -358,15 +358,17 @@ class JabamaAdapter(GenericAdapter):
         return tuple(fields)
 
     def _description(self, article: Node) -> str | None:
-        """The About body, followed by directly adjacent program sections.
+        """The About body plus the article's program sections, in page order.
 
         Observed pages put the activity program ("چه برنامه‌ای داریم؟") in its own
-        section right after About. Its heading is kept as a legible separator, in
-        page order. Only article sections are read (organizer, reviews, booking
-        aside and navigation are never descendants). A program separated from
-        About by another section, an unrecognized heading or a missing About body
-        keeps the previous About-only value: the combined text must remain one
-        exact contiguous slice of retained detail text.
+        section, usually right after About. Its heading is kept as a legible
+        separator. Only article sections are read (organizer, reviews, booking
+        aside and navigation are never descendants) and only sections headed as a
+        program join; any other section (venue, rules, biography) is skipped.
+        Adjacent sections form one exact contiguous slice of the retained text. A
+        program separated from About by another section is its own exact slice,
+        joined after a blank line, so no contiguous span is implied. Repeated
+        blocks are kept once; a missing About body yields no description.
         """
         sections = [node for node in article.walk() if node.tag == 'section' and not self.skip(node)]
         headed = [(section, heads[0]) for section in sections if (heads := section.select('h2'))]
@@ -376,19 +378,32 @@ class JabamaAdapter(GenericAdapter):
         if len(bodies) != 1 or not (about := content_text(bodies[0][1], self.skip)):
             return None
         start, body_node = bodies[0]
-        parts: list[Node | str] = [body_node]
+        groups: list[list[Node | str]] = [[body_node]]
+        adjacent, seen = True, {about}
         for section, head in headed[start + 1:]:
             if not _PROGRAM_HEADING.fullmatch(_folded(content_text(head))):
-                break
+                adjacent = False
+                continue
             body = [child for child in section.children if child is not head]
-            if not content_text(Node('div', {}, body), self.skip):
-                break
-            parts.extend((head, *body))
-        if len(parts) == 1:
-            return about
-        combined = content_text(Node('div', {}, parts), self.skip)
+            text = content_text(Node('div', {}, body), self.skip)
+            if not text or text in seen:
+                adjacent = False
+                continue
+            seen.add(text)
+            if adjacent:
+                groups[-1].extend((head, *body))
+            else:
+                groups.append([head, *body])
+                adjacent = True
         retained = content_text(article, self.skip)
-        return combined if combined in retained else about
+        pieces = []
+        for index, group in enumerate(groups):
+            text = content_text(Node('div', {}, group), self.skip)
+            if text in retained:
+                pieces.append(text)
+            elif index == 0:
+                pieces.append(about)
+        return '\n\n'.join(pieces)
 
     def card_fields(self, card: Node) -> Fields:
         fields: list[tuple[str, str]] = []

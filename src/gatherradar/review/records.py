@@ -75,6 +75,8 @@ def event_from_record(record: dict) -> Event:
     values['channel_provenance'] = tuple(ChannelProvenance(**p) for p in values.get('channel_provenance', ()))
     values['schedule_kind'] = ScheduleKind(values.get('schedule_kind', 'unknown'))
     values['occurrences'] = tuple(occurrence_from_record(p) for p in values.get('occurrences', ()))
+    # Absent in records persisted before conflicting source wordings were kept.
+    values['conflicting_values'] = tuple(tuple(pair) for pair in values.get('conflicting_values', ()))
     return Event(**values)
 
 

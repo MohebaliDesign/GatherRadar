@@ -33,7 +33,11 @@ class JabamaProgramDescriptionTests(unittest.TestCase):
         detail = self.adapter.extract(Page(PROGRAM_URL, page), J_LIST)
         found = dict(detail.fields)
         if 'description_text' in found:
-            self.assertIn(found['description_text'], detail.text)  # exact retained slice
+            # Each blank-line-separated part is an exact retained slice, in order.
+            position = 0
+            for part in found['description_text'].split('\n\n'):
+                self.assertIn(part, detail.text[position:])
+                position = detail.text.index(part, position) + len(part)
         return found.get('description_text')
 
     def test_about_and_program_in_page_order_without_unrelated_copy(self):
@@ -56,11 +60,26 @@ class JabamaProgramDescriptionTests(unittest.TestCase):
         variants = {
             'renamed': page.replace('چه برنامه‌ای داریم؟', 'قوانین لغو'),
             'empty': page.replace(program, '<section><h2>چه برنامه‌ای داریم؟</h2><div></div></section>'),
-            'detached': page.replace(program, '').replace(venue, venue + program),
         }
         for name, variant in variants.items():
             with self.subTest(name):
                 self.assertEqual(tuple(self.description(variant).splitlines()), ABOUT_LINES)
+
+    def test_program_separated_by_another_section_joins_as_its_own_slice(self):
+        page = html('jabama-program-detail.html')
+        venue = page[page.index('<section class="mt-[34px]"><h2 class="text-[18px] font-extrabold">محل برگزاری'):]
+        venue = venue[:venue.index('</button></div></div></section>') + len('</button></div></div></section>')]
+        program = page[page.index('<section class="mt-[34px]"><h2 class="text-[18px] font-extrabold">چه برنامه'):]
+        program = program[:program.index('</section>') + len('</section>')]
+        detached = self.description(page.replace(program, '').replace(venue, venue + program))
+        about, separate = detached.split('\n\n')
+        self.assertEqual(tuple(about.splitlines()), ABOUT_LINES)
+        self.assertEqual(tuple(separate.splitlines()), PROGRAM_LINES)
+        for foreign in ('محل برگزاری', 'بیوگرافی', 'رویدادهای مشابه', 'تومان'):
+            self.assertNotIn(foreign, detached)
+        # A repeated program block is kept once.
+        repeated = self.description(page.replace(venue, venue + program))
+        self.assertEqual(repeated.count(PROGRAM_LINES[1]), 1)
 
     def test_program_without_rich_text_wrapper_and_question_mark_variant(self):
         page = html('jabama-program-detail.html').replace('چه برنامه‌ای داریم؟', 'چه برنامه ای داریم?')

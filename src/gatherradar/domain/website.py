@@ -45,6 +45,23 @@ def parse_source_instant(value: object) -> datetime:
     return instant
 
 
+def is_source_slice(name: str, value: str, text: str) -> bool:
+    """A structural value is an exact slice of retained text. A description made
+    of separate page sections may instead be blank-line-separated parts that are
+    each an exact slice, in page order (no contiguous span is implied)."""
+    if value in text:
+        return True
+    if name != 'description_text' or '\n\n' not in value:
+        return False
+    position = 0
+    for part in value.split('\n\n'):
+        found = text.find(part, position) if part.strip() else -1
+        if found < 0:
+            return False
+        position = found + len(part)
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class SourceSession:
     """Whitelisted facts from one public website session, before normalization.

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from collections.abc import Callable
 
 from ..domain import RawItem, Source, SourceType, compute_content_hash
-from ..domain.website import STRUCTURED_FIELDS
+from ..domain.website import STRUCTURED_FIELDS, is_source_slice
 from .base import (CollectionResult, ItemFailure, SourceAccessRestrictedError, SourceDisabledError, safe_failure,
                    SourceTypeMismatchError, SourceUnavailableError)
 from .websites.adapters import WebsiteAdapter, build_adapter
@@ -76,7 +76,7 @@ class WebsiteCollector:
                 fields = [{'name': name, 'value': value, 'origin': origin}
                           for origin, pairs, text in (('detail', detail.fields, detail.text),
                                                       ('listing', card.fields if card else (), card.text if card else ''))
-                          for name, value in pairs if name in STRUCTURED_FIELDS and value in text]
+                          for name, value in pairs if name in STRUCTURED_FIELDS and is_source_slice(name, value, text)]
                 sessions = [session.to_dict() for session in detail.sessions]
                 # A verified heading, the item's own listing card and structural
                 # fields are material extraction evidence. They join observation

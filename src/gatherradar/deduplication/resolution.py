@@ -263,5 +263,8 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
         diagnostics=tuple(sorted(set(diagnostics), key=lambda d: (d.code, d.field, d.candidate_ids))),
         reference_urls=tuple(dict.fromkeys(u for c in ordered for u in getattr(c.candidate, "reference_urls", ()))),
         channel_provenance=tuple(sorted({channel_provenance(c) for c in members}, key=lambda p: p.candidate_id)),
+        conflicting_values=tuple(dict.fromkeys(
+            (field, value) for c in ordered for field, value in getattr(c.candidate, "field_conflict_values", ())
+            if values.get(field) is None)),
         **values,
     )
