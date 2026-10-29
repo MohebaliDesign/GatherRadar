@@ -104,7 +104,8 @@ def _source_sessions(raw_item: RawItem) -> tuple[tuple[SourceSession, ...], tupl
     allowed = {'embedded_sessions_absent', 'embedded_sessions_empty',
                'embedded_session_schema_drift', 'embedded_sessions_schema_drift',
                'embedded_session_identity_conflict', 'embedded_session_price_unit_unknown',
-               'embedded_session_discount_unresolved'}
+               'embedded_session_discount_unresolved', 'embedded_session_drift_new_properties',
+               'embedded_session_drift_timeslots', 'embedded_session_drift_field'}
     reported = metadata.get('source_session_diagnostics', [])
     diagnostics = tuple(value for value in reported if isinstance(value, str) and value in allowed) if isinstance(reported, list) else ()
     values = metadata.get('source_sessions', [])

@@ -29,15 +29,25 @@ _SESSION_KEYS = frozenset((*_FIELDS, 'capacityLimit', 'bookedCount', 'inventoryM
                            'layoutId', 'timeslots', 'hostDiscountPct', 'platformDiscountPct'))
 
 
+_DRIFT_KEY = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,39}')
+_MAX_DRIFT_KEYS = 20
+
+
 @dataclass(frozen=True, slots=True)
 class SessionResult:
     sessions: tuple[SourceSession, ...] = ()
     diagnostics: tuple[str, ...] = ()
     present: bool = False
+    # Names only (never values) of unexpected session properties, so the owner
+    # can report a new public shape without sharing page data.
+    drift_keys: tuple[str, ...] = ()
 
 
 class _SchemaError(ValueError):
-    pass
+    def __init__(self, message: str, reason: str = 'field', keys: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.keys = keys
 
 
 def _object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -111,14 +121,15 @@ def _session(table: _Table, reference: object, event_id: str, index: int) -> Sou
     obj = table.object(reference)
     # Extra session properties can change booking semantics, unlike unrelated
     # event fields. Refuse until their meaning is inspected and fixture-backed.
-    if set(obj) - _SESSION_KEYS:
-        raise _SchemaError('new session properties')
+    if extra := set(obj) - _SESSION_KEYS:
+        keys = tuple(sorted(key for key in extra if _DRIFT_KEY.fullmatch(key)))[:_MAX_DRIFT_KEYS]
+        raise _SchemaError('new session properties', 'new_properties', keys)
     values = {key: table.scalar(obj, key, required=key in ('id', 'eventId', 'startIso'))
               for key in _FIELDS}
     if values['eventId'] != event_id:
         raise _SchemaError('session belongs to a different event')
     if 'timeslots' not in obj or table.value(obj['timeslots']) != []:
-        raise _SchemaError('unsupported session timeslots')
+        raise _SchemaError('unsupported session timeslots', 'timeslots')
     # A session discount changes the meaning of its base price. Retain the
     # schedule but omit neither ambiguity nor the price silently.
     for key in ('hostDiscountPct', 'platformDiscountPct'):
@@ -178,6 +189,7 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
         sessions: dict[str, SourceSession] = {}
         conflicts: set[str] = set()
         diagnostics: list[str] = []
+        drift_keys: set[str] = set()
         for index, reference in enumerate(refs):
             try:
                 session = _session(table, reference, event_id, index)
@@ -196,9 +208,14 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
                 if any(table.scalar(obj, key) not in (None, 0)
                        for key in ('hostDiscountPct', 'platformDiscountPct')):
                     diagnostics.append('embedded_session_discount_unresolved')
-            except (ValueError, KeyError, TypeError, OverflowError):
+            except (ValueError, KeyError, TypeError, OverflowError) as error:
+                # The generic code stays for compatibility; a specific, value-free
+                # code says which documented expectation the public shape broke.
                 diagnostics.append('embedded_session_schema_drift')
+                diagnostics.append('embedded_session_drift_' + getattr(error, 'reason', 'field'))
+                drift_keys.update(getattr(error, 'keys', ()))
         return SessionResult(tuple(value for key, value in sessions.items() if key not in conflicts),
-                             tuple(dict.fromkeys(diagnostics)), True)
+                             tuple(dict.fromkeys(diagnostics)), True,
+                             tuple(sorted(drift_keys))[:_MAX_DRIFT_KEYS])
     except (ValueError, KeyError, TypeError, OverflowError, RecursionError):
         return SessionResult(diagnostics=('embedded_sessions_schema_drift',), present=True)

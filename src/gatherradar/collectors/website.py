@@ -86,7 +86,9 @@ class WebsiteCollector:
                             + ('\x1ffields:' + json.dumps(fields, ensure_ascii=False, sort_keys=True) if fields else '')
                             + ('\x1fsessions:' + json.dumps(sessions, ensure_ascii=False, sort_keys=True) if sessions else '')
                             + ('\x1fsession_diagnostics:' + json.dumps(detail.session_diagnostics)
-                               if detail.session_diagnostics else ''))
+                               if detail.session_diagnostics else '')
+                            + ('\x1fsession_drift_keys:' + json.dumps(detail.session_drift_keys)
+                               if detail.session_drift_keys else ''))
                 item = RawItem(
                     id=identity, source_id=source.id, source_type=SourceType.WEBSITE,
                     external_id=detail.external_id, content_type='webpage',
@@ -103,7 +105,9 @@ class WebsiteCollector:
                         'source_fields': fields,
                         **({'source_sessions': sessions,
                             'source_session_diagnostics': list(detail.session_diagnostics),
-                            'source_session_schema': 'jabama-react-router/1'}
+                            'source_session_schema': 'jabama-react-router/1',
+                            **({'source_session_drift_keys': list(detail.session_drift_keys)}
+                               if detail.session_drift_keys else {})}
                            if detail.sessions or detail.session_diagnostics else {}),
                         **({'acquisition_strategy': 'linked_page', 'linked_from': list(linked_from.get(url, ()))}
                            if linked_from is not None else {}),

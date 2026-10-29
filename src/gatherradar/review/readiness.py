@@ -33,6 +33,7 @@ REASON_LABELS = {
     "missing_title": "عنوان قابل اتکا مشخص نیست",
     "invalid_source_url": "پیوند منبع معتبر نیست",
     "missing_schedule": "تاریخ یا زمان‌بندی مشخص نیست",
+    "source_sessions_unreadable": "جلسه‌های صفحه منبع در قالب جدیدی منتشر شده و خوانده نشد؛ تاریخ‌ها را در صفحه منبع بررسی کنید",
     "unresolved_schedule": "زمان‌بندی به بررسی نیاز دارد",
     "inferred_year": "سال تاریخ نیاز به تأیید دارد",
     "temporal_conflict": "شواهد زمان‌بندی ناسازگار است",
@@ -134,6 +135,11 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
     if evidence_incomplete or any("ocr" in c and ("failed" in c or "incomplete" in c) for c in codes):
         indicators.append("ocr_evidence_incomplete")
         reasons.append("evidence_incomplete")
+    if any("session_schema_drift" in c or "sessions_schema_drift" in c for c in codes) and not any(
+            o.source_session_id for o in event.occurrences):
+        # Public session data exists but its shape is unsupported: never guess
+        # dates, but say where the dates are instead of only "missing".
+        reasons.append("source_sessions_unreadable")
     if schedule_unresolved:
         reasons.append("unresolved_schedule" if event.source_schedule_text or event.source_date_text
                        or event.occurrences else "missing_schedule")

@@ -35,6 +35,7 @@ class WebsiteDetail:
     fields: Fields = ()
     sessions: tuple[SourceSession, ...] = ()
     session_diagnostics: tuple[str, ...] = ()
+    session_drift_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -293,6 +294,7 @@ class JabamaAdapter(GenericAdapter):
         detail = super().extract(page, source_url)
         embedded = extract_sessions(parse_html(page.html), page.url)
         return replace(detail, sessions=embedded.sessions, session_diagnostics=embedded.diagnostics,
+                       session_drift_keys=embedded.drift_keys,
                        structured_data_present=detail.structured_data_present or embedded.present)
 
     def _article(self, root: Node) -> Node:
@@ -336,10 +338,7 @@ class JabamaAdapter(GenericAdapter):
     def detail_fields(self, root: Node, regions: list[Node]) -> Fields:
         article = self._article(root)
         fields: list[tuple[str, str]] = []
-        abouts = [section for section in article.select('section')
-                  if (heads := section.select('h2')) and _folded(content_text(heads[0])).startswith('درباره این')]
-        bodies = [node for section in abouts for node in section.select('.rich-text-content')]
-        if len(bodies) == 1 and (description := content_text(bodies[0], self.skip)):
+        if description := self._description(article):
             fields.append(('description_text', description))
         if organizer := self._organizer(article):
             fields.append(('organizer_name', content_text(organizer[1])))
@@ -356,6 +355,39 @@ class JabamaAdapter(GenericAdapter):
         if len(lengths) == 1:
             fields.append(('duration_text', lengths[0]))
         return tuple(fields)
+
+    def _description(self, article: Node) -> str | None:
+        """The About body, followed by directly adjacent program sections.
+
+        Observed pages put the activity program ("چه برنامه‌ای داریم؟") in its own
+        section right after About. Its heading is kept as a legible separator, in
+        page order. Only article sections are read (organizer, reviews, booking
+        aside and navigation are never descendants). A program separated from
+        About by another section, an unrecognized heading or a missing About body
+        keeps the previous About-only value: the combined text must remain one
+        exact contiguous slice of retained detail text.
+        """
+        sections = [node for node in article.walk() if node.tag == 'section' and not self.skip(node)]
+        headed = [(section, heads[0]) for section in sections if (heads := section.select('h2'))]
+        abouts = [index for index, (_, head) in enumerate(headed)
+                  if _folded(content_text(head)).startswith('درباره این')]
+        bodies = [(index, node) for index in abouts for node in headed[index][0].select('.rich-text-content')]
+        if len(bodies) != 1 or not (about := content_text(bodies[0][1], self.skip)):
+            return None
+        start, body_node = bodies[0]
+        parts: list[Node | str] = [body_node]
+        for section, head in headed[start + 1:]:
+            if not _PROGRAM_HEADING.fullmatch(_folded(content_text(head))):
+                break
+            body = [child for child in section.children if child is not head]
+            if not content_text(Node('div', {}, body), self.skip):
+                break
+            parts.extend((head, *body))
+        if len(parts) == 1:
+            return about
+        combined = content_text(Node('div', {}, parts), self.skip)
+        retained = content_text(article, self.skip)
+        return combined if combined in retained else about
 
     def card_fields(self, card: Node) -> Fields:
         fields: list[tuple[str, str]] = []
@@ -376,6 +408,11 @@ class JabamaAdapter(GenericAdapter):
         return (super().skip(node) or node.attrs.get('aria-labelledby') == 'event-reviews-heading'
                 or node.attrs.get('id') == 'organizer'
                 or (node.tag == 'p' and re.fullmatch(r'[\d٫.]+ از ۵ · [\d]+ نظر', content_text(node))))
+
+
+# Program-section headings: the observed "چه برنامه‌ای داریم؟" and the plain
+# "برنامه …" form. Matched on the whole folded heading only.
+_PROGRAM_HEADING = re.compile(r'(?:چه برنامه ای داریم|برنامه(?: این)?(?: (?:تجربه|رویداد|کارگاه|ورکشاپ))?)\s*[؟?]?')
 
 
 def _folded(text: str) -> str:
