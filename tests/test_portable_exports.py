@@ -21,7 +21,7 @@ class PortableTests(LocalCase):
 
     def test_csv_utf8_bom_machine_headers_nulls_and_urls(self):
         paths = CsvReviewExporter(self.exports).export(self.document)
-        self.assertEqual(len(paths), 6)
+        self.assertEqual(len(paths), 8)
         path = self.exports / 'latest/events.csv'
         self.assertTrue(path.read_bytes().startswith(b'\xef\xbb\xbf'))
         with path.open(encoding='utf-8-sig', newline='') as handle:
@@ -42,7 +42,7 @@ class PortableTests(LocalCase):
         self.document['events'][0]['title'] = '=original'
         JsonReviewExporter(self.exports).export(self.document)
         data = json.loads((self.exports / 'latest/review.json').read_text(encoding='utf-8'))
-        self.assertEqual(data['schema_version'], 2)
+        self.assertEqual(data['schema_version'], 3)
         self.assertIsInstance(data['events'][0]['candidate_ids'], list)
         self.assertEqual(data['events'][0]['title'], '=original')
         self.assertEqual(len(data['places']), 1)
@@ -67,11 +67,11 @@ class PortableTests(LocalCase):
 
     def test_gemini_structure_manifest_hashes_and_counts(self):
         paths = GeminiBundleExporter(self.exports / 'gemini').export(self.document)
-        self.assertEqual(len(paths), 12)
+        self.assertEqual(len(paths), 14)
         latest = self.exports / 'gemini/latest'
         manifest = json.loads((latest / 'manifest.json').read_text(encoding='utf-8'))
-        self.assertEqual((manifest['bundle_schema_version'], manifest['export_schema_version']), (1, 2))
-        self.assertEqual(manifest['counts'], {'events':2,'places':1,'possible_duplicates':1})
+        self.assertEqual((manifest['bundle_schema_version'], manifest['export_schema_version']), (1, 3))
+        self.assertEqual(manifest['counts'], {'events':2,'schedule_review':0,'places':1,'possible_duplicates':1})
         self.assertEqual(set(manifest['files']), {p.name for p in latest.iterdir()})
         for filename, digest in manifest['sha256'].items():
             self.assertEqual(sha256((latest / filename).read_bytes()).hexdigest(), digest)

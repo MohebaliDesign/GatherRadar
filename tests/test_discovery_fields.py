@@ -137,9 +137,17 @@ class AddressAndCityTests(unittest.TestCase):
         self.assertIsNone(facts.venue_name)
 
     def test_an_unlabelled_place_word_is_not_a_venue(self) -> None:
-        facts = discover("کنسرت موسیقی جمعه ۲۱ شهریور در خانه هنرمندان برگزار می‌شود")
+        # A place word in prose, without holding or attendance wording, names nothing.
+        facts = discover("کنسرت موسیقی جمعه ۲۱ شهریور با الهام از خانه هنرمندان")
 
         self.assertIsNone(facts.venue_name)
+
+    def test_natural_holding_construction_names_the_venue(self) -> None:
+        facts = discover("کنسرت موسیقی جمعه ۲۱ شهریور در خانه هنرمندان برگزار می‌شود")
+
+        self.assertEqual(facts.venue_name, "خانه هنرمندان")
+        self.assertIsNone(facts.address)
+        self.assertIsNone(facts.city)
 
     def test_a_city_is_read_only_when_the_text_says_one(self) -> None:
         facts = discover("کارگاه سفالگری جمعه ۲۱ شهریور\nآدرس: تهران، نیاوران، سه راه یاسر")

@@ -16,6 +16,10 @@ HEADER_HEIGHT, ROW_MIN, ROW_MAX = 30, 24, 60
 HEADER_FILL, HEADER_TEXT = '233E4A', 'FFFFFF'
 BODY_TEXT, BAND, SEPARATOR, LINK = '243742', 'F4F7F8', 'DFE7EA', '155E91'
 BADGES = {
+    'آماده بررسی': ('DDF2ED', '17604E'),
+    'نیاز به تکمیل': ('FBEED6', '785318'),
+    'نیاز به بررسی زمان‌بندی': ('FBEED6', '785318'),
+    'منبع در دسترس نیست': ('F8E7E8', '8A343A'),
     'بررسی نشده': ('EDF1F4', '465967'), 'علاقه‌مندم': ('E6EFFB', '234F83'),
     'می‌خوام برم': ('DDF2ED', '17604E'), 'رفتم': ('EBE5F5', '58417D'),
     'رد شد': ('F8E7E8', '8A343A'), 'یکی هستند': ('FBEED6', '785318'),
@@ -29,12 +33,12 @@ BADGES = {
     'موفق': ('DDF2ED', '17604E'), 'با خطا': ('FBEED6', '785318'), 'ناموفق': ('F8E7E8', '8A343A'),
 }
 RUN_STATUS = {'success': 'موفق', 'partial': 'با خطا', 'failed': 'ناموفق'}
-CATEGORIES = {'workshop':'کارگاه', 'exhibition':'نمایشگاه', 'concert':'کنسرت',
+CATEGORIES = {'performance':'اجرا', 'workshop':'کارگاه', 'exhibition':'نمایشگاه', 'concert':'کنسرت',
               'festival':'جشنواره', 'conference':'همایش', 'talk':'نشست', 'meetup':'دورهمی',
               'screening':'اکران', 'market':'بازارچه', 'tour':'تور',
               'cafe':'کافه', 'gallery':'گالری', 'museum':'موزه', 'restaurant':'رستوران',
               'park':'پارک', 'bookstore':'کتاب‌فروشی'}
-BADGE_HEADERS = {'تصمیم من', 'تصمیم', 'وضعیت رویداد', 'کیفیت داده', 'وضعیت', 'ظرفیت / وضعیت ثبت‌نام'}
+BADGE_HEADERS = {'تصمیم من', 'تصمیم', 'وضعیت رویداد', 'کیفیت داده', 'وضعیت', 'ظرفیت / وضعیت ثبت‌نام', 'آمادگی داده'}
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,10 @@ def font_name(value: object) -> str:
 
 
 def column_style(header: str) -> ColumnStyle:
+    if header == 'آمادگی داده':
+        return ColumnStyle(24, 26, 28, wrap=True, centered=True)
+    if header in {'جلسه‌ها', 'دلیل بررسی'}:
+        return TEXT
     if header == 'راهنمای مرور فرصت‌ها':
         return GUIDE_TEXT
     if header in BADGE_HEADERS or header in {'دسته‌بندی','شهر','روز','فرمت','تعداد منابع','مدت'}:

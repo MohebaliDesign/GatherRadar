@@ -172,8 +172,9 @@ class TemporalNormalizationTests(unittest.TestCase):
         self.assertIsNone(temporal('جمعه').start_date)
 
     def test_today_and_tomorrow(self):
-        self.assertEqual(temporal('امروز').start_date, date(2026, 9, 24))
-        self.assertEqual(temporal('فردا ساعت ۱۸').start_date, date(2026, 9, 25))
+        raw = replace(RAW, published_at=RAW.captured_at)
+        self.assertEqual(temporal('امروز', raw=raw).start_date, date(2026, 9, 24))
+        self.assertEqual(temporal('فردا ساعت ۱۸', raw=raw).start_date, date(2026, 9, 25))
 
     def test_published_reference_preferred(self):
         raw = replace(RAW, published_at=datetime(2021, 3, 20, 22, tzinfo=timezone.utc))
@@ -182,11 +183,13 @@ class TemporalNormalizationTests(unittest.TestCase):
         self.assertEqual(result.reference_basis, 'published_at')
         self.assertEqual(result.reference_at, raw.published_at)
 
-    def test_capture_reference_fallback(self):
+    def test_capture_reference_never_resolves_relative_announcement(self):
         self.assertEqual(temporal('امروز').reference_basis, 'captured_at')
+        self.assertIsNone(temporal('امروز').start_date)
+        self.assertIn('unknown_publication_reference', codes(temporal('امروز')))
 
     def test_reference_in_source_timezone(self):
-        raw = replace(RAW, captured_at=datetime(2026, 9, 24, 1, tzinfo=timezone.utc))
+        raw = replace(RAW, published_at=datetime(2026, 9, 24, 1, tzinfo=timezone.utc))
         source = replace(SOURCE, timezone='America/New_York')
         self.assertEqual(temporal('امروز', raw=raw, source=source).start_date, date(2026, 9, 23))
 
@@ -229,7 +232,9 @@ class TemporalNormalizationTests(unittest.TestCase):
             self.assertIn('invalid_time', codes(temporal(text)))
 
     def test_no_clock_correction(self):
-        for text in ('۲۰:۳', '۲۰:۳۰:۴۵', '-۱:۰۰', 'ساعت ۸ شب'):
+        # A day-part word is read only inside fixed bounds (see test_persian_day_parts);
+        # "۲ شب" could be 02:00 or 14:00 and is never corrected.
+        for text in ('۲۰:۳', '۲۰:۳۰:۴۵', '-۱:۰۰', 'ساعت ۲ شب'):
             result = temporal(text)
             self.assertIsNone(result.start_time)
             self.assertIsNone(result.starts_at)

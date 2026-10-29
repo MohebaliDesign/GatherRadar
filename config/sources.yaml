@@ -97,3 +97,11 @@ sources:
     username: tehran_by_tehran
     enabled: true
     city_hint: Tehran
+
+  - id: evenza_platform_instagram
+    publisher_key: evenza_platform
+    name: Evenza Platform Instagram
+    type: instagram
+    url: https://www.instagram.com/evenza.platform/
+    username: evenza.platform
+    enabled: true

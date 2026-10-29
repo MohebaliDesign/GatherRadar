@@ -162,8 +162,8 @@ class WebsiteAdapterTests(unittest.TestCase):
         self.assertEqual(a, adapter.extract(Page(BASE+'events/a?day=1', html('generic-detail.html')), BASE))
 
     def test_specialized_adapters_match_registered_keys(self):
-        # Vadoostan/Jabama retain listing cards and structural fields (version 2).
-        for key, version in (('davvvat', 1), ('vadoostan', 2), ('jabama-events', 2)):
+        # Jabama version 3 also retains supported embedded session evidence.
+        for key, version in (('davvvat', 1), ('vadoostan', 2), ('jabama-events', 3)):
             self.assertEqual(build_adapter(replace(CONFIG, adapter=key)).name, f'{key}/{version}')
 
     def test_davvvat_excludes_duplicates_and_comment_overlay(self):

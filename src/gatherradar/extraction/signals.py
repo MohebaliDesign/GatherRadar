@@ -309,18 +309,29 @@ def _label_positions(text: str, normalized: str) -> dict[str, tuple[int, int]]:
         ("capacity", rules.CAPACITY_LABELS),
     )
     separators = re.escape(rules.LABEL_SEPARATORS)
+    found: dict[str, list[tuple[int, int]]] = {}
     for name, labels in groups:
         pattern = re.compile(
             r"(?:(?<=^)|(?<=\W))(?:" + "|".join(re.escape(normalize(label)) for label in labels) + r")\s*[" + separators + r"]\s*"
         )
-        match = pattern.search(normalized)
-        if match is None and name in {'address', 'venue', 'organizer'}:
+        matches = [(m.start(), m.end()) for m in pattern.finditer(normalized)]
+        if not matches and name in {'address', 'venue', 'organizer'}:
             # Website sections often put the explicit label alone on a line,
             # without a colon. Require the whole line, never a prose mention.
             match = re.search(r'(?m)^[ \t]*(?:' + '|'.join(re.escape(normalize(label)) for label in labels)
                               + r')[ \t]*\r?\n', normalized)
-        if match:
-            positions[name] = (match.start(), match.end())
+            matches = [(match.start(), match.end())] if match else []
+        found[name] = matches
+    # A label written inside a longer label is part of that label: "مدت زمان:"
+    # is a duration label, never also a date label "زمان:". The first label
+    # occurrence outside every other group's first match wins.
+    firsts = {name: spans[0] for name, spans in found.items() if spans}
+    for name, spans in found.items():
+        others = [span for other, span in firsts.items() if other != name]
+        chosen = next((span for span in spans if not any(
+            o != span and o[0] <= span[0] and span[1] <= o[1] for o in others)), None)
+        if chosen is not None:
+            positions[name] = chosen
 
     # Unlike arbitrary emoji, map-pin prefixes are intentional visual labels. A
     # pin is still ignored when its line is a heading or prose rather than a

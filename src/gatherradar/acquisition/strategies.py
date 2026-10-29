@@ -72,7 +72,8 @@ class _CollectorStrategy:
                                  ChannelStatus.PARSE_FAILURE, diagnostic='invalid_collection_membership')
         return ChannelResult(source.id, source.publisher_key, self.channel, self.name,
                              ChannelStatus.SUCCESS if items else ChannelStatus.EMPTY, len(items),
-                             'collection_item_failed' if summary.failed else None, items,
+                             'collection_item_failed' if summary.failed else (
+                                 'publication_recency_unverified' if getattr(summary, 'warnings', ()) else None), items,
                              summary.new, summary.changed, summary.already_existing)
 
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Callable
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
-from ...domain.website import MAX_CARD_TEXT, WebsiteConfig
+from ...domain.website import MAX_CARD_TEXT, SourceSession, WebsiteConfig, is_source_slice
 from ..base import SourceConfigurationError, SourceUnavailableError
 from .html import Node, content_text, excluded, parse_html
 from .transport import Page
@@ -33,6 +33,10 @@ class WebsiteDetail:
     title_is_heading: bool = False
     # Adapter-verified (field, exact retained text) pairs from page structure.
     fields: Fields = ()
+    sessions: tuple[SourceSession, ...] = ()
+    session_diagnostics: tuple[str, ...] = ()
+    session_drift_keys: tuple[str, ...] = ()
+    session_drift_shapes: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,7 +59,7 @@ class WebsiteAdapter(Protocol):
 def _verified(fields: Fields, text: str) -> Fields:
     """Keep only structural values that are exact, bounded slices of retained text."""
     return tuple(dict.fromkeys((name, value) for name, value in fields
-                               if value and value.strip() and value in text))
+                               if value and value.strip() and is_source_slice(name, value, text)))
 
 
 class GenericAdapter:
@@ -282,8 +286,17 @@ class VadoostanAdapter(GenericAdapter):
 class JabamaAdapter(GenericAdapter):
     """Jabama detail pages, shared by its Events and Experiences listings."""
 
-    name = 'jabama-events/2'
+    name = 'jabama-events/3'
     native_ids = True
+
+    def extract(self, page: Page, source_url: str) -> WebsiteDetail:
+        from .jabama_sessions import extract_sessions
+
+        detail = super().extract(page, source_url)
+        embedded = extract_sessions(parse_html(page.html), page.url)
+        return replace(detail, sessions=embedded.sessions, session_diagnostics=embedded.diagnostics,
+                       session_drift_keys=embedded.drift_keys, session_drift_shapes=embedded.drift_shapes,
+                       structured_data_present=detail.structured_data_present or embedded.present)
 
     def _article(self, root: Node) -> Node:
         articles = [node for node in root.select('article') if node.select('h1')]
@@ -326,10 +339,7 @@ class JabamaAdapter(GenericAdapter):
     def detail_fields(self, root: Node, regions: list[Node]) -> Fields:
         article = self._article(root)
         fields: list[tuple[str, str]] = []
-        abouts = [section for section in article.select('section')
-                  if (heads := section.select('h2')) and _folded(content_text(heads[0])).startswith('درباره این')]
-        bodies = [node for section in abouts for node in section.select('.rich-text-content')]
-        if len(bodies) == 1 and (description := content_text(bodies[0], self.skip)):
+        if description := self._description(article):
             fields.append(('description_text', description))
         if organizer := self._organizer(article):
             fields.append(('organizer_name', content_text(organizer[1])))
@@ -346,6 +356,54 @@ class JabamaAdapter(GenericAdapter):
         if len(lengths) == 1:
             fields.append(('duration_text', lengths[0]))
         return tuple(fields)
+
+    def _description(self, article: Node) -> str | None:
+        """The About body plus the article's program sections, in page order.
+
+        Observed pages put the activity program ("چه برنامه‌ای داریم؟") in its own
+        section, usually right after About. Its heading is kept as a legible
+        separator. Only article sections are read (organizer, reviews, booking
+        aside and navigation are never descendants) and only sections headed as a
+        program join; any other section (venue, rules, biography) is skipped.
+        Adjacent sections form one exact contiguous slice of the retained text. A
+        program separated from About by another section is its own exact slice,
+        joined after a blank line, so no contiguous span is implied. Repeated
+        blocks are kept once; a missing About body yields no description.
+        """
+        sections = [node for node in article.walk() if node.tag == 'section' and not self.skip(node)]
+        headed = [(section, heads[0]) for section in sections if (heads := section.select('h2'))]
+        abouts = [index for index, (_, head) in enumerate(headed)
+                  if _folded(content_text(head)).startswith('درباره این')]
+        bodies = [(index, node) for index in abouts for node in headed[index][0].select('.rich-text-content')]
+        if len(bodies) != 1 or not (about := content_text(bodies[0][1], self.skip)):
+            return None
+        start, body_node = bodies[0]
+        groups: list[list[Node | str]] = [[body_node]]
+        adjacent, seen = True, {about}
+        for section, head in headed[start + 1:]:
+            if not _PROGRAM_HEADING.fullmatch(_folded(content_text(head))):
+                adjacent = False
+                continue
+            body = [child for child in section.children if child is not head]
+            text = content_text(Node('div', {}, body), self.skip)
+            if not text or text in seen:
+                adjacent = False
+                continue
+            seen.add(text)
+            if adjacent:
+                groups[-1].extend((head, *body))
+            else:
+                groups.append([head, *body])
+                adjacent = True
+        retained = content_text(article, self.skip)
+        pieces = []
+        for index, group in enumerate(groups):
+            text = content_text(Node('div', {}, group), self.skip)
+            if text in retained:
+                pieces.append(text)
+            elif index == 0:
+                pieces.append(about)
+        return '\n\n'.join(pieces)
 
     def card_fields(self, card: Node) -> Fields:
         fields: list[tuple[str, str]] = []
@@ -366,6 +424,11 @@ class JabamaAdapter(GenericAdapter):
         return (super().skip(node) or node.attrs.get('aria-labelledby') == 'event-reviews-heading'
                 or node.attrs.get('id') == 'organizer'
                 or (node.tag == 'p' and re.fullmatch(r'[\d٫.]+ از ۵ · [\d]+ نظر', content_text(node))))
+
+
+# Program-section headings: the observed "چه برنامه‌ای داریم؟" and the plain
+# "برنامه …" form. Matched on the whole folded heading only.
+_PROGRAM_HEADING = re.compile(r'(?:چه برنامه ای داریم|برنامه(?: این)?(?: (?:تجربه|رویداد|کارگاه|ورکشاپ))?)\s*[؟?]?')
 
 
 def _folded(text: str) -> str:

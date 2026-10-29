@@ -242,4 +242,6 @@ class ExcelTests(LocalCase):
         workbook = load_workbook(path)
         self.addCleanup(workbook.close)
         sheet = self.events(workbook)
-        self.assertEqual(self.cell(sheet, 'event_id', 3).value, unknown.event_id)
+        self.assertEqual(sheet.max_row, 2)
+        review = next(s for s in workbook if s.title.startswith('زمان‌بندی'))
+        self.assertEqual(self.cell(review, 'event_id', 2).value, unknown.event_id)

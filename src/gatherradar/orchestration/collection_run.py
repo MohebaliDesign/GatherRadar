@@ -23,6 +23,7 @@ class RunSummary:
     output_path: Path
     failure_reasons: tuple[str, ...] = ()
     observed_items: tuple[RawItem, ...] = ()
+    warnings: tuple[str, ...] = ()
 
     @property
     def observed_item_ids(self) -> tuple[str, ...]:
@@ -71,6 +72,7 @@ def run_instagram_collection(
         output_path=outcome.path,
         failure_reasons=tuple(failure.reason for failure in result.failures),
         observed_items=result.items,
+        warnings=result.warnings,
     )
 
 

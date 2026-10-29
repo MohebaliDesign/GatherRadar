@@ -311,6 +311,29 @@ class CollectorTests(unittest.TestCase):
 class PostsAndReelsTests(unittest.TestCase):
     """Covers combining Instagram's posts and reels feeds into one bounded sequence."""
 
+    def test_three_old_pinned_posts_do_not_displace_latest_five(self):
+        from datetime import timedelta
+        from gatherradar.collectors.instagram_browser import candidate_limit_for
+        self.assertEqual(candidate_limit_for(5), 8)
+        old = [(ORIGIN_POST, make_post(shortcode=f'PIN{i}', date_utc=datetime(2025, 1, i+1)))
+               for i in range(3)]
+        recent = [(ORIGIN_REEL if i % 2 else ORIGIN_POST,
+                   make_post(shortcode=f'NEW{i}', date_utc=datetime(2026, 10, 1)+timedelta(days=i)))
+                  for i in range(5)]
+        result = InstagramCollector(fetch_posts=lambda u, l: old+recent,
+                                    now=lambda: CAPTURED_AT).collect(make_source(), limit=5)
+        self.assertEqual([r.external_id for r in result.items], [f'NEW{i}' for i in reversed(range(5))])
+        self.assertEqual(result.warnings, ())
+
+    def test_missing_candidate_timestamp_reports_uncertain_recency_even_if_not_selected(self):
+        candidates = [(ORIGIN_POST, make_post(shortcode='UNKNOWN', date_utc=None)),
+                      (ORIGIN_POST, make_post(shortcode='KNOWN'))]
+        result = InstagramCollector(fetch_posts=lambda u, l: candidates,
+                                    now=lambda: CAPTURED_AT).collect(make_source(), limit=1)
+        self.assertEqual([r.external_id for r in result.items], ['KNOWN'])
+        self.assertEqual(result.observed, 1)
+        self.assertIn('publication_recency_unverified', result.warnings[0])
+
     def test_reel_content_type_is_classified_from_origin(self) -> None:
         candidates = [(ORIGIN_REEL, make_post(shortcode="R1", typename="GraphVideo"))]
         collector = InstagramCollector(

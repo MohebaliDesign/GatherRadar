@@ -160,36 +160,49 @@ class DiscoveryUnit:
     raw_item_id: str
     text: str
     fragments: tuple[EvidenceFragment, ...]
+    # Fragments that only repeated this unit's anchor, or whose remaining evidence
+    # was too weak to stand alone. Kept as provenance; never part of `text`.
+    collapsed: tuple[EvidenceFragment, ...] = ()
+    # (fragment_id, reason) grouping explanations for debug output; never persisted.
+    notes: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.unit_id.strip() or not self.raw_item_id.strip():
             raise ValueError('unit_id and raw_item_id must not be empty')
         if not self.fragments:
             raise ValueError('a DiscoveryUnit must contain at least one fragment')
-        if any(fragment.raw_item_id != self.raw_item_id for fragment in self.fragments):
+        if any(fragment.raw_item_id != self.raw_item_id for fragment in self.fragments + self.collapsed):
             raise ValueError('every fragment must belong to the unit raw_item_id')
 
     @classmethod
     def from_fragments(
-        cls, fragments: tuple[EvidenceFragment, ...], *, strategy: str
+        cls, fragments: tuple[EvidenceFragment, ...], *, strategy: str,
+        collapsed: tuple[EvidenceFragment, ...] = (), notes: tuple[tuple[str, str], ...] = (),
     ) -> DiscoveryUnit:
-        '''Build a versioned unit after grouping, preserving every source word.'''
+        '''Build a versioned unit after grouping, preserving every source word.
+
+        Collapsed fragments join the identity but never the text.
+        '''
         if not fragments or not strategy.strip():
             raise ValueError('fragments and grouping strategy must not be empty')
         ordered = tuple(sorted(fragments, key=lambda fragment: fragment.sort_key))
+        repeated = tuple(sorted(collapsed, key=lambda fragment: fragment.sort_key))
         raw_item_id = ordered[0].raw_item_id
-        if any(fragment.raw_item_id != raw_item_id for fragment in ordered):
+        if any(fragment.raw_item_id != raw_item_id for fragment in ordered + repeated):
             raise ValueError('every fragment must belong to the unit raw_item_id')
-        if len({fragment.fragment_id for fragment in ordered}) != len(ordered):
+        identities = [fragment.fragment_id for fragment in ordered + repeated]
+        if len(set(identities)) != len(identities):
             raise ValueError('a unit cannot contain duplicate fragment identities')
-        payload = json.dumps(
-            [raw_item_id, strategy, [fragment.fragment_id for fragment in ordered]],
-            ensure_ascii=False, separators=(',', ':'),
-        )
+        content: list[object] = [raw_item_id, strategy, [fragment.fragment_id for fragment in ordered]]
+        if repeated:
+            content.append([fragment.fragment_id for fragment in repeated])
+        payload = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+        known = set(identities)
         return cls(
             unit_id='unit:' + hashlib.sha256(payload.encode('utf-8')).hexdigest(),
             raw_item_id=raw_item_id, text='\n'.join(fragment.text for fragment in ordered),
-            fragments=ordered,
+            fragments=ordered, collapsed=repeated,
+            notes=tuple(sorted(note for note in notes if note[0] in known)),
         )
 
     @classmethod

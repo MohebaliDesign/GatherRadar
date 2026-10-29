@@ -21,7 +21,8 @@ class NormalizationServiceTests(unittest.TestCase):
     def test_source_fields_preserved_exactly(self):
         result = NormalizationService().normalize(EVENT, RAW, SOURCE)
         owned = {'start_date', 'end_date', 'start_time', 'end_time', 'starts_at', 'ends_at',
-                 'timezone', 'date_precision', 'price_amount', 'currency'}
+                 'timezone', 'date_precision', 'price_amount', 'currency',
+                 'occurrences', 'schedule_kind', 'recurrence_rule'}
         for field in fields(EVENT):
             if field.name not in owned:
                 self.assertEqual(getattr(EVENT, field.name), getattr(result.candidate, field.name))
@@ -47,13 +48,13 @@ class NormalizationServiceTests(unittest.TestCase):
     def test_relative_standalone_and_labelled_evidence(self):
         for text in ('امروز', 'زمان: امروز', 'عنوان\nتاریخ: امروز'):
             event = replace(EVENT, source_date_text='امروز')
-            result = NormalizationService().normalize(event, replace(RAW, raw_text=text), SOURCE)
+            result = NormalizationService().normalize(event, replace(RAW, raw_text=text, published_at=RAW.captured_at), SOURCE)
             self.assertEqual(result.temporal.start_date, date(2026, 9, 24))
 
     def test_relative_uses_ocr_unit_not_unrelated_caption(self):
         event = replace(EVENT, source_date_text='فردا')
         outcome = DiscoveryOutcome(RAW.id, DiscoveryStatus.DISCOVERED, 'test', event=event, discovery_unit_id='unit:1')
-        result, = run_normalization((outcome,), {RAW.id: RAW}, {SOURCE.id: SOURCE}, unit_texts={'unit:1': 'زمان: فردا'})
+        result, = run_normalization((outcome,), {RAW.id: replace(RAW, published_at=RAW.captured_at)}, {SOURCE.id: SOURCE}, unit_texts={'unit:1': 'زمان: فردا'})
         self.assertEqual(result.temporal.start_date, date(2026, 9, 25))
         result, = run_normalization((outcome,), {RAW.id: replace(RAW, raw_text='فردا')}, {SOURCE.id: SOURCE})
         self.assertIsNone(result.temporal.start_date)

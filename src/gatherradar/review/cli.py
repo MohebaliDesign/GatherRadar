@@ -109,6 +109,7 @@ def run(args: argparse.Namespace) -> int:
                     print(path)
                 for failure in failures:
                     print(f'Export error: {failure}', file=sys.stderr)
+                print_eligibility(repository.load(args.run)['run'])
                 return int(bool(failures))
             from ..orchestration.refresh import RefreshService
             run_id = args.run_id or uuid4().hex
@@ -131,7 +132,25 @@ def run(args: argparse.Namespace) -> int:
                 print(f'{source.source_id}: {source.status}; observed={len(source.observed_item_ids)}; failures={",".join(source.failures)}')
             print_publishers(result, {s.publisher_key: s.name.rsplit(' ', 1)[0] for s in load_sources(args.config)})
             print(f'Canonical Events: {snapshot.events + snapshot.filtered}; Displayed Events: {snapshot.events}')
-            print(f'Database: {database}\nWorkbook: {workbook}\nExports: {exports}\nGemini: {exports / "gemini/latest"}')
+            run_summary = repository.load(run_id)['run']
+            print_eligibility(run_summary)
+            counts = run_summary.get('data_readiness_counts', {})
+            print('Data readiness: ' + '; '.join(f'{name}={counts.get(name, 0)}' for name in (
+                'ready_for_review', 'needs_enrichment', 'needs_schedule_review', 'source_unavailable')))
+            # Collection, persistence and each export are separate outcomes; a
+            # workbook path is printed only when the workbook was written.
+            print(f'Collection: {snapshot.status}')
+            print(f'Persistence: committed (run {run_id}); Database: {database}')
+            xlsx_failed = any(e.startswith(('ExcelReviewExporter', 'XLSX')) for e in result.export_failures)
+            other_failed = [e for e in result.export_failures if not e.startswith(('ExcelReviewExporter', 'XLSX'))]
+            if xlsx_failed:
+                print('Workbook: NOT written (see Export error). Stored facts are intact; recover offline with:')
+                print(f'  python -m gatherradar export all --run {run_id} --db "{database}" '
+                      f'--workbook "{workbook}" --export-dir "{exports}"')
+            else:
+                print(f'Workbook: {workbook}')
+            print(f'Exports: {exports}' + (' (with errors)' if other_failed else ''))
+            print(f'Gemini: {exports / "gemini/latest"}')
             for error in result.export_failures:
                 print(f'Export error (canonical state committed): {error}', file=sys.stderr)
             return int(snapshot.status != 'success' or bool(result.export_failures))
@@ -139,3 +158,15 @@ def run(args: argparse.Namespace) -> int:
         message = str(exc) if isinstance(exc, ReviewError) else 'Local operation failed. Check configuration, database and output paths; no raw exception was logged.'
         print(f'error: {message}', file=sys.stderr)
         return 1
+
+
+def print_eligibility(run: dict) -> None:
+    if run.get('disposition_counts'):
+        print('Schedule dispositions: ' + '; '.join(
+            f'{name}={count}' for name, count in run['disposition_counts'].items()))
+    print(f"Event admission: discovered={run.get('discovered_event_count', 0)}; "
+          f"excluded_missing_title={run.get('excluded_missing_title', 0)}; "
+          f"canonical persisted={run.get('canonical_event_count', 0)}; "
+          f"filtered={run.get('filtered', 0)}; displayed={run.get('event_count', 0)}")
+    for source, count in sorted(run.get('excluded_missing_title_by_source', {}).items()):
+        print(f'  {source}: excluded_missing_title={count}')

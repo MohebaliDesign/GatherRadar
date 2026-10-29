@@ -37,6 +37,7 @@ class SourceRun:
     changed: int = 0
     existing: int = 0
     channel_status: str = 'success'
+    media_diagnostics: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,11 +141,14 @@ class RefreshService:
                 except (ValueError, KeyError, TypeError):
                     raise ReviewError('Existing run manifest is incompatible; use a new run ID for a different invocation.') from None
             reports: list[SourceRun] = []
+            admission = {}
 
             def save(status: str, finished: datetime | None = None) -> None:
-                atomic_json(path, asdict(RunManifest(run_id, started.isoformat(),
+                payload = asdict(RunManifest(run_id, started.isoformat(),
                     finished.isoformat() if finished else None, ids, tuple(reports), limit, days,
-                    review_timezone, evidence_mode, mode, status)))
+                    review_timezone, evidence_mode, mode, status))
+                payload.update(admission)
+                atomic_json(path, payload)
 
             save('running')
             observed = {} if collect else None
@@ -169,17 +173,34 @@ class RefreshService:
                     observed[source.id] = items
                     if result.status in (ChannelStatus.SUCCESS, ChannelStatus.EMPTY):
                         failures = [result.diagnostic] if result.diagnostic else []
+                        media_diagnostics = ()
                         if source.source_type is SourceType.INSTAGRAM and not skip_instagram_evidence and items:
                             try:
                                 evidence = self.acquire_evidence(source.id, config_path=config_path,
                                     data_dir=data_dir, limit=limit, observed_items=items)
                                 if evidence.failures or evidence.malformed:
                                     failures.append('media_evidence_partial')
+                                media_diagnostics = tuple(getattr(evidence, 'capture_diagnostics', ()))
+                                if evidence.malformed:
+                                    media_diagnostics += ({'category': 'malformed_stored_evidence',
+                                                           'count': len(evidence.malformed)},)
+                                if getattr(evidence, 'ocr_failed', 0):
+                                    media_diagnostics += ({'category': 'ocr_failed',
+                                                           'count': evidence.ocr_failed},)
+                                if getattr(evidence, 'ocr_fallback_used', 0):
+                                    media_diagnostics += ({'category': 'ocr_fallback_used',
+                                                           'count': evidence.ocr_fallback_used},)
+                                if getattr(evidence, 'ocr_quality_retries', 0):
+                                    media_diagnostics += ({'category': 'ocr_quality_retry',
+                                                           'count': evidence.ocr_quality_retries},)
+                                for engine in getattr(evidence, 'ocr_unavailable', ()):
+                                    media_diagnostics += ({'category': 'ocr_engine_unavailable',
+                                                           'engine': engine},)
                             except Exception:
                                 failures.append('media_evidence_failed_caption_available')
                         reports.append(SourceRun(source.id, tuple(i.id for i in items),
                             'partial' if failures else 'success', tuple(failures),
-                            result.new, result.changed, result.existing, result.status.value))
+                            result.new, result.changed, result.existing, result.status.value, media_diagnostics))
                     else:
                         reports.append(SourceRun(source.id, status='failed', channel_status=result.status.value,
                             failures=(f'channel:{result.status.value}',)
@@ -217,7 +238,8 @@ class RefreshService:
                     member_ids = prior_source.observed_item_ids if collect else source.observed_item_ids
                     existing[source.source.id] = SourceRun(source.source.id, member_ids,
                         status, tuple(errors), prior_source.new, prior_source.changed, prior_source.existing,
-                        prior_source.channel_status if collect else ChannelStatus.STORED.value)
+                        prior_source.channel_status if collect else ChannelStatus.STORED.value,
+                        prior_source.media_diagnostics)
                 reports = [existing[s.id] for s in selected]
                 if not collect:
                     stored_items = {r.source_id: len(r.observed_item_ids) for r in reports}
@@ -240,6 +262,16 @@ class RefreshService:
                           else 'partial' if failures else 'success')
                 canonical = replace(review.result, events=with_channel_gaps(review.result.events, coverage))
                 window = review_window(canonical.events, started, days, review_timezone)
+                from ..review.eligibility import eligibility_summary
+                admission = dict(eligibility_summary(canonical.events),
+                                 filtered=window.filtered, event_count=len(window.events),
+                                 undated=window.undated)
+                from ..review.relevance import disposition_counts
+                admission['disposition_counts'] = disposition_counts(window.dispositions)
+                admission['schedule_reference_at'] = started.astimezone(ZoneInfo('Asia/Tehran')).isoformat()
+                from ..review.funnel import source_output_funnel
+                funnel = source_output_funnel(review, window, reports)
+                admission['source_funnel'] = funnel
                 finished = self.now()
                 save('syncing', finished)
                 snapshot = self.repository.sync(canonical, window, run_id=run_id,
@@ -247,6 +279,7 @@ class RefreshService:
                     source_count=len(selected), failures=failures, status=status,
                     run_metadata={'selected_source_ids': ids, 'sources': [asdict(r) for r in reports],
                                   'limit': limit, 'mode': mode, 'evidence_mode': evidence_mode,
+                                  'source_funnel': funnel,
                                   'channels': [c.record() for c in channels],
                                   'publisher_coverage': [c.record() for c in coverage],
                                   'policy_checks': [n.record() for n in notices]})

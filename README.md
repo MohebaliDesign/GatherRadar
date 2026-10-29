@@ -1,6 +1,12 @@
 # GatherRadar 
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/MohebaliDesign/badge.svg)](https://hub.xerj.org/contributors/MohebaliDesign)
 
+Current Event review outputs require a real, source-attributed title. Blank and
+placeholder titles are excluded before new canonical persistence and from every
+new export, including re-exports of historical runs. Raw evidence and historical
+review data remain intact. See [Event admission](docs/DATA_CONTRACTS.md#event-admission)
+and [local re-export behavior](docs/LOCAL_REVIEW.md#workbook-and-human-ownership).
+
 > A provenance-first event discovery pipeline for curated websites and Instagram sources.
 
 **Open-source recognition:** The [publisher channel recovery](https://github.com/MohebaliDesign/GatherRadar/commit/9377618ce1056c0358389bda644ede427fd7d39b) implementation was selected for inclusion in the [XERJ Corpus Hub](https://hub.xerj.org/contributors/MohebaliDesign) as a real-world reference for AI coding agents.
@@ -76,9 +82,36 @@ By default, Instagram extraction analyzes the stored caption only. Passing `--ev
 - Python **3.11+**
 - `pip` and a local virtual environment
 - Google Chrome for Instagram collection/authentication
-- Tesseract with `fas` and `eng` language data only when running media OCR
+- For media OCR, at least one local OCR engine (all optional, all free and offline):
+  Tesseract with `fas` and `eng` language data, EasyOCR (`pip install -e ".[ocr-easyocr]"`),
+  or Windows OCR with an installed OCR language
 
 The Python dependencies are declared in `pyproject.toml`. Tesseract is an external executable, not a Python package. If it is not on `PATH`, set `GATHERRADAR_TESSERACT_PATH` to the executable path.
+
+Media OCR uses a local fallback chain, by default `tesseract,easyocr,windows`
+(`GATHERRADAR_OCR_ENGINES` changes the order or the selection). Engines that are not
+installed are skipped; a later engine runs only when an earlier one fails, reads
+nothing, or reads text the quality policy (`ocr-quality/1`) finds implausible, and
+every engine's attempt is kept as separate evidence. EasyOCR downloads
+its model files once on first use; Windows OCR is used only when the language in
+`GATHERRADAR_WINDOWS_OCR_LANGUAGE` (default `fa`) is installed. Check your machine with:
+
+~~~bash
+python -m gatherradar ocr check
+python -m gatherradar ocr check --image path/to/slide.png
+~~~
+
+## Final Excel acceptance (Windows)
+
+One command runs the offline tests, exactly one fresh bounded crawl
+(`refresh --all-enabled --limit 5 --days 14`) into a new isolated
+`data\qa-final-<timestamp>\` directory, and writes one review bundle to return:
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File scripts\final_excel_acceptance.ps1
+~~~
+
+See [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md).
 
 ## Quick start
 
@@ -114,6 +147,13 @@ python -m unittest discover -s tests
 The tests are designed to run offline with fixtures and fakes; they do not require Instagram credentials, Chrome, Tesseract, a cloud AI provider, or live network access.
 
 ## Usage
+
+Current Event exports use the exact stored refresh time in `Asia/Tehran`: ended
+Events are excluded, ongoing ranges and supported future sessions are retained,
+and unresolved schedules go to a separate `زمان‌بندی` sheet / `schedule_review.csv`.
+Historical runs re-export against their own stored clock. Instagram `--limit 5`
+selects five recent posts/reels per profile; Evenza Platform is enabled as
+`evenza_platform_instagram`. See [reliability validation](docs/CAROUSEL_RUNTIME_VALIDATION.md).
 
 ### 1. Collect from a public website
 
@@ -161,7 +201,7 @@ This command is offline and write-free. It reads the latest stored observations,
 python -m gatherradar evidence instagram davvvat_instagram --limit 5
 ~~~
 
-This revisits already-known Instagram media through the authenticated browser profile, captures bounded image/carousel/reel evidence, and runs local Tesseract OCR.
+This revisits already-known Instagram media through the authenticated browser profile, captures bounded image/carousel/reel evidence, and runs the local OCR chain (Tesseract first by default).
 
 Then run evidence-aware discovery:
 
@@ -191,8 +231,11 @@ time, or capture time as fallback. Nearby yearless dates may infer a year within
 
 Prices use Decimal in their stated units: `TOMAN`, `IRR`, or explicit supported foreign
 currency codes. Explicit free means zero with no invented currency. Unknown prices stay null.
-Multi-day hours, recurring schedules, multiple sessions, broad relative dates, price ranges,
-tiers and conditional prices remain partial/unresolved. A bare relative token also needs
+Multi-day hours retain date bounds and daily clocks without a continuous timestamp.
+Explicit same-month day lists and validated Jabama embedded sessions produce separate
+occurrences; the parent Event does not pick an arbitrary date. Weekly recurrence
+retains its supported rule without generating future dates. Broad relative dates,
+price ranges, tiers and conditional prices remain partial/unresolved. A bare relative token also needs
 clear temporal context, so a publisher named “Today” cannot invent a date.
 See [the normalization contract](docs/DATA_CONTRACTS.md#deterministic-normalization-stage-7)
 for exact policies and [the validation report](docs/STAGE7_VALIDATION.md) for measured results.
@@ -240,7 +283,8 @@ python -m gatherradar refresh --all-enabled --days 14
 ```
 
 It ends with a publisher/channel summary (channel statuses, publisher coverage and any
-potentially reduced fields), then canonical and displayed Event counts.
+potentially reduced fields), then canonical/displayed Event counts and separate
+data-readiness counts.
 
 Local workbook schema 3 opens on the latest Events. Permanent tabs are `تاریخچه اجراها`,
 `بررسی تکراری‌ها`, and `راهنما`; `_meta` is hidden. Only the header row is frozen.
@@ -267,6 +311,16 @@ Reading the Event columns:
 | `توضیحات / معرفی` | The source's own description, complete — not an AI summary |
 | `ظرفیت / وضعیت ثبت‌نام` | The source's availability wording, e.g. `تکمیل ظرفیت` (which also sets the Event status to sold out) |
 | `مدت` / `برگزارکننده` | A stated duration and an explicitly labelled organizer or host |
+| `آمادگی داده` | Filter ready-for-review, enrichment, schedule-review and unavailable-source records independently of your decision |
+| `دلیل بررسی` | A Persian explanation of readiness; missing optional facts are not scored as defects |
+| `جلسه‌ها` | Source-supported dated sessions with their own clock, price and availability |
+
+Records/portable schema 3 includes structured `occurrences`, `schedule_kind`,
+`recurrence_rule`, readiness reasons and quality indicators. Historical database
+payloads gain safe empty defaults on read; Event IDs and saved owner decisions
+remain authoritative. XLSX stays schema 3 with additive snapshot columns.
+Caption descriptions are unchanged source text only for a defensible single-Event
+unit. Media roundups are kept separate. See [data-quality validation](docs/DATA_QUALITY_VALIDATION.md).
 
 Listing-card facts (for example a price or sold-out badge shown only in the list) belong
 to that item and are kept with provenance; a listing and detail page that disagree leave
@@ -388,7 +442,7 @@ GatherRadar keeps original source text separate from visual evidence:
 
 `RawItem.raw_text` is never replaced with OCR output. Evidence is stored separately with artifact and OCR provenance.
 
-The current grouping strategy, `conservative/1`, prefers false negatives over unsafe merges. New anchors split groups; only adjacent structured supporting evidence can attach when there is no competing topic or recognized conflict. Ambiguous fragments remain separate.
+The current grouping strategy, `conservative/2`, prefers false negatives over unsafe merges. New anchors split groups; only adjacent structured supporting evidence can attach when there is no competing topic or recognized conflict. A media fragment that only repeats an anchor's exact title within the same post joins that anchor instead of becoming a parallel candidate. Ambiguous fragments remain separate.
 
 ## Source registry
 
@@ -429,7 +483,7 @@ GatherRadar/
 │   ├── grouping/                 # evidence selection + conservative grouping
 │   ├── normalization/            # deterministic dates, times, prices and diagnostics
 │   ├── deduplication/            # pair decisions, complete-link groups, canonical drafts
-│   ├── ocr/                      # OCR provider boundary + Tesseract implementation
+│   ├── ocr/                      # OCR provider boundary, local fallback chain: Tesseract, EasyOCR, Windows OCR
 │   ├── orchestration/            # collection/evidence/discovery run coordination
 │   ├── review/                   # shared schema, interfaces and owner workflow
 │   ├── exports/                  # XLSX, CSV/JSON and manual Gemini bundle
@@ -499,6 +553,7 @@ The project does not need followers, comments, direct messages, private profiles
 - [`docs/GEMINI_HANDOFF.md`](docs/GEMINI_HANDOFF.md) — optional manual publishing
 - [`docs/SOURCE_FIELD_COVERAGE.md`](docs/SOURCE_FIELD_COVERAGE.md) — which facts each source exposes and the per-Event field audit
 - [`docs/STAGE9_VALIDATION.md`](docs/STAGE9_VALIDATION.md) — Stage 9 acceptance evidence
+- [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md) — final Excel closure, case results and the one-run local acceptance
 - [`docs/PUBLISHER_RECOVERY.md`](docs/PUBLISHER_RECOVERY.md) — publisher/channel/strategy model, coverage and Davvvat channel investigation
 - [`config/sources.yaml`](config/sources.yaml) — currently approved sources and adapter configuration
 

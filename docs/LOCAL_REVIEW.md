@@ -30,9 +30,18 @@ python -m gatherradar refresh --all-enabled --stored --days 14
 This preserves the existing bounded local selection: website first-seen storage
 order and Instagram publication recency. It does not claim fresh listing membership.
 `--limit` is 1–30 per source (default 5). `--days` is 1–90 (default 14), inclusive from
-run start in `--review-timezone` (default `Asia/Tehran`). Unknown-date Events stay
-visible last; normalized ranges overlap the window. Inferred dates retain warnings.
+run start's `Asia/Tehran` date. `--review-timezone` affects presentation, not eligibility.
+The exact stored refresh clock excludes reliably ended Events, including earlier today.
+Ongoing ranges overlap the window; an unknown end time is not invented. Inferred dates retain warnings.
 Filtered Events remain in SQLite history. Event/source timezones are preserved.
+
+An actual activity must be established before resolving a meaningful display title.
+An explicit heading is preferred; a concise factual description supported by this
+Event's own source evidence may also pass. Derived titles retain a review warning,
+their source span and fragment IDs in hidden technical columns. Blank/generic or
+unsupported titles, collection covers and non-Event promotions remain excluded.
+The source funnel distinguishes RawItems, candidates, Events and Occurrences.
+Raw captions, OCR and provenance remain available for offline reprocessing.
 
 ## Paths, recovery, and re-export
 
@@ -80,7 +89,20 @@ Run sheets are `رویدادها <Jalali-date> <HHMM>` and, when Places exist,
 suffixes within XLSX's 31-character limit. The index links to each historical sheet.
 Historical sheets, including arbitrary visual edits, are not rewritten during export.
 
-The 26 primary Event columns follow the Persian contract in
+Re-exporting a legacy run applies current title admission to every new output.
+If the existing Event tab contains excluded IDs, XLSX adds a filtered projection
+for that same run and updates the index to it. The original tab remains intact
+as history. `_meta` marks that superseded tab; later review imports use its
+replacement, avoiding duplicate or stale review decisions. Save and import any
+edits first (the `export` CLI does this automatically). Repeating the export does
+not add another projection. Historical SQLite facts and decisions are retained.
+
+The optional Sheets adapter similarly appends a deterministic `_eligible_…` run
+projection when a legacy snapshot's counts differ, preserving its prior tabs and
+human review. Repeated publishing reuses that projection. No Google connection is
+required to regenerate the local workspace.
+
+The primary Event columns follow the Persian contract in
 [DATA_CONTRACTS.md](DATA_CONTRACTS.md#local-review-and-persistence-stage-9):
 decision, title, category, lifecycle status, Jalali dates/weekday/times, the announced
 schedule, venue / area / city / address, duration, price, availability, format, the
@@ -94,14 +116,52 @@ your note. Column meanings:
 | `آدرس` | Precise address, only when the source gives one |
 | `زمان‌بندی اعلام‌شده` | Exact source schedule wording: always shown for multiple sessions, weekly recurrence or daily windows; otherwise shown only when the normalized date is missing, inferred or diagnosed |
 | `مدت` | Stated length, never computed from times |
-| `ظرفیت / وضعیت ثبت‌نام` | Source availability wording (badge); `تکمیل ظرفیت` also sets lifecycle status |
+| `ظرفیت / وضعیت ثبت‌نام` | Booking status, separate from date relevance: the source's own availability wording (badge; `تکمیل ظرفیت` also sets lifecycle status), else per-session source facts in plain Persian (a session sellout flag, a flag contradicted by seat counts, or the first listed session's remaining seats), never a booking guarantee |
 | `توضیحات / معرفی` | The source's own description — not an AI or generated summary |
 | `برگزارکننده` | Explicitly labelled organizer/host only |
+| `آمادگی داده` | `آماده بررسی`, `نیاز به تکمیل`, `نیاز به بررسی زمان‌بندی`, or `منبع در دسترس نیست`; filter within the existing snapshot |
+| `دلیل بررسی` | Readable reason for the assessment, separate from human notes |
+| `جلسه‌ها` | Each supported occurrence's own date/time, price wording and availability; no arbitrary primary date |
+
+Three separate questions: the sheet (current Events vs Schedule Review) answers
+"is it temporally relevant now"; `آمادگی داده` answers "are the details complete and
+consistent"; the capacity column and `وضعیت رویداد` answer "what does the source say
+about booking". When the source states two different values for one field (for
+example length «۲ ساعت» and «سه‌ساعته»), the field stays empty and `دلیل بررسی`
+quotes both values verbatim.
+
+Readiness does not assert publication approval or complete collection. A missing
+optional price, location or description is not a defect without evidence that a
+supported fact was lost. Inferred years, schedule conflicts and recurring rules
+need schedule review; known extraction failures, absent titles and partial OCR
+need enrichment. Raw observations remain available; only admitted Events enter
+new canonical history. The review horizon
+checks actual dated sessions individually, never an invented first-to-last interval.
+Unresolved/conflicting schedules appear in a separate `زمان‌بندی` worksheet and
+`schedule_review.csv` / JSON `schedule_review` array. They are not actionable upcoming
+Events. The current Event view contains only relevant supported occurrences; the full
+session history remains in SQLite. Cancellation/postponement excludes publishing;
+sold-out/availability facts remain separate. Re-export always uses the stored run clock.
+
+An ongoing exhibition with a supported date range belongs in the Event view even
+when its visiting-hours exceptions need checking. The warning remains visible in
+`دلیل بررسی`; it does not turn known relevance into an unknown date. Relative dates
+require the original publication timestamp. A bounded date list preserves all
+listed sessions without assigning the first session's clock to later dates.
+
+`disposition_counts` partitions eligible canonical Events into `actionable`, `expired`,
+`beyond_horizon`, `needs_schedule_review`, and `otherwise_excluded`, without overlap.
+JSON `event_dispositions` gives each Event's reason and individual session dispositions.
+`filtered` includes every non-actionable disposition; `undated` is the schedule-review
+count, including ambiguous dated schedules. Historical workbook sheets remain intact;
+a changed projection gets a new sheet and preserves the old one.
 
 The former `خلاصه` column was always empty and is no longer shown; `summary` stays a
 reserved machine field. Descriptions are complete in the cell but rows stay at most 60
 points; open or expand the cell to read it. Only a description longer than Excel's
-32,767-character cell limit is cut, with a visible marker; JSON/CSV keep all of it.
+32,767-character cell limit is cut, with a visible marker; JSON/CSV keep all of it. Any
+value over that limit (for example the session list of an Event with dozens of sessions)
+is also kept whole, in order, in the hidden `_overflow` sheet; the cell refers to it.
 Additional supporting-source columns appear only for multiple source URLs, so each
 has its own clickable hyperlink. Original URLs remain in hidden `evidence_urls` and
 portable exports. Labels are compact publisher names; hyperlink targets remain exact.
@@ -191,20 +251,34 @@ or use SQLite's backup API; do not copy a live WAL database file in isolation.
 
 ## Portable formats
 
-JSON schema version 1: `schema_version`, `run`, `events`, `places`,
+JSON/CSV records schema version 3: `schema_version`, `run`, `events`, `places`,
 `possible_duplicates`. UTF-8, deterministic sorted JSON keys; arrays stay arrays,
 nulls stay null, dates/times are ISO, Decimal is exact text, enums use stable keys.
 Canonical field provenance and diagnostic codes remain structured. Source date and
-price wording remain present. Full raw captions, OCR and credentials are excluded.
+price wording remain present. Raw contexts, OCR and credentials are excluded.
+An unchanged source caption can be `description_text` when attributed to one
+defensible Event; it is never summarized. Occurrences retain their own provenance
+and price/availability, with null parent dates for distinct sessions. Readiness
+reasons and quality indicators use stable English keys.
 
 CSV uses standard-library `csv`, stable English field names, UTF-8 with BOM, null as
 empty, and compact JSON for nested arrays/objects. Formula-risk values beginning with
 `=`, `+`, `-`, `@` (including whitespace-concealed prefixes) receive an apostrophe;
 leading tab/newline also gets a prefix. JSON preserves the original string. XLSX writes
 source/review strings as explicit literal cells. Text exceeding XLSX's 32,767-character
-cell limit fails export rather than silently truncating. Empty CSV tables retain headers.
-CSV is an interchange format; it carries no badge/font/color styling. JSON/CSV and
-SQLite schema versions remain 1; XLSX presentation changes do not replace machine facts.
+cell limit is never silently truncated: snapshot values go losslessly to hidden `_overflow`;
+an over-limit reviewer note or any unfitted cell fails export with its sheet, record ID,
+field and length. Empty CSV tables retain headers.
+CSV is an interchange format; it carries no badge/font/color styling. Serialized
+session lists can exceed common CSV reader limits (an Event with hundreds of
+timeslots holds well over 131,072 characters in `occurrences`): Python readers must
+raise `csv.field_size_limit`, and spreadsheet programs opening the CSV directly may
+cut cells at 32,767 characters. Use the XLSX (lossless `_overflow`) or JSON for such
+values; the CSV cell itself is complete. JSON/CSV and
+SQLite DDL remains version 1. Record migration is additive on read: legacy records
+get empty occurrences and unknown schedule kind, never fabricated sessions. Stored
+historical payloads, reviews, duplicate state and tokens are not rewritten. XLSX
+remains version 3 with header-based imports and additional new-snapshot columns.
 
 ## Portability and optional publishing
 

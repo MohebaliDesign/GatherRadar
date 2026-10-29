@@ -90,6 +90,7 @@ class ExtractionInputTests(unittest.TestCase):
                 locale="fa-IR",
                 timezone="Asia/Tehran",
                 city_hint="Tehran",
+                segments=(("caption", PERSIAN_EVENT_TEXT),),
             ),
         )
 

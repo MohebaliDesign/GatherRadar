@@ -216,6 +216,8 @@ class InstagramCollector:
         candidates = sorted(
             self._fetch_posts(source.username or "", limit), key=_recency_sort_key
         )
+        warnings = ('publication_recency_unverified: candidate timestamps missing',) if any(
+            _to_utc(_attribute(post, 'date_utc')) is None for _, post in candidates) else ()
         for origin, post in _dedupe_and_bound(candidates, limit):
             try:
                 items.append(map_post_to_raw_item(post, source, captured_at, origin=origin))
@@ -231,6 +233,7 @@ class InstagramCollector:
             source_id=source.id,
             items=tuple(items),
             failures=tuple(failures),
+            warnings=warnings,
         )
 
     @staticmethod

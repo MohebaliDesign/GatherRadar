@@ -394,14 +394,15 @@ class ExtractionBoundaryTests(unittest.TestCase):
                          [('area_text', 'detail'), ('area_text', 'listing')])
         self.assertEqual([o for o, _ in extraction_input.segments], ['detail', 'listing'])
 
-    def test_instagram_input_has_no_segments_or_structural_fields(self):
+    def test_instagram_input_has_caption_segment_but_no_metadata_structural_fields(self):
         from gatherradar.domain import RawItem, SourceType
         from gatherradar.extraction.service import build_extraction_input
         item = RawItem('instagram:s:a', 's', SourceType.INSTAGRAM, 'a', 'post', 'https://x.example/p/a',
                        'کارگاه', NOW, raw_metadata={'source_fields': [{'name': 'area_text', 'value': 'کارگاه',
                                                                         'origin': 'detail'}]})
         extraction_input = build_extraction_input(item)
-        self.assertEqual((extraction_input.segments, extraction_input.source_fields), ((), ()))
+        self.assertEqual(extraction_input.segments, (('caption', item.raw_text),))
+        self.assertEqual(extraction_input.source_fields, ())
 
     def test_conflict_and_place_field_contracts(self):
         from gatherradar.domain import DiscoveryType

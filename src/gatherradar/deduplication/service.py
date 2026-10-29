@@ -13,6 +13,7 @@ from ..domain import EventCandidate, PlaceCandidate
 from ..domain.event import CanonicalDiagnostic
 from ..domain.raw_item import _require_aware
 from ..domain.temporal import DatePrecision
+from ..domain.occurrence import EventOccurrence, ScheduleKind
 from .keys import stable_id
 from .matcher import match_pair
 from .models import CandidateContext, CanonicalizationResult, DuplicateDecision, DuplicateGroup, MatchKind
@@ -34,6 +35,11 @@ def validate_context(context: CandidateContext) -> None:
         return
     if c.is_event is not True or not isinstance(c.date_precision, DatePrecision):
         raise ValueError("invalid event")
+    if (not isinstance(c.schedule_kind, ScheduleKind)
+            or not isinstance(c.occurrences, tuple)
+            or any(not isinstance(o, EventOccurrence) or c.candidate_id not in o.candidate_ids
+                   or raw.id not in o.source_item_ids for o in c.occurrences)):
+        raise ValueError("invalid occurrence provenance")
     for value in (c.evidence_url, c.registration_url, raw.content_url):
         if value is None:
             continue
@@ -83,7 +89,7 @@ def validate_context(context: CandidateContext) -> None:
         raise ValueError("invalid currency")
     # Only actual normalization outcomes may supply normalized fields.
     if context.outcome.temporal is None or any(getattr(c, f) != getattr(context.outcome.temporal, f)
-                                               for f in TEMPORAL_FIELDS):
+                                               for f in (*TEMPORAL_FIELDS, "occurrences", "schedule_kind", "recurrence_rule")):
         raise ValueError("missing or inconsistent normalization")
     if (c.price_amount, c.currency) != (context.outcome.price.price_amount, context.outcome.price.currency):
         raise ValueError("inconsistent price normalization")

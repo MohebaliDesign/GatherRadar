@@ -234,6 +234,8 @@ class SheetRepository:
     def sync(self, result: CanonicalizationResult, window: ReviewWindow, *, run_id: str,
              started_at: datetime, finished_at: datetime, days: int, review_timezone: str,
              source_count: int, failures: tuple[str, ...] = (), status: str = 'success', run_metadata: dict | None = None) -> SnapshotResult:
+        from ..review.serialization import eligible_review
+        result, window = eligible_review(result, window)
         if (not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', run_id)
                 or type(days) is not int or not 1 <= days <= 90
                 or type(source_count) is not int or source_count < 0
@@ -243,6 +245,20 @@ class SheetRepository:
         ZoneInfo(review_timezone)
         previous = self.find_run(run_id)
         if previous:
+            if previous.events != len(window.events) or previous.filtered != window.filtered:
+                # Append an eligible projection of an old published snapshot;
+                # never rewrite its facts or human review.
+                if (run_metadata or {}).get('projection_of'):
+                    raise SheetsError('Existing eligible projection counts differ; historical snapshots were preserved.')
+                membership = '\n'.join(sorted(e.event_id for e in result.events))
+                membership += '\nvisible:\n' + '\n'.join(sorted(e.event_id for e in window.events))
+                digest = sha256((run_id + '\n' + membership).encode()).hexdigest()[:16]
+                projection_id = run_id[:35] + '_eligible_' + digest
+                return self.sync(result, window, run_id=projection_id,
+                    started_at=started_at, finished_at=finished_at, days=days,
+                    review_timezone=review_timezone, source_count=source_count,
+                    failures=failures, status=status,
+                    run_metadata=dict(run_metadata or {}, projection_of=run_id))
             return previous
         if status not in {'success', 'partial', 'failed'}:
             raise SheetsError('Invalid run status.')

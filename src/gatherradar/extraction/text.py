@@ -99,6 +99,16 @@ def phrase_tokens(phrase: str) -> tuple[str, ...]:
     return tuple(token.text for token in tokenize(normalize(phrase)))
 
 
+def title_equivalence_key(title: str) -> tuple[str, ...]:
+    """Whether two written titles name the same thing, without fuzzy matching.
+
+    Folding removes only spelling noise: punctuation, emoji, spacing, ZWNJ, digit
+    script and Arabic/Persian letter variants. Every word and number stays, so
+    "کارگاه سفال ۱" and "کارگاه سفال ۲" remain different titles.
+    """
+    return phrase_tokens(title)
+
+
 def compile_vocabulary(phrases: Iterable[str]) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Pair every vocabulary phrase with its token form, longest phrase first.
 
@@ -198,5 +208,6 @@ __all__ = [
     "line_bounds",
     "normalize",
     "phrase_tokens",
+    "title_equivalence_key",
     "tokenize",
 ]

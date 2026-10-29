@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -13,9 +14,13 @@ from zoneinfo import ZoneInfo
 from ..deduplication.models import CanonicalizationResult
 from ..review.io import LocalState
 from ..review.models import ReviewError, SnapshotResult
-from ..review.records import SCHEMA_VERSION as EXPORT_VERSION, dumps, event_record, primitive
+from ..review.records import (SCHEMA_VERSION as EXPORT_VERSION, dumps, event_record, primitive,
+                              event_from_record, upgrade_event_record)
+from ..review.readiness import run_readiness_record
 from ..review.schema import DECISIONS, DUPLICATE_DECISIONS
-from ..review.serialization import ReviewWindow, duplicate_rows
+from ..review.serialization import ReviewWindow, duplicate_rows, eligible_review, review_window
+from ..review.relevance import disposition_counts, relevant_document
+from ..review.eligibility import eligible, eligibility_summary, _undated
 from .sqlite_schema import SCHEMA_VERSION, migrate
 
 
@@ -60,7 +65,7 @@ class SqliteCanonicalRepository:
         row = self.connection.execute('SELECT metadata FROM runs WHERE run_id=?', (run_id,)).fetchone()
         if row is None:
             return None
-        run = json.loads(row[0])
+        run = self.load(run_id)['run']
         return SnapshotResult(run_id, '', '', '', run['event_count'], run['place_count'],
                               run['duplicate_count'], run['status'], run['filtered'], run['undated'], True)
 
@@ -79,6 +84,11 @@ class SqliteCanonicalRepository:
         events = {e.event_id: e for e in result.events}
         if len(events) != len(result.events) or any(events.get(e.event_id) != e for e in window.events):
             raise ReviewError('Invalid canonical snapshot membership.')
+        admission = eligibility_summary(result.events)
+        result, window = eligible_review(result, window)
+        # Enforce exact run-time membership even for caller-supplied windows.
+        window = review_window(result.events, started_at, days, review_timezone)
+        events = {e.event_id: e for e in result.events}
         pairs = duplicate_rows(result, run_id)
         metadata = dict(run_metadata or {})
         metadata.update(run_id=run_id, started_at=started_at.isoformat(), finished_at=finished_at.isoformat(),
@@ -86,6 +96,12 @@ class SqliteCanonicalRepository:
             source_failures=list(failures), event_count=len(window.events), canonical_event_count=len(events),
             place_count=len(result.places), duplicate_count=len(pairs), filtered=window.filtered,
             undated=window.undated, diagnostics=primitive(result.diagnostics))
+        metadata.update(admission)
+        metadata['disposition_counts'] = disposition_counts(window.dispositions)
+        metadata['schedule_reference_at'] = started_at.astimezone(ZoneInfo('Asia/Tehran')).isoformat()
+        assessments = {event.event_id: run_readiness_record(event, metadata) for event in result.events}
+        metadata['data_readiness_counts'] = dict(Counter(
+            assessments[event.event_id]['data_readiness'] for event in window.events))
         with self._transaction():
             prior = self.find_run(run_id)
             if prior:
@@ -97,7 +113,7 @@ class SqliteCanonicalRepository:
                 anchor = self.connection.execute('SELECT anchor_raw_item_id,anchor_slot FROM event_identity_map WHERE event_id=?', (event.event_id,)).fetchone()
                 if anchor and tuple(anchor) != (event.identity_anchor_raw_item_id, event.identity_anchor_slot):
                     raise ReviewError('Event identity anchor conflict; no mapping was reassigned.')
-                payload = dumps(event_record(event))
+                payload = dumps(dict(event_record(event), **assessments[event.event_id]))
                 self.connection.execute('''INSERT INTO events VALUES (?,?,?) ON CONFLICT(event_id)
                     DO UPDATE SET latest_run=excluded.latest_run,payload=excluded.payload
                     WHERE (SELECT started_at FROM runs WHERE run_id=events.latest_run) <=
@@ -145,7 +161,7 @@ class SqliteCanonicalRepository:
             raise ReviewError('Requested run was not found.')
         document = dict(schema_version=EXPORT_VERSION, run=json.loads(row[0]))
         tables = (
-            ('events', 'event_snapshots', 'event_review', 'event_id', 'AND s.visible=1', 's.ordinal,s.event_id'),
+            ('events', 'event_snapshots', 'event_review', 'event_id', '', 's.ordinal,s.event_id'),
             ('places', 'place_snapshots', 'place_review', 'candidate_id', '', 's.candidate_id'),
             ('possible_duplicates', 'duplicate_snapshots', 'duplicate_review', 'pair_key', '', 's.pair_key'),
         )
@@ -157,18 +173,54 @@ class SqliteCanonicalRepository:
                 FROM {snapshots} s JOIN {reviews} r ON r.{key}=s.{key} {extra}
                 WHERE s.run_id=? {where} ORDER BY {order}''', (run_id,))
             document[name] = [dict(json.loads(r[0]), review_decision=r[1], review_notes=r[2], review_updated_at=r[3]) for r in rows]
-        return document
+        # Full-run admission counts also cover excluded date-filtered legacy rows.
+        stored = [(json.loads(r[0]), bool(r[1])) for r in self.connection.execute(
+            'SELECT payload,visible FROM event_snapshots WHERE run_id=?', (run_id,))]
+        accepted = [(e, visible) for e, visible in stored if eligible(e)]
+        excluded_ids = {e['event_id'] for e, _ in stored if not eligible(e)}
+        admission = eligibility_summary(e for e, _ in stored)
+        run = document['run']
+        # New runs already recorded exclusions before persistence; legacy runs
+        # obtain an ephemeral projection without rewriting their saved metadata.
+        for key in ('excluded_event_count', 'excluded_missing_title'):
+            admission[key] += run.get(key, 0)
+        for key in ('excluded_missing_title_by_source', 'title_exclusion_reasons'):
+            counts = Counter(run.get(key, {}))
+            counts.update(admission[key])
+            admission[key] = dict(sorted(counts.items()))
+        admission['discovered_event_count'] = len(stored) + run.get('excluded_event_count', 0)
+        run.update(admission, event_count=sum(v for _, v in accepted),
+                   filtered=sum(not v for _, v in accepted),
+                   undated=sum(_undated(e) for e, v in accepted if v))
+        document['events'] = [e for e in document['events'] if eligible(e)]
+        document['possible_duplicates'] = [p for p in document['possible_duplicates']
+            if not excluded_ids.intersection((p['event_id_a'], p['event_id_b']))]
+        run['duplicate_count'] = len(document['possible_duplicates'])
+        # Schema-3 records are a non-destructive read migration. Existing snapshots
+        # and review tokens stay byte-for-byte unchanged; old payloads gain empty
+        # occurrence arrays, never invented sessions.
+        document['events'] = [dict(upgrade_event_record(record),
+            **run_readiness_record(event_from_record(record), document['run']))
+            for record in document['events']]
+        document['run']['data_readiness_counts'] = dict(Counter(
+            record['data_readiness'] for record in document['events']))
+        return relevant_document(document, include_filtered=include_filtered)
 
     def duplicate_queue(self) -> list[dict]:
         rows = self.connection.execute('''SELECT s.payload,r.decision,r.notes,r.first_seen_run,r.last_seen_run
             FROM duplicate_review r JOIN duplicate_snapshots s ON s.pair_key=r.pair_key AND s.run_id=r.last_seen_run
             ORDER BY r.pair_key''')
-        return [dict(json.loads(r[0]), review_decision=r[1], review_notes=r[2], first_seen_run=r[3], last_seen_run=r[4]) for r in rows]
+        valid = {r[0] for r in self.connection.execute('SELECT event_id,payload FROM events')
+                 if eligible(json.loads(r[1]))}
+        return [item for r in rows
+                if (item := dict(json.loads(r[0]), review_decision=r[1], review_notes=r[2],
+                                 first_seen_run=r[3], last_seen_run=r[4]))
+                and {item['event_id_a'], item['event_id_b']}.issubset(valid)]
 
     def _review(self, kind: str, key: str, run_id: str) -> sqlite3.Row | None:
         if kind == 'event':
             return self.connection.execute('''SELECT r.* FROM event_review r JOIN event_snapshots s
-                ON s.event_id=r.event_id WHERE s.run_id=? AND s.event_id=? AND s.visible=1''', (run_id, key)).fetchone()
+                ON s.event_id=r.event_id WHERE s.run_id=? AND s.event_id=?''', (run_id, key)).fetchone()
         if kind == 'place':
             return self.connection.execute('SELECT * FROM place_review WHERE run_id=? AND candidate_id=?', (run_id, key)).fetchone()
         if kind == 'duplicate':
