@@ -1317,6 +1317,45 @@ schemas are never reset. XLSX text limits fail visibly rather than truncate sour
 except the explicitly marked description cell above. Edits to area, description, duration,
 organizer, availability or schedule cells are visual only and never imported.
 
+### Cloud field hardening (2026-10-29)
+
+Narrow, source-neutral grammar and presentation changes; validation, ledger and open
+evidence gaps are in [the cloud hardening report](CLOUD_FIELD_HARDENING_VALIDATION.md).
+
+- **Jabama descriptions.** `description_text` is the About body followed by directly
+  adjacent program sections (`چه برنامه‌ای داریم؟`, `برنامه …`), headings kept, in page
+  order, as one exact retained slice. A detached, renamed or empty program section
+  leaves the About-only value; a missing About body yields no description.
+- **Session drift.** Besides `embedded_session_schema_drift`, a failed session reports
+  one value-free cause: `embedded_session_drift_new_properties`, `…_timeslots` or
+  `…_field`. Unexpected property *names* (never values) are kept in raw metadata
+  `source_session_drift_keys`. With no readable session, readiness adds
+  `source_sessions_unreadable`. No session is inferred.
+- **Location and length.** A venue is also read when prose places the event at
+  `در/توی <head> <name>` with `در جریان`/`برگزار` directly after it *and* the labelled
+  address ends with exactly that name, or from `در <name> پارک برگزار …`. A city
+  outside the default list is read only from `<event noun> در/in <city>`
+  (`EXPLICIT_EVENT_CITIES`). An unlabelled `N‌روزه`/`N‌ساعته` adjective on an event noun
+  is a `duration_text`; labels win. `لوکیشن حدودی … <name>.` is `area_text` only.
+- **Explicit date lists.** A same-month or month-per-day list followed by one clock
+  (inline, or a clock-only line directly below, which then joins
+  `source_schedule_text`) gives every listed date that clock. If a detail-header
+  clock disagrees, every listed date stays date-only with `schedule_clock_conflict`;
+  without a listed clock the header clock stays on its own date only. Weekday
+  contradictions and unordered lists are not expanded.
+- **Length conflict.** A header length and an explicit `به مدت …` sentence that
+  disagree leave `duration_text` null with `source_field_conflict` on
+  `duration_text` and readiness reason `duration_conflict`.
+- **Noisy Reel titles.** The caption-corroboration rule tolerates one letter
+  substitution and a differing clock only when every frame of the media group has
+  corrupt mixed-script weekday/clock wording. The caption keeps its `primary`
+  identity slot and clean schedule; absorbed frames are collapsed provenance.
+  Earlier separate frame Event IDs are not aliased: their history and decisions
+  remain in SQLite and simply stop appearing in new runs.
+- **Presentation.** `remaining_session_count` is null (blank) when the actionable
+  occurrences are only date ranges; the `جلسه‌ها` cell lists sessions
+  chronologically without changing stored order or identity.
+
 ### Data readiness
 
 Readiness is an explainable assessment, separate from owner decisions, publication

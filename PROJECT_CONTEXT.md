@@ -25,6 +25,16 @@ run projections; raw reprocessing is required to recover facts absent from a sav
 snapshot. Historical SQLite records, decisions and workbook snapshots remain intact.
 See [the admission contract](docs/DATA_CONTRACTS.md#event-admission).
 
+**Cloud field hardening (2026-10-29):** Jabama descriptions include the adjacent
+program section; unsupported embedded session shapes report value-free causes and
+route to schedule review without inferred sessions. Explicit date lists with one
+shared clock become dated sessions; header/list clock and length disagreements are
+kept as conflicts, never chosen. Narrow venue/city/length/approximate-area grammars,
+noisy same-Reel title tolerance and null remaining-session counts for ranges are
+described in [the data contracts](docs/DATA_CONTRACTS.md#cloud-field-hardening-2026-10-29).
+OCR and live-source defects without accessible evidence remain open; see
+[the cloud hardening report](docs/CLOUD_FIELD_HARDENING_VALIDATION.md).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile

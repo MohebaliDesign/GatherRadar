@@ -29,3 +29,9 @@ Only the observed empty-timeslots shape is supported. Nonempty timeslots,
 different routes, new session properties and new stream envelopes remain
 explicitly unresolved. Public page prices are not inherited by sessions, and
 their currency is not inferred from unrelated page structured data.
+
+Cloud hardening (2026-10-29): unsupported sessions additionally report one of
+embedded_session_drift_new_properties / _timeslots / _field, and the raw item
+keeps only the names of unexpected session properties in
+source_session_drift_keys. The two audited pottery pages still need a fresh
+public snapshot before any new session shape is supported.
