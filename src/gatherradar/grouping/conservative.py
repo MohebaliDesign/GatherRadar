@@ -236,18 +236,7 @@ def _inline_noisy_repetition(first: _Profile, second: _Profile) -> bool:
     weekdays = {normalize(day) for day in rules.PERSIAN_WEEKDAYS}
     if normalize(left).strip() not in weekdays:
         return False
-    def corrupt(profile: _Profile) -> bool:
-        named = profile.signals.named_event
-        if named is None:
-            return False
-        for line in profile.lines:
-            if named.text not in line:
-                continue
-            tail = normalize(line.split(named.text, 1)[1])
-            return bool(re.search(r'[a-z]{2,}', tail) and 'ساعت' in tail
-                        and any(day in tail for day in weekdays))
-        return False
-    if not (corrupt(first) and corrupt(second)):
+    if not (_corrupt_temporal(first) and _corrupt_temporal(second)):
         return False
     for reader in (fields.address, fields.venue_name, fields.city, fields.price_text,
                    fields.registration_url):
@@ -255,6 +244,51 @@ def _inline_noisy_repetition(first: _Profile, second: _Profile) -> bool:
         if a or b:
             return False
     return bool(_subtitle_keys(first) & _subtitle_keys(second))
+
+
+def _corrupt_temporal(profile: _Profile) -> bool:
+    """The named title's own line has mixed-script garbage between weekday and clock.
+
+    E.g. "ورکشاپ پیتزاء دوشنبه yao ساعت ۷": Latin letters inside Persian
+    weekday/clock wording are OCR corruption, so its clock is not evidence.
+    """
+    weekdays = {normalize(day) for day in rules.PERSIAN_WEEKDAYS}
+    named = profile.signals.named_event
+    if named is None:
+        return False
+    for line in profile.lines:
+        if named.text not in line:
+            continue
+        tail = normalize(line.split(named.text, 1)[1])
+        return bool(re.search(r'[a-z]{2,}', tail) and 'ساعت' in tail
+                    and any(day in tail for day in weekdays))
+    return False
+
+
+# One OCR letter substitution is tolerated only inside a word of at least this
+# many letters, and only when the frame's own temporal line is proven corrupt.
+_MIN_SUBSTITUTION_WORD = 4
+
+
+def _ocr_same_word(media: str, caption: str, *, noisy: bool) -> bool:
+    """Whether an OCR word plausibly renders the caption's word.
+
+    Always: identical, or one extra trailing character ("پیتزاء", "پیتزاه").
+    Only for a frame already proven noisy: additionally one in-place letter
+    substitution ("پیعزاء"). Digits never take part, so numbers stay significant.
+    """
+    if media == caption:
+        return True
+    if len(media) == len(caption) + 1 and media.startswith(caption):
+        return True
+    if not noisy:
+        return False
+    if len(media) == len(caption) + 1:
+        media = media[:-1]
+    if len(media) != len(caption) or len(caption) < _MIN_SUBSTITUTION_WORD:
+        return False
+    changed = [(a, b) for a, b in zip(media, caption) if a != b]
+    return len(changed) == 1 and all(char.isalpha() and not char.isascii() for char in changed[0])
 
 
 def _subtitle_keys(profile: _Profile) -> set[tuple[str, ...]]:
@@ -458,8 +492,13 @@ class ConservativeGrouping:
                     media_title, _ = event_title(member.signals)
                     media_words = title_equivalence_key(media_title or '')
                     media_days = {normalize(s.text) for s in member.signals.dates} & weekdays
+                    # Every frame of the group shows corrupt weekday/clock wording,
+                    # so neither its clock nor one substituted letter is evidence
+                    # of a different activity. Clean frames get no such tolerance.
+                    noisy = all(p.fragment.kind is EvidenceKind.REEL_FRAME_OCR and _corrupt_temporal(p)
+                                for p in group.members)
                     same_subject = (len(media_words) == len(subjects) + 1 and media_words[:1] == words[:1]
-                        and all(a == b or (a.startswith(b) and len(a) == len(b) + 1)
+                        and all(_ocr_same_word(a, b, noisy=noisy)
                                 for a, b in zip(media_words[1:], subjects)))
                     media_date = fields.source_date_text(member.signals)
                     calendar_terms = {normalize(m) for m in rules.JALALI_MONTHS + rules.JALALI_MONTH_FORMS + rules.GREGORIAN_MONTHS}
@@ -469,9 +508,11 @@ class ConservativeGrouping:
                     media_clocks = {phrase_tokens(s.text) for s in member.signals.times}
                     if (member.fragment.kind is EvidenceKind.REEL_FRAME_OCR and same_subject
                             and caption_days and media_days == caption_days
-                            and no_calendar and (not media_clocks or media_clocks.issubset(caption_clocks))):
+                            and no_calendar and (noisy or not media_clocks or media_clocks.issubset(caption_clocks))):
                         lead.collapsed.extend(p.fragment for p in group.members)
                         lead.collapsed.extend(group.collapsed)
+                        # Corrupt OCR clocks are not evidence against the caption's
+                        # clean schedule; the frames stay auditable as collapsed provenance.
                         lead.notes.append((member.fragment.fragment_id, 'caption_corroborates_noisy_activity_title'))
                         groups.remove(group)
                         absorbed = True

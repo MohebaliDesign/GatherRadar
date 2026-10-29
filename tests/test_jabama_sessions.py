@@ -116,14 +116,32 @@ class JabamaSessionTests(unittest.TestCase):
     def test_embedded_event_must_match_current_detail_identity(self):
         result = _result(_page(event_id='other-event'))
         self.assertEqual(result.sessions, ())
-        self.assertEqual(result.diagnostics, ('embedded_sessions_schema_drift',))
+        self.assertEqual(result.diagnostics, ('embedded_sessions_schema_drift', 'embedded_sessions_drift_event_identity'))
 
     def test_unsupported_timeslots_and_new_session_properties_are_visible(self):
-        for changes in ({'timeslots': ['09:00']}, {'newClock': '10:00'}):
+        for changes in ({'timeslots': ['09:00']}, {'newClock': '10:00', 'bad key!': 1}):
             with self.subTest(changes=changes):
                 result = _result(_page([{**SESSION, **changes}]))
                 self.assertEqual(result.sessions, ())
                 self.assertIn('embedded_session_schema_drift', result.diagnostics)
+
+    def test_additive_unknown_properties_keep_only_identity_start_and_duration(self):
+        result = _result(_page([{**SESSION, 'pricePerPerson': 250000, 'remainingSeats': 3,
+                                 'newClock': '10:00', 'statusCode': 'X'}]))
+        value, = result.sessions
+        self.assertEqual((value.source_session_id, value.start_iso, value.duration_hours),
+                         ('demo-session-a', '2026-09-24T17:00:00.000Z', '2'))
+        self.assertEqual(value.schema_status, 'unverified_properties')
+        self.assertIsNone(value.price_per_person)  # meaning may be changed by unknown keys
+        self.assertIsNone(value.remaining_seats)
+        self.assertIsNone(value.enabled)
+        self.assertEqual(result.drift_keys, ('newClock', 'statusCode'))
+        self.assertIn('embedded_session_drift_new_properties', result.diagnostics)
+        self.assertIn('embedded_session_unverified_shape', result.diagnostics)
+        self.assertNotIn('10:00', repr(result))
+        self.assertEqual(SourceSession.from_mapping(value.to_dict()), value)
+        documented = _result(_page()).sessions[0].to_dict()
+        self.assertNotIn('schema_status', documented)  # documented sessions hash as before
 
     def test_bad_timestamps_and_types_cannot_supply_sessions(self):
         for changes in ({'startIso': '2026-09-24'}, {'startIso': '2026-09-24T25:00:00Z'},
@@ -155,16 +173,16 @@ class JabamaSessionTests(unittest.TestCase):
         for table in ([{'_1': 99999}, 'loaderData'], [{'_1': 0}, 'loaderData'],
                       [{'_1': -1}, 'loaderData']):
             page = '<script>' + PREFIX + '(' + json.dumps(json.dumps(table)) + ');</script>'
-            self.assertEqual(_result(page).diagnostics, ('embedded_sessions_schema_drift',))
+            self.assertEqual(_result(page).diagnostics[0], 'embedded_sessions_schema_drift')
 
     def test_duplicate_json_keys_nonfinite_values_and_resource_bounds_fail_closed(self):
         for serialized in ('[{"_1":2,"_1":3},"loaderData",{},{}]', '[NaN]'):
             page = '<script>' + PREFIX + '(' + json.dumps(serialized) + ');</script>'
-            self.assertEqual(_result(page).diagnostics, ('embedded_sessions_schema_drift',))
+            self.assertEqual(_result(page).diagnostics[0], 'embedded_sessions_schema_drift')
         many = _page([{**SESSION, 'id': f'session-{i}'} for i in range(201)])
         self.assertEqual(_result(many).sessions, ())
         large = '<script>' + PREFIX + '(' + json.dumps('x' * 1_000_001) + ');</script>'
-        self.assertEqual(_result(large).diagnostics, ('embedded_sessions_schema_drift',))
+        self.assertEqual(_result(large).diagnostics, ('embedded_sessions_schema_drift', 'embedded_sessions_drift_payload_size'))
 
     def test_session_discount_is_reported_without_adjusting_source_price(self):
         result = _result(_page([{**SESSION, 'pricePerPerson': 100, 'hostDiscountPct': 10}]))

@@ -13,7 +13,15 @@ DISPOSITIONS = ('actionable', 'expired', 'beyond_horizon', 'needs_schedule_revie
 TEMPORAL_FIELDS = {'temporal', 'source_date_text', 'source_schedule_text', 'occurrences',
                    'source_sessions', 'start_date', 'end_date', 'start_time', 'end_time', 'timezone'}
 UNSAFE = ('conflict', 'unresolved', 'weekday_mismatch', 'invalid', 'unparsed', 'ambiguous',
-          'schema_drift', 'unreliable_temporal_ocr')
+          'schema_drift', 'unreliable_temporal_ocr', 'unverified_shape')
+# Session shapes not yet verified. They hold an upcoming session in review but
+# never question its own source date, so a passed session still expires.
+# Booking facts (sold-out flags, seats) never decide temporal relevance.
+HELD = ('unverified_shape',)
+
+
+def _held(code: str) -> bool:
+    return any(word in code for word in HELD)
 
 
 @dataclass(frozen=True)
@@ -97,15 +105,24 @@ def assess_relevance(event: Event, started_at: datetime, days: int = 14,
     if event.schedule_kind == 'conflict':
         return result('needs_schedule_review', 'conflicting_schedule')
     if event.occurrences:
-        sessions = tuple((o.occurrence_id, *_dated(o, reference, horizon,
-                         [c for c in o.diagnostics if not any(w in c for w in ('price', 'discount', 'availability'))]))
-                         for o in event.occurrences)
+        def session(o):
+            codes = [c for c in o.diagnostics if not any(w in c for w in ('price', 'discount', 'availability'))]
+            kind, reason = _dated(o, reference, horizon, [c for c in codes if not _held(c)])
+            # An unverified session shape leaves its booking facts unknown, never its
+            # own source date: a session that has ended is expired, otherwise review.
+            if kind != 'expired' and any(_held(c) for c in codes):
+                return o.occurrence_id, 'needs_schedule_review', (
+                    'unverified_timeslot' if any('timeslot' in c for c in codes) else 'unverified_session_shape')
+            return o.occurrence_id, kind, reason
+        sessions = tuple(session(o) for o in event.occurrences)
         ids = tuple(key for key, kind, _ in sessions if kind == 'actionable')
         if ids:
             return result('actionable', 'supported_occurrences_in_window', ids, sessions)
         kinds = {kind for _, kind, _ in sessions}
         bounded_range = all(o.end_date is not None and not _unsafe(o.diagnostics) for o in event.occurrences)
-        if 'needs_schedule_review' in kinds or (_unsafe(codes) and not bounded_range) or event.schedule_kind == 'recurring':
+        # Unverified session shape is judged per session above, by its own date.
+        event_codes = [c for c in codes if not _held(c)]
+        if 'needs_schedule_review' in kinds or (_unsafe(event_codes) and not bounded_range) or event.schedule_kind == 'recurring':
             return result('needs_schedule_review', 'unresolved_sessions', occurrences=sessions)
         if 'beyond_horizon' in kinds:
             return result('beyond_horizon', 'remaining_sessions_after_horizon', occurrences=sessions)
@@ -161,10 +178,13 @@ def relevant_document(document: dict, *, include_filtered: bool = False) -> dict
                     datetime.combine(date.fromisoformat(o['start_date']), time.min,
                                      tzinfo=ZoneInfo(o['timezone'])), o['occurrence_id']))
             next_session = upcoming[0] if upcoming else {}
+            # An ongoing range has no countable instances: "not applicable"
+            # (null), never a misleading zero remaining sessions.
+            countable = any(not o.get('end_date') for o in projected['occurrences'])
             projected.update(next_session_date=next_session.get('start_date'),
                 next_session_start_time=next_session.get('start_time'),
                 next_session_end_time=next_session.get('end_time'),
-                remaining_session_count=len(upcoming))
+                remaining_session_count=len(upcoming) if countable else None)
             actionable.append(projected)
         elif decision_record['disposition'] == 'needs_schedule_review':
             review.append(projected)

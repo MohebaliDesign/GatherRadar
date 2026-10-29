@@ -116,12 +116,19 @@ your note. Column meanings:
 | `آدرس` | Precise address, only when the source gives one |
 | `زمان‌بندی اعلام‌شده` | Exact source schedule wording: always shown for multiple sessions, weekly recurrence or daily windows; otherwise shown only when the normalized date is missing, inferred or diagnosed |
 | `مدت` | Stated length, never computed from times |
-| `ظرفیت / وضعیت ثبت‌نام` | Source availability wording (badge); `تکمیل ظرفیت` also sets lifecycle status |
+| `ظرفیت / وضعیت ثبت‌نام` | Booking status, separate from date relevance: the source's own availability wording (badge; `تکمیل ظرفیت` also sets lifecycle status), else per-session source facts in plain Persian (a session sellout flag, a flag contradicted by seat counts, or the first listed session's remaining seats), never a booking guarantee |
 | `توضیحات / معرفی` | The source's own description — not an AI or generated summary |
 | `برگزارکننده` | Explicitly labelled organizer/host only |
 | `آمادگی داده` | `آماده بررسی`, `نیاز به تکمیل`, `نیاز به بررسی زمان‌بندی`, or `منبع در دسترس نیست`; filter within the existing snapshot |
 | `دلیل بررسی` | Readable reason for the assessment, separate from human notes |
 | `جلسه‌ها` | Each supported occurrence's own date/time, price wording and availability; no arbitrary primary date |
+
+Three separate questions: the sheet (current Events vs Schedule Review) answers
+"is it temporally relevant now"; `آمادگی داده` answers "are the details complete and
+consistent"; the capacity column and `وضعیت رویداد` answer "what does the source say
+about booking". When the source states two different values for one field (for
+example length «۲ ساعت» and «سه‌ساعته»), the field stays empty and `دلیل بررسی`
+quotes both values verbatim.
 
 Readiness does not assert publication approval or complete collection. A missing
 optional price, location or description is not a defect without evidence that a
@@ -152,7 +159,9 @@ a changed projection gets a new sheet and preserves the old one.
 The former `خلاصه` column was always empty and is no longer shown; `summary` stays a
 reserved machine field. Descriptions are complete in the cell but rows stay at most 60
 points; open or expand the cell to read it. Only a description longer than Excel's
-32,767-character cell limit is cut, with a visible marker; JSON/CSV keep all of it.
+32,767-character cell limit is cut, with a visible marker; JSON/CSV keep all of it. Any
+value over that limit (for example the session list of an Event with dozens of sessions)
+is also kept whole, in order, in the hidden `_overflow` sheet; the cell refers to it.
 Additional supporting-source columns appear only for multiple source URLs, so each
 has its own clickable hyperlink. Original URLs remain in hidden `evidence_urls` and
 portable exports. Labels are compact publisher names; hyperlink targets remain exact.
@@ -257,8 +266,15 @@ empty, and compact JSON for nested arrays/objects. Formula-risk values beginning
 `=`, `+`, `-`, `@` (including whitespace-concealed prefixes) receive an apostrophe;
 leading tab/newline also gets a prefix. JSON preserves the original string. XLSX writes
 source/review strings as explicit literal cells. Text exceeding XLSX's 32,767-character
-cell limit fails export rather than silently truncating. Empty CSV tables retain headers.
-CSV is an interchange format; it carries no badge/font/color styling. JSON/CSV and
+cell limit is never silently truncated: snapshot values go losslessly to hidden `_overflow`;
+an over-limit reviewer note or any unfitted cell fails export with its sheet, record ID,
+field and length. Empty CSV tables retain headers.
+CSV is an interchange format; it carries no badge/font/color styling. Serialized
+session lists can exceed common CSV reader limits (an Event with hundreds of
+timeslots holds well over 131,072 characters in `occurrences`): Python readers must
+raise `csv.field_size_limit`, and spreadsheet programs opening the CSV directly may
+cut cells at 32,767 characters. Use the XLSX (lossless `_overflow`) or JSON for such
+values; the CSV cell itself is complete. JSON/CSV and
 SQLite DDL remains version 1. Record migration is additive on read: legacy records
 get empty occurrences and unknown schedule kind, never fabricated sessions. Stored
 historical payloads, reviews, duplicate state and tokens are not rewritten. XLSX

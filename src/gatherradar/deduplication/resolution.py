@@ -186,7 +186,8 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
                 for field in ("source_item_ids", "candidate_ids", "evidence_urls", "evidence_fragment_ids", "diagnostics"):
                     changes[field] = tuple(sorted(set(getattr(previous, field)) | set(getattr(value, field))))
                 for field in ("price_text", "price_amount", "currency", "price_per_person", "unit_price",
-                              "host_discount_pct", "platform_discount_pct", "availability_text", "remaining_seats", "enabled"):
+                              "host_discount_pct", "platform_discount_pct", "availability_text", "remaining_seats", "enabled",
+                              "source_sold_out", "capacity_limit"):
                     a, b = getattr(previous, field), getattr(value, field)
                     changes[field] = a if b is None or a == b else b if a is None else None
                     if a is not None and b is not None and a != b:
@@ -240,6 +241,10 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
     # Lifecycle status only from explicit sold-out wording; availability itself
     # never participates in matching or identity.
     status = EventStatus.SOLD_OUT if is_sold_out(values["availability_text"]) else EventStatus.UNKNOWN
+    if status is EventStatus.UNKNOWN and values["occurrences"] and all(
+            "source_session_sold_out" in o.diagnostics for o in values["occurrences"]):
+        # Every public session carries a verified, uncontradicted sold-out flag.
+        status = EventStatus.SOLD_OUT
     return Event(
         status=status,
         event_id=event_id,
@@ -258,5 +263,8 @@ def resolve_group(members: tuple[CandidateContext, ...], group_id: str) -> Event
         diagnostics=tuple(sorted(set(diagnostics), key=lambda d: (d.code, d.field, d.candidate_ids))),
         reference_urls=tuple(dict.fromkeys(u for c in ordered for u in getattr(c.candidate, "reference_urls", ()))),
         channel_provenance=tuple(sorted({channel_provenance(c) for c in members}, key=lambda p: p.candidate_id)),
+        conflicting_values=tuple(dict.fromkeys(
+            (field, value) for c in ordered for field, value in getattr(c.candidate, "field_conflict_values", ())
+            if values.get(field) is None)),
         **values,
     )

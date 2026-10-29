@@ -1189,7 +1189,8 @@ Exports may live in synced folders. See [recovery and backup policy](LOCAL_REVIE
 
 Default: `data/review/GatherRadar.xlsx`. Permanent sheets: `راهنما`, `تاریخچه اجراها`,
 `بررسی تکراری‌ها`; hidden `_meta` contains schema version, latest generated run,
-and generation timestamp. Database tables are not exposed as tabs.
+and generation timestamp. Hidden `_overflow` appears only when a value exceeds the cell
+limit (see below). Database tables are not exposed as tabs.
 
 Event visible columns in order (shared with the optional Sheets row serializer):
 
@@ -1213,7 +1214,7 @@ treatment and stays separate from `وضعیت رویداد`. `توضیحات / �
 source description, wrapped, in a bounded-width column with the usual 60-point row cap;
 open the cell to read it all. Only a description over the 32,767-character XLSX cell limit
 is cut, with an explicit `… [متن کامل در review.json و events.csv]` marker; SQLite, JSON and
-CSV keep it whole. Only link columns become hyperlinks, so text starting with a URL stays text.
+CSV keep it whole, and the workbook keeps it whole in hidden `_overflow` (below). Only link columns become hyperlinks, so text starting with a URL stays text.
 
 Where several supporting URLs exist, extra `پیوند منبع N` columns make each URL
 clickable with ordinary hyperlinks. No generated hyperlink formulas or macros.
@@ -1313,9 +1314,253 @@ canonical persistence and portable exports. The source engine never consumes hum
 
 Save in memory to a temporary sibling, reopen/verify cells, then replace atomically.
 A file lock/replacement failure leaves old bytes and committed SQLite intact. Unsupported
-schemas are never reset. XLSX text limits fail visibly rather than truncate source values,
-except the explicitly marked description cell above. Edits to area, description, duration,
-organizer, availability or schedule cells are visual only and never imported.
+schemas are never reset. XLSX text limits never truncate values silently. A snapshot value
+over the 32,767-character cell limit (e.g. the serialized `occurrences` of an Event with
+dozens of sessions) is stored losslessly in the hidden permanent `_overflow` sheet
+(`sheet`, `record_id`, `field`, `sha256`, `length`, `chunk`, `chunks`, `text`; chunks of at
+most 32,000 characters), keyed by snapshot sheet, Event/candidate ID and column. The
+snapshot cell then holds `[[gatherradar-overflow sha256=… length=… chunks=…]]` for a hidden
+technical column, or a readable prefix with a visible marker for a visible column (the
+description keeps its `… [متن کامل در review.json و events.csv]` marker). Reassembly checks
+chunk order, length and SHA-256. Overflow rows are appended with a new snapshot and never
+rewritten; `_overflow` is never imported. Reviewer-owned decision/note values are never
+shortened: an over-limit value fails with the sheet, record ID, field and length, as does
+any remaining unfitted cell. Workbooks without `_overflow` remain readable; the workbook
+schema stays version 3. Edits to area, description, duration, organizer, availability or
+schedule cells are visual only and never imported.
+
+### Cloud field hardening (2026-10-29)
+
+Narrow, source-neutral grammar and presentation changes; validation, ledger and open
+evidence gaps are in [the cloud hardening report](CLOUD_FIELD_HARDENING_VALIDATION.md).
+
+- **Jabama descriptions.** `description_text` is the About body followed by directly
+  adjacent program sections (`چه برنامه‌ای داریم؟`, `برنامه …`), headings kept, in page
+  order, as one exact retained slice. A detached, renamed or empty program section
+  leaves the About-only value; a missing About body yields no description.
+- **Session drift.** Besides `embedded_session_schema_drift`, a failed session reports
+  one value-free cause: `embedded_session_drift_new_properties`, `…_timeslots` or
+  `…_field`. Unexpected property *names* (never values) are kept in raw metadata
+  `source_session_drift_keys`. With no readable session, readiness adds
+  `source_sessions_unreadable`. No session is inferred.
+- **Location and length.** A venue is also read when prose places the event at
+  `در/توی <head> <name>` with `در جریان`/`برگزار` directly after it *and* the labelled
+  address ends with exactly that name, or from `در <name> پارک برگزار …`. A city
+  outside the default list is read only from `<event noun> در/in <city>`
+  (`EXPLICIT_EVENT_CITIES`). An unlabelled `N‌روزه`/`N‌ساعته` adjective on an event noun
+  is a `duration_text`; labels win. `لوکیشن حدودی … <name>.` is `area_text` only.
+- **Explicit date lists.** A same-month or month-per-day list followed by one clock
+  (inline, or a clock-only line directly below, which then joins
+  `source_schedule_text`) gives every listed date that clock. If a detail-header
+  clock disagrees, every listed date stays date-only with `schedule_clock_conflict`;
+  without a listed clock the header clock stays on its own date only. Weekday
+  contradictions and unordered lists are not expanded.
+- **Length conflict.** A header length and an explicit `به مدت …` sentence that
+  disagree leave `duration_text` null with `source_field_conflict` on
+  `duration_text` and readiness reason `duration_conflict`.
+- **Noisy Reel titles.** The caption-corroboration rule tolerates one letter
+  substitution and a differing clock only when every frame of the media group has
+  corrupt mixed-script weekday/clock wording. The caption keeps its `primary`
+  identity slot and clean schedule; absorbed frames are collapsed provenance.
+  Earlier separate frame Event IDs are not aliased: their history and decisions
+  remain in SQLite and simply stop appearing in new runs.
+- **Presentation.** `remaining_session_count` is null (blank) when the actionable
+  occurrences are only date ranges; the `جلسه‌ها` cell lists sessions
+  chronologically without changing stored order or identity.
+
+### Live-run QA fixes (2026-10-29)
+
+Defects confirmed in the owner's live run; see [the live-run QA report](LIVE_RUN_QA_2026-10-29.md).
+
+- **Nested labels.** A label written inside a longer matched label belongs to it:
+  `مدت زمان:` is a duration label, never also the date label `زمان:`. A later real
+  `زمان:` still counts.
+- **Clock separators and day-parts.** `۸ آبان · ۱۸:۰۰` keeps its clock. Extraction keeps
+  a Persian day-part word directly after a clock or clock range (`ساعت ۵ عصر`).
+  Normalization applies it within fixed bounds: `صبح/بامداد` 1–11; `عصر/بعدازظهر` 1–11
+  (+12) and 12; `ظهر` 9–12 as written and 1–4 (+12); `شب` 6–11 (+12). Anything else with
+  a day-part (e.g. `۱۲ شب`, `۲ شب`) is `ambiguous_meridiem`.
+- **Bare early hours.** A clock hour 1–6 written without minutes and without a day-part
+  (`ساعت ۵`) is `ambiguous_meridiem`: dates stay, no clock is chosen, the Event goes to
+  schedule review. `HH:MM` clocks and hours 7–24 are read as written.
+- **Weekday lists.** `جمعه و شنبه ۸ و ۹ آبان` expands only when the weekdays match the
+  listed dates one-to-one in order; otherwise `weekday_contradiction` and no occurrence.
+- **Venues.** A quoted event name placed at a name the address ends with
+  (`ایونت «چیزمیز» در کافه‌کتاب مدیا`), and a whole `در/توی <head> <name>` line directly
+  under an event title line when the same name appears again elsewhere.
+- **Jabama sessions with unknown properties.** If a session's only drift is extra,
+  safely named properties (at most 20), the session keeps its own `id`, `startIso` and
+  `durationHours`, with `SourceSession.schema_status = "unverified_properties"`; its
+  price, discount, seats and enabled flag are not read. The occurrence carries
+  `embedded_session_unverified_shape` and is never actionable, unless its date *and*
+  clock equal exactly one schedule stated in the page's visible text
+  (`embedded_session_corroborated_by_page_text`). Readiness reason:
+  `source_sessions_unverified`. Non-empty `timeslots` and unsafe key names are still
+  refused. `schema_status` is omitted when unset, so documented sessions hash as before.
+- **OCR fallback chain.** `FallbackOcrProvider` runs local engines in the order of
+  `GATHERRADAR_OCR_ENGINES` (default `tesseract,easyocr,windows`), skipping engines that are
+  not installed. A later engine runs only after a failed or empty result. Every attempt is
+  stored as its own fragment with its engine, version and config; the chosen attempt is
+  appended last, so latest-per-slot selection uses it. Attempts are never concatenated.
+  The cache follows the first available engine and empty cached results are retried.
+  Refresh manifests add `ocr_fallback_used` and `ocr_engine_unavailable` media diagnostics.
+
+### Jabama session evidence boundary (2026-10-29)
+
+The owner's October 29 crawl reported the session property `soldOut` on all ten Jabama
+pages and non-empty `timeslots` on three Experiences pages. The owner's value-free v3
+structural report (two saved pages: 81 and 7 sessions) then confirmed the *shapes*:
+`soldOut` is a boolean (false in all 88 sessions), and every timeslot is an object with
+exactly twelve keys. The owner's relationship report over the same two pages (88 parents,
+295 timeslots; GR-EXCEL-CLOSURE-20261029) then verified the value relationships for every
+timeslot: `sessionId` equals the parent `id`, the page Event owns every session, start is
+before end, every timeslot lies inside its parent window and on the parent's local date,
+seat counts are consistent, no duplicate or overlapping timeslots, no unknown or missing
+keys, all 590 endpoints are UTC `Z`. The 288 wheel timeslots are all shorter than their
+parent duration; the 7 hand-pottery timeslots equal it. No `soldOut=true` example exists.
+
+**`soldOut` (parent session).** A boolean is documented (`SourceSession.sold_out`), kept
+separate from `enabled`, `remainingSeats`, timeslot capacity and page availability wording.
+Any other type refuses the session (`embedded_session_drift_sold_out_type`, value-free
+shape retained); JSON null is no flag. `false` proves nothing and adds nothing, so a
+documented session with `soldOut: false` and `timeslots: []` is handled exactly like
+the earlier documented shape. `true` never sets the Event status by itself:
+
+| Record | Occurrence code | Effect |
+| --- | --- | --- |
+| `true` and the same record has remaining seats > 0 | `embedded_session_sold_out_availability_conflict` | Seat count dropped; readiness `source_availability_conflict` (needs enrichment); dates unaffected |
+| `true`, meaning unverified (default) | `embedded_session_sold_out_unverified` | Booking column and readiness reason `source_sold_out_flag`; dates unaffected |
+| `true`, meaning verified (gate `"sold_out"`, not set), no contradiction | `source_session_sold_out` | Event `sold_out` only when every occurrence carries it |
+
+Booking facts never decide temporal relevance: a sold-out-flagged session is current
+until its own end and then expired, exactly like any other session. An upcoming
+sold-out Event is never `expired`, and `false`/`enabled`/positive seats never promise a
+completed booking.
+
+**Timeslots (child records).** Allowlisted keys, all required: `id`, `sessionId`, `startAt`,
+`endAt` (strings), `enabled` (boolean), `capacityLimit`, `bookedCount`, `remainingSeats`
+(non-negative integer or null), `pricePerPerson`, `unitPrice` (non-negative number or null),
+`hostDiscountPct`, `platformDiscountPct` (0–100 or null). Each timeslot is validated on its
+own: an unknown or missing key, a wrong type, `sessionId` different from the parent `id`, a
+timestamp without an explicit offset, or `endAt` not after `startAt` refuses only that
+timeslot (`embedded_session_drift_timeslot_{new_properties,missing_properties,type,ownership,timestamp,order}`);
+its siblings remain. A parent with unknown keys *and* timeslots is refused
+(`embedded_session_drift_timeslots`), as is a non-object timeslot.
+
+Each accepted timeslot is one `SourceSession` with the parent's `source_session_id`, its
+own `source_timeslot_id`, `end_iso`, capacity facts and locator
+`react-router:loaderData/routes/events.$id/sessions/{i}/timeslots/{j}`. The parent itself is
+not also an occurrence. `duration_hours` stays null: the parent `durationHours` is never
+assumed to be a timeslot length. The parent window is `startIso` + `durationHours`:
+
+- inside it: no status (`embedded_session_timeslots` on the page);
+- outside it: `timeslot_outside_parent_window` → occurrence code
+  `embedded_timeslot_parent_window_conflict` (always Schedule Review);
+- parent duration missing: `timeslot_parent_window_unknown` (always Schedule Review).
+
+Seat counts are kept only when consistent: if `capacityLimit − bookedCount ≠ remainingSeats`,
+all three are dropped (`embedded_timeslot_availability_inconsistent`). Missing capacity is
+never derived. Timeslot IDs must be unique on the page: an identical repeat is kept once
+(`embedded_timeslot_duplicate_id`); differing records with one ID are all dropped
+(`embedded_timeslot_identity_conflict`). A page keeps at most 2,000 session records.
+
+`EventOccurrence` gains optional `source_timeslot_id`, `source_sold_out` and `capacity_limit`.
+Occurrence identity adds `("timeslot", id)` only for timeslots, so existing session
+identities, stored records (which lack the fields) and raw hashes are unchanged: new
+`SourceSession` keys are omitted from serialization while null.
+
+**Publication gate.** `normalization.schedules.VERIFIED_SESSION_SEMANTICS` contains
+`"timeslots"` (2026-10-29, from the relationship report above). It is schema-scoped: only
+records produced by the strict Jabama parser carry `source_timeslot_id`, and each still
+passes every per-record check. A timeslot inside its parent window is a dated occurrence
+with its own start/end and no diagnostic; it is eligible for the current Event view when it
+falls inside the horizon (applied per timeslot; only in-horizon sessions are listed there,
+SQLite keeps all). Temporal eligibility is not a claim that a seat can be booked. Outside
+the parent window (`embedded_timeslot_parent_window_conflict`) or with no parent duration
+(`embedded_timeslot_unverified_shape`) it stays in Schedule Review. A visible page clock
+range on the same date that contains the timeslots is their parent window and is not
+emitted as another session. `"sold_out"` is not set. Removing a name re-holds those records
+on an offline `refresh --stored`.
+
+**Whole-session windows (legacy-941).** A session without timeslots whose window disagrees
+with the activity's own stated length (`duration_text`) — shorter than it, or at least twice
+as long and at least one hour longer — is an opening/booking window, not attendance time:
+`session_window_duration_conflict` keeps its dates but sends it to Schedule Review with the
+Persian reason `session_window_conflict`. No timeslots are invented and no length is chosen.
+The pottery reports do not validate this different page.
+
+**Old observations.** Stored observations keep the session records parsed at collection
+time. `refresh --stored` cannot recover timeslots refused by an earlier parser; the next
+normal collection appends new revisions because the parsed session records are part of
+the observation hash.
+
+**Owner relationship check.** `python -m gatherradar diagnose jabama-timeslots --html a.html
+[--html b.html] --output r.json` reads browser-saved public pages and writes only booleans
+and counts per page position: session/timeslot counts and timeslots per session;
+`sessionId == parent id`; `eventId` == page Event; timestamp forms (UTC `Z` / explicit offset /
+unparseable); start before end; parent window within/overlapping/disjoint; starts at parent
+start; ends at parent end; timeslot length equal to `durationHours`; same Tehran date as the
+parent; crossing local midnight; overlapping siblings; seat-count consistency and remaining
+above capacity; `enabled` and `soldOut` values and their contradictions with seat counts;
+duplicate session/timeslot IDs; unknown/missing keys and per-key type mismatches; and what
+the conservative parser accepted. File names, identifiers, timestamps, prices and text are
+never written. The gate is opened only after this report shows ownership holding for every
+timeslot, ordered timestamps with explicit offsets, timeslots inside their parent windows
+and consistent seat counts; `"sold_out"` additionally needs at least one `soldOut=true`
+example whose seat counts agree.
+
+Envelope failures still add a value-free stage code after `embedded_sessions_schema_drift`:
+`embedded_sessions_drift_{payload_count,payload_size,call_shape,table,route,event_identity,sessions,session_list}`.
+New observations retain up to three value-free `source_session_drift_shapes` (type, string
+form, length bucket, number kind/sign, boolean value, array length/item shapes, nested key
+names; depth ≤ 4, ≤ 30 keys). `python -m gatherradar diagnose jabama-sessions [--html saved.html]
+[--output r.json]` still writes the structural report; it now also shows adapter and schema
+names containing `/`.
+
+### Final Excel closure (GR-EXCEL-CLOSURE-20261029)
+
+General rules added from the latest owner workbook (run `ca3548cb…`); no title or ID is
+used by production code. See [the closure report](FINAL_EXCEL_ACCEPTANCE.md).
+
+- **Presence venue.** "در/توی <head> <name>" followed directly by a presence verb
+  (`منتظر`, `قراره`) in the clause that also states the event's dates is the venue, for
+  generic heads too ("از ۶ تا ۸ آبان، توی عمارت زیرخاکی منتظر …"). Those verbs end names.
+- **Address-building venue.** A prose "در/توی <name>" followed by a clause boundary or a
+  presence/holding verb, whose exact name is an address component after a building head
+  (`مجتمع تجاری`, `مرکز خرید`, `مجتمع`, `ساختمان`, `برج`, `پاساژ`, `عمارت`, `باغ`, `هتل`), is the
+  venue in the prose wording ("در تیدا سنتر" + "مجتمع تجاری تیدا سنتر، طبقه دوم"). The
+  building and floor stay in the address. The clause must carry an event noun or the
+  event's dates; office, sponsor, past and city names never qualify.
+- **City.** Hashtags and handles (`#ایونت_تهران`, `@…`) never supply an event city;
+  explicit labels, address tokens and ordinary prose still do.
+- **Narrative length.** A length adjective after an activity noun ("تجربه‌ای سه‌ساعته",
+  "کارگاه ۹۰ دقیقه‌ای") is a narrative length, like "به مدت …". A disagreement with the
+  header length leaves `duration_text` null with `source_field_conflict`.
+- **Conflicting values.** `EventCandidate.field_conflict_values` and
+  `Event.conflicting_values` keep the disagreeing wordings as `(field, value)` pairs in
+  source order for every field left null by a conflict (absent in older records). The
+  readiness explanation quotes them: "مدت در منبع: «۲ ساعت» / «سه‌ساعته»".
+- **Program sections.** Jabama "چه برنامه‌ای داریم؟" sections join About in page order even
+  when another section (venue, rules) separates them. Adjacent sections are one exact
+  slice; a separated one is its own exact slice after a blank line, so no contiguous span
+  is implied. Repeated blocks are kept once; other sections are never copied. Structural
+  description values may therefore be blank-line-separated ordered exact slices.
+- **Booking column.** The capacity column shows the source's availability wording, else
+  per-session booking facts in Persian (sellout flag, contradicted flag, first listed
+  session's remaining seats) — facts, never a guarantee.
+
+**OCR quality policy `ocr-quality/1`.** `ocr/quality.py` decides only whether another
+local engine should read an image: text is unusable when it is empty, mostly symbols,
+mostly fragments, has scattered short Latin tokens in Persian text, or has several noisy
+lines. Missing dates, titles or prices are never treated as OCR failure, and text is never
+edited. The fallback chain continues past unusable text and chooses the first usable
+reading, else the best-scoring one; readings are never concatenated. The evidence cache
+is keyed by image hash, media slot and engine/version/configuration: a usable latest
+reading is reused; an unusable one is retried only with engines that have not read that
+image yet, so a newly installed engine can recover old images without rerunning good
+ones. Semantic selection prefers the latest usable reading of the same image over a newer
+unusable one; a new capture still replaces older readings. Reliable caption or website
+facts are never replaced by OCR.
 
 ### Data readiness
 

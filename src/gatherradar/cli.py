@@ -148,6 +148,39 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_instagram.add_argument('--max-carousel-slides', type=int, default=20)
     evidence_instagram.add_argument('--max-reel-frames', type=int, default=6)
 
+    diagnose = subcommands.add_parser('diagnose', help='Read-only structural diagnostics of retained local data.')
+    diagnose_kinds = diagnose.add_subparsers(dest='diagnose_kind', required=True)
+    sessions = diagnose_kinds.add_parser('jabama-sessions', help='Value-free report of Jabama embedded session schemas.')
+    sessions.add_argument('--data-dir', default='data')
+    sessions.add_argument('--html', action='append', default=[],
+                          help='A browser-saved public Jabama detail page to describe; repeatable.')
+    sessions.add_argument('--output', help='Write the JSON report here instead of printing it.')
+    timeslots = diagnose_kinds.add_parser(
+        'jabama-timeslots', help='Booleans and counts relating saved Jabama sessions to their timeslots.')
+    timeslots.add_argument('--html', action='append', required=True,
+                           help='A browser-saved public Jabama detail page; repeatable.')
+    timeslots.add_argument('--output', help='Write the JSON report here instead of printing it.')
+
+    acceptance = subcommands.add_parser(
+        'acceptance', help='Validate one finished run directory and write one review bundle; no collection.')
+    acceptance.add_argument('--run-dir', required=True, help='Directory holding state.sqlite3, GatherRadar.xlsx, exports/.')
+    acceptance.add_argument('--data-dir', default='data')
+    acceptance.add_argument('--config', default='config/sources.yaml')
+    acceptance.add_argument('--cases', default='scripts/acceptance_cases.json')
+    acceptance.add_argument('--test-log', help='Test output to include as test-summary.txt.')
+    acceptance.add_argument('--include-media', action='store_true',
+                            help='Copy selected stored media of tracked cases into the bundle (bounded).')
+    acceptance.add_argument('--max-media', type=int, default=40)
+    acceptance.add_argument('--include', action='append', default=[],
+                            help='Extra .txt/.json/.log file to add to the bundle; repeatable.')
+
+    ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
+    ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
+    ocr_check = ocr_kinds.add_parser('check', help='Validate each configured engine and optionally read one image.')
+    ocr_check.add_argument('--image', help='A local image to recognize with every available engine.')
+    ocr_check.add_argument('--engines', help='Comma-separated engines (default: GATHERRADAR_OCR_ENGINES or '
+                                             'tesseract,easyocr,windows).')
+
     auth = subcommands.add_parser(
         "auth", help="Create and verify an authenticated session for a source type."
     )
@@ -496,6 +529,35 @@ def run_auth_instagram_cookie(
     return 0
 
 
+def run_ocr_check(args) -> int:
+    """Report each engine's availability and, with --image, each engine's own reading."""
+    from .ocr import OcrUnavailableError, build_ocr_provider
+    engines = tuple(e.strip().lower() for e in args.engines.split(',') if e.strip()) if args.engines else None
+    try:
+        provider = build_ocr_provider(engines)
+    except ValueError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    members = getattr(provider, 'providers', (provider,))
+    usable = []
+    for member in members:
+        try:
+            member.validate()
+        except OcrUnavailableError as exc:
+            print(f'{member.name}: unavailable — {exc}')
+            continue
+        usable.append(member)
+        print(f'{member.name}: available ({member.version}; {member.config})')
+    if args.image:
+        for member in usable:
+            result = member.recognize(args.image)
+            print(f'--- {member.name}: {result.status.value}'
+                  + (f' ({result.failure_reason})' if result.failure_reason else ''))
+            if result.text:
+                print(result.text)
+    return 0 if usable else 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -512,6 +574,50 @@ def main(
     if args.command == 'sheets' or (args.command == 'auth' and args.auth_type == 'google'):
         from .sheets.cli import run
         return run(args)
+
+    if args.command == 'ocr':
+        return run_ocr_check(args)
+
+    if args.command == 'acceptance':
+        from pathlib import Path
+        from .orchestration.acceptance import build_bundle
+        if not (Path(args.run_dir) / 'state.sqlite3').exists():
+            print('error: --run-dir has no state.sqlite3 from a finished run', file=sys.stderr)
+            return 2
+        archive, report = build_bundle(
+            Path(args.run_dir), data_dir=Path(args.data_dir), config_path=Path(args.config),
+            cases_path=Path(args.cases), test_log=Path(args.test_log) if args.test_log else None,
+            include_media=args.include_media, max_media=max(0, min(args.max_media, 200)),
+            extra_files=tuple(Path(p) for p in args.include))
+        workbook = report['workbook']
+        print(f"Run: {report['run']['run_id']} status={report['run']['status']}")
+        print('Workbook: ' + ('valid' if workbook.get('ok') else 'PROBLEMS: ' + ', '.join(
+            name for name, ok in workbook.get('checks', {}).items() if not ok) if workbook.get('exists')
+            else 'MISSING'))
+        print(f"Rows: main={workbook.get('main_rows', 0)} schedule_review={workbook.get('schedule_review_rows', 0)}")
+        statuses = [e['status'] for case in report['cases'] for e in case['entries']]
+        print('Cases: ' + '; '.join(f'{name}={count}' for name, count in sorted(
+            {s: statuses.count(s) for s in statuses}.items())))
+        print(f'Review bundle: {archive}')
+        return 0 if workbook.get('ok') else 1
+
+    if args.command == 'diagnose':
+        import json
+        from pathlib import Path
+        from .orchestration.session_schema_report import build_relationship_report, build_report
+        value = (build_relationship_report(args.html) if args.diagnose_kind == 'jabama-timeslots'
+                 else build_report(args.data_dir, args.html))
+        report = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+        if args.output:
+            output = Path(args.output)
+            if output.suffix.lower() != '.json' or output.exists() and output.is_dir():
+                print('error: --output must be a .json file path', file=sys.stderr)
+                return 2
+            output.write_text(report + '\n', encoding='utf-8')
+            print(f'report written: {output}')
+        else:
+            print(report)
+        return 0
 
     if args.command == "auth":
         if args.legacy_cookie:

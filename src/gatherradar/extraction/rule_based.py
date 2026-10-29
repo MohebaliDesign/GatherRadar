@@ -234,19 +234,40 @@ def _merge_evidence(facts: DiscoveryFacts, extraction_input: ExtractionInput) ->
 
     updates: dict[str, str | None] = {name: None for name in MERGED_FIELDS}
     conflicts = []
+    conflict_values: list[tuple[str, str]] = []
+
+    def keep(name: str, values) -> None:
+        seen = set()
+        for value in values:
+            if _agreement_key(value) not in seen:
+                seen.add(_agreement_key(value))
+                conflict_values.append((name, value.strip()[:500]))
     for name in {*structural, *textual}:
         found_values = structural.get(name) or textual[name]
         if len({_agreement_key(value) for _, value in found_values}) > 1:
             updates[name] = None
             conflicts.append(name)
+            keep(name, [value for _, value in found_values])
             continue
         updates[name] = min(found_values, key=lambda item: _ORIGIN_ORDER.get(item[0], 2))[1]
+    if updates.get("duration_text") and "duration_text" not in conflicts:
+        # A header length and an explicit "به مدت …" sentence on the same item
+        # that disagree are both source facts; neither is chosen.
+        stated = fields.duration_minutes(updates["duration_text"])
+        narrative = fields.narrative_durations(analyze(extraction_input.raw_text))
+        others = {fields.duration_minutes(v) for v in narrative}
+        if stated is not None and others - {None, stated}:
+            keep("duration_text", [updates["duration_text"],
+                                   *(v for v in narrative if fields.duration_minutes(v) not in (None, stated))])
+            updates["duration_text"] = None
+            conflicts.append("duration_text")
     if "source_category_text" in structural:
         # An explicit source category label outranks free-text keyword inference:
         # the canonical category is only its supported exact mapping, else null.
         label = updates.get("source_category_text")
         updates["category"] = rules.EVENT_CATEGORIES.get(normalize(label).strip()) if label else None
-    return replace(facts, **updates, field_conflicts=tuple(sorted(conflicts)))
+    return replace(facts, **updates, field_conflicts=tuple(sorted(conflicts)),
+                   field_conflict_values=tuple(dict.fromkeys(v for v in conflict_values if v[1])))
 
 
 def structured_occurrence(found: SignalSet, extraction_input: ExtractionInput) -> bool:

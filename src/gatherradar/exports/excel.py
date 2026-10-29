@@ -62,23 +62,113 @@ def open_workspace(path: Path) -> Workbook:
         raise ReviewError('Existing XLSX is unreadable or has an incompatible schema. It was not overwritten; restore it or choose a separate --workbook recovery path.') from None
 
 
+# Oversized snapshot values are stored losslessly in this hidden sheet, in chunks
+# below the cell limit, keyed by snapshot sheet, record ID and field. The snapshot
+# cell holds a reference marker (technical fields) or a readable prefix with a
+# visible marker. Historical overflow rows are appended to, never rewritten.
+OVERFLOW = '_overflow'
+OVERFLOW_HEADERS = ('sheet', 'record_id', 'field', 'sha256', 'length', 'chunk', 'chunks', 'text')
+OVERFLOW_CHUNK = 32_000
+OVERFLOW_REFERENCE = '[[gatherradar-overflow sha256={digest} length={length} chunks={chunks}]]'
+OVERFLOW_VISIBLE = '\n… [متن کامل در برگه پنهان _overflow و در review.json]'
+# Owner-entered values round-trip through import; shortening them would lose data.
+REVIEWER_OWNED = frozenset({'تصمیم من', 'یادداشت من', 'تصمیم'})
+
+
+class CellLimitError(ReviewError):
+    def __init__(self, value_length: int, *, sheet: str | None = None, record_id: str | None = None,
+                 field: str | None = None) -> None:
+        self.value_length, self.sheet, self.record_id, self.field = value_length, sheet, record_id, field
+        where = ', '.join(f'{k}={v}' for k, v in (('sheet', sheet), ('record_id', record_id),
+                                                  ('field', field)) if v)
+        super().__init__(f'A review cell exceeds the XLSX text limit ({value_length} > {XLSX_CELL_LIMIT}'
+                         + (f'; {where}' if where else '') + '); use JSON/CSV and inspect the source.')
+
+
 def literal(cell, value: object) -> None:
     if isinstance(value, str):
         # openpyxl would silently truncate long strings; fail instead of losing facts.
-        if len(value) > 32767:
-            raise ReviewError('A review cell exceeds the XLSX text limit; use JSON/CSV and inspect the source.')
+        if len(value) > XLSX_CELL_LIMIT:
+            raise CellLimitError(len(value))
         cell.value = value
         cell.data_type = 's'
     else:
         cell.value = value
 
 
+def fit_rows(sheet_name: str, headers: tuple, rows: list[list], key_header: str,
+             visible: int) -> tuple[list[list], list[tuple]]:
+    """Cells within the XLSX limit plus lossless overflow rows for every longer value."""
+    key = headers.index(key_header)
+    fitted, overflow = [], []
+    for row in rows:
+        row = list(row)
+        for column, value in enumerate(row):
+            if not isinstance(value, str) or len(value) <= XLSX_CELL_LIMIT:
+                continue
+            header = headers[column]
+            if header in REVIEWER_OWNED:
+                raise CellLimitError(len(value), sheet=sheet_name, record_id=str(row[key]), field=header)
+            digest = sha256(value.encode('utf-8')).hexdigest()
+            chunks = -(-len(value) // OVERFLOW_CHUNK)
+            overflow.extend((sheet_name, row[key], header, digest, len(value), index + 1, chunks,
+                             value[index * OVERFLOW_CHUNK:(index + 1) * OVERFLOW_CHUNK])
+                            for index in range(chunks))
+            if column < visible:
+                marker = TRUNCATED if header == DESCRIPTION else OVERFLOW_VISIBLE
+                row[column] = value[:XLSX_CELL_LIMIT - len(marker)] + marker
+            else:
+                row[column] = OVERFLOW_REFERENCE.format(digest=digest, length=len(value), chunks=chunks)
+        fitted.append(row)
+    return fitted, overflow
+
+
+def store_overflow(workbook: Workbook, rows: list[tuple]) -> None:
+    if not rows:
+        return
+    if OVERFLOW not in workbook:
+        sheet = workbook.create_sheet(OVERFLOW)
+        sheet.sheet_state = 'hidden'
+        for column, header in enumerate(OVERFLOW_HEADERS, 1):
+            literal(sheet.cell(1, column), header)
+    sheet = workbook[OVERFLOW]
+    if tuple(c.value for c in sheet[1]) != OVERFLOW_HEADERS:
+        raise ReviewError('The hidden _overflow sheet has an unexpected layout; it was not modified.')
+    start = sheet.max_row + 1
+    for offset, values in enumerate(rows):
+        for column, value in enumerate(values, 1):
+            literal(sheet.cell(start + offset, column), value)
+
+
+def overflow_value(workbook: Workbook, sheet_name: str, record_id: str, field: str) -> str:
+    """Reassemble one stored value; refuse incomplete or altered chunks."""
+    if OVERFLOW not in workbook:
+        raise ReviewError('This workbook has no stored overflow values.')
+    parts = [r for r in workbook[OVERFLOW].iter_rows(min_row=2, values_only=True)
+             if r[:3] == (sheet_name, record_id, field)]
+    if not parts:
+        raise ReviewError(f'No overflow value for sheet={sheet_name}, record_id={record_id}, field={field}.')
+    digest, length, chunks = parts[0][3], parts[0][4], parts[0][6]
+    ordered = sorted(parts, key=lambda r: r[5])
+    value = ''.join(r[7] or '' for r in ordered)
+    if ([r[5] for r in ordered] != list(range(1, chunks + 1)) or any(r[3] != digest for r in ordered)
+            or len(value) != length or sha256(value.encode('utf-8')).hexdigest() != digest):
+        raise ReviewError(f'Overflow value for {record_id}/{field} is incomplete or altered.')
+    return value
+
+
 def table(sheet, headers: tuple, rows: list[list], visible: int, decisions: tuple = ()) -> None:
     sheet.auto_filter.ref = f'A1:{get_column_letter(len(headers))}{max(1, len(rows)+1)}'
+    key = next((h for h in ('event_id', 'candidate_id', 'pair_key', 'شناسه اجرا') if h in headers), None)
     for r, values in enumerate([list(headers), *rows], 1):
         for c, value in enumerate(values, 1):
             cell = sheet.cell(r, c)
-            literal(cell, value)
+            try:
+                literal(cell, value)
+            except CellLimitError as exc:
+                record = str(values[headers.index(key)]) if key and r > 1 else None
+                raise CellLimitError(exc.value_length, sheet=sheet.title, record_id=record,
+                                     field=str(headers[c-1])) from None
             # Only link columns become hyperlinks; a description that happens to
             # start with a URL keeps its full text.
             if r > 1 and c <= visible and isinstance(value, str) and (
@@ -205,20 +295,22 @@ class ExcelReviewExporter:
                     # Unmapped explicit source category is shown as its exact wording.
                     values['دسته‌بندی'] = (CATEGORIES.get(item['category'],item['category'])
                                            or item.get('source_category_text') or '')
-                    if len(values[DESCRIPTION]) > XLSX_CELL_LIMIT:
-                        # Hard XLSX limit: visibly marked; SQLite/JSON/CSV keep the full text.
-                        values[DESCRIPTION] = values[DESCRIPTION][:XLSX_CELL_LIMIT - len(TRUNCATED)] + TRUNCATED
                     event_rows.append([values[h] for h in LOCAL_EVENT_VISIBLE] +
                         [jalali(datetime.fromisoformat(item['next_session_date']).date()) if item.get('next_session_date') else '',
                          persian((item.get('next_session_start_time') or '')[:5]),
-                         persian((item.get('next_session_end_time') or '')[:5]), item.get('remaining_session_count', 0),
+                         persian((item.get('next_session_end_time') or '')[:5]), item.get('remaining_session_count'),
                          item.get('location_context') or ''] +
                         (links + [''] * (link_count-len(links)) if link_count else []) +
                         [values[h] for h in EVENT_HEADERS[len(EVENT_VISIBLE):]] +
                         [item['category'],item['event_format'],item['status'],item['registration_url'],token])
                 headers = (LOCAL_EVENT_VISIBLE + NEXT_HEADERS + ('موقعیت تکمیلی',) + link_headers + EVENT_HEADERS[len(EVENT_VISIBLE):]
                            + ('category','event_format','status','registration_url',TOKEN))
-                table(workbook.create_sheet(event_name, 3), headers, event_rows, len(LOCAL_EVENT_VISIBLE) + len(NEXT_HEADERS) + 1 + link_count, DECISIONS)
+                visible = len(LOCAL_EVENT_VISIBLE) + len(NEXT_HEADERS) + 1 + link_count
+                # Over-limit values (e.g. a long session list) are kept whole in _overflow;
+                # a description keeps its explicit marker; SQLite/JSON/CSV are unchanged.
+                event_rows, overflow = fit_rows(event_name, headers, event_rows, 'event_id', visible)
+                table(workbook.create_sheet(event_name, 3), headers, event_rows, visible, DECISIONS)
+                store_overflow(workbook, overflow)
                 if document.get('schedule_review'):
                     review_name = _name('زمان‌بندی', naming_run, workbook)
                     rows = []
@@ -231,13 +323,12 @@ class ExcelReviewExporter:
                             row[EVENT_HEADERS.index(heading)] = item.get(field, row[EVENT_HEADERS.index(heading)])
                         for heading in ('readiness_reasons', 'quality_indicators'):
                             row[EVENT_HEADERS.index(heading)] = dumps(item.get(heading, []))
-                        description_index = EVENT_HEADERS.index(DESCRIPTION)
-                        if len(row[description_index]) > XLSX_CELL_LIMIT:
-                            row[description_index] = row[description_index][:XLSX_CELL_LIMIT-len(TRUNCATED)] + TRUNCATED
                         rows.append(row + [item['schedule_reason'], item.get('location_context') or '',
                             self.repository.review_token('event', item['event_id'], run_id)])
-                    table(workbook.create_sheet(review_name, 4),
-                          EVENT_HEADERS + ('schedule_reason', 'location_context', TOKEN), rows, len(EVENT_VISIBLE), DECISIONS)
+                    review_headers = EVENT_HEADERS + ('schedule_reason', 'location_context', TOKEN)
+                    rows, overflow = fit_rows(review_name, review_headers, rows, 'event_id', len(EVENT_VISIBLE))
+                    table(workbook.create_sheet(review_name, 4), review_headers, rows, len(EVENT_VISIBLE), DECISIONS)
+                    store_overflow(workbook, overflow)
                     workbook['_meta'].append(('schedule_review_sheet', run_id, review_name))
                 meta = workbook['_meta']
                 for row in meta.iter_rows():
@@ -256,7 +347,9 @@ class ExcelReviewExporter:
                         row[0], row[9] = item['review_decision'], item['review_notes']
                         row[2] = CATEGORIES.get(row[2],row[2])
                         rows.append(row + [self.repository.review_token('place', place.candidate_id, run_id)])
+                    rows, overflow = fit_rows(place_name, PLACE_HEADERS + (TOKEN,), rows, 'candidate_id', len(PLACE_VISIBLE))
                     table(workbook.create_sheet(place_name, 4), PLACE_HEADERS + (TOKEN,), rows, len(PLACE_VISIBLE), DECISIONS)
+                    store_overflow(workbook, overflow)
                 stamp = datetime.fromisoformat(run['started_at'])
                 from zoneinfo import ZoneInfo
                 local = stamp.astimezone(ZoneInfo(run['review_timezone']))
@@ -337,7 +430,8 @@ class ExcelReviewExporter:
                   ['اصلاح داده', 'تغییر عنوان، زمان، مکان و سایر واقعیت‌ها فقط در همین تصویر دیده می‌شود؛ به داده اصلی وارد نمی‌شود.'],
                   ['خروجی‌ها', 'CSV و JSON برای جابه‌جایی داده و بسته Gemini برای ساخت دستی شیت در پوشه exports قرار دارند.'],
                   ['قلم‌ها', 'برای بهترین نمایش Vazir و Poppins را نصب کنید؛ قلم‌ها همراه فایل نیستند و جایگزین به برنامه نمایش‌دهنده بستگی دارد.'],
-                  ['توضیحات بلند', 'متن کامل در سلول است؛ ارتفاع ردیف محدود است و برای خواندن کامل، سلول را باز کنید. فقط متن بیش از سقف Excel علامت‌گذاری و کامل در JSON/CSV نگه داشته می‌شود.']]
+                  ['توضیحات بلند', 'متن کامل در سلول است؛ ارتفاع ردیف محدود است و برای خواندن کامل، سلول را باز کنید. فقط متن بیش از سقف Excel علامت‌گذاری و کامل در JSON/CSV نگه داشته می‌شود.'],
+                  ['داده‌های بسیار بلند', 'مقدار بیش از سقف یک سلول Excel (مثلاً فهرست ده‌ها جلسه) بدون حذف در برگه پنهان _overflow تکه‌تکه نگه داشته می‌شود و سلول اصلی به آن ارجاع می‌دهد.']]
         table(workbook.create_sheet(GUIDE), tuple(GUIDE_ROWS[0]), guide, 2)
         table(workbook.create_sheet(RUNS), INDEX_HEADERS, [], len(INDEX_HEADERS))
         table(workbook.create_sheet(DUPLICATES), DUPLICATE_HEADERS + (TOKEN,), [], 9, DUPLICATE_DECISIONS)
@@ -372,7 +466,7 @@ class ExcelReviewImporter:
                           if len(row) >= 2 and row[0] == 'superseded_event_sheet'}
             candidates = []
             for sheet in workbook:
-                if sheet.title in (GUIDE, RUNS, '_meta') or sheet.title in superseded:
+                if sheet.title in (GUIDE, RUNS, '_meta', OVERFLOW) or sheet.title in superseded:
                     continue
                 headers = [cell.value for cell in sheet[1]]
                 kind = 'duplicate' if sheet.title == DUPLICATES else 'event' if 'event_id' in headers else 'place' if 'candidate_id' in headers else None

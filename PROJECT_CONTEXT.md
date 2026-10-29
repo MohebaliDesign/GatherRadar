@@ -25,6 +25,38 @@ run projections; raw reprocessing is required to recover facts absent from a sav
 snapshot. Historical SQLite records, decisions and workbook snapshots remain intact.
 See [the admission contract](docs/DATA_CONTRACTS.md#event-admission).
 
+**Cloud field hardening (2026-10-29):** Jabama descriptions include the adjacent
+program section; unsupported embedded session shapes report value-free causes and
+route to schedule review without inferred sessions. Explicit date lists with one
+shared clock become dated sessions; header/list clock and length disagreements are
+kept as conflicts, never chosen. Narrow venue/city/length/approximate-area grammars,
+noisy same-Reel title tolerance and null remaining-session counts for ranges are
+described in [the data contracts](docs/DATA_CONTRACTS.md#cloud-field-hardening-2026-10-29).
+OCR and live-source defects without accessible evidence remain open; see
+[the cloud hardening report](docs/CLOUD_FIELD_HARDENING_VALIDATION.md).
+
+**Live-run QA (2026-10-29):** Fixes from run `e3ddedf3…`: nested labels, `·` clock
+separators, bounded Persian day-part words, bare early hours as `ambiguous_meridiem`,
+ordered weekday lists, two corroborated venue forms, reviewable Jabama sessions with
+unknown additive properties, and the optional local OCR fallback chain. See
+[the live-run QA report](docs/LIVE_RUN_QA_2026-10-29.md).
+
+**Jabama timeslots (2026-10-29):** `soldOut` is a typed boolean and child timeslots are
+parsed strictly (twelve allowlisted keys, parent ownership, explicit-offset ordered
+timestamps, unique IDs, parent-window check), each kept as its own occurrence with parent
+and timeslot identity. The owner's relationship report (88 parents / 295 timeslots)
+verified those relationships, so valid timeslots are dated occurrences (temporal
+eligibility only, never a booking guarantee). `soldOut=true` stays an unverified booking
+flag that never affects temporal relevance. See
+[the data contracts](docs/DATA_CONTRACTS.md#jabama-session-evidence-boundary-2026-10-29).
+
+**Final Excel closure (GR-EXCEL-CLOSURE-20261029):** attributable presence/address-building
+venues, no hashtag cities, narrative length conflicts with both values quoted, nonadjacent
+Jabama program sections, whole-session windows that contradict the stated activity length
+held for review, a booking column separate from date relevance, a quality-aware OCR
+fallback and cache, and one Windows acceptance script that runs one fresh bounded crawl
+and writes one review bundle. See [the closure report](docs/FINAL_EXCEL_ACCEPTANCE.md).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile
@@ -339,7 +371,10 @@ below `data/media/`; one artifact failure is isolated from other items. Audio is
 the local Tesseract executable with `fas+eng`, a bounded timeout, and no `shell=True`; it never
 downloads an executable or language pack. Raw and lightly cleaned OCR output, engine/version/
 configuration, artifact provenance, empty results, and failures are represented explicitly.
-No cloud OCR, paid AI, API key, or new Python dependency is required.
+No cloud OCR, paid AI, API key, or new Python dependency is required. An optional local
+fallback chain (default `tesseract,easyocr,windows`) skips engines that are not installed and
+tries a later engine only after a failed or empty result; each attempt stays separate
+evidence. EasyOCR is an optional extra; Windows OCR runs through built-in PowerShell.
 
 The earlier [Instaloader](https://instaloader.github.io/) transport remains as a legacy
 fallback reference in `collectors/instagram_instaloader.py`, since its profile lookup is

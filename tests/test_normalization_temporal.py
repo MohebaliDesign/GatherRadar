@@ -232,7 +232,9 @@ class TemporalNormalizationTests(unittest.TestCase):
             self.assertIn('invalid_time', codes(temporal(text)))
 
     def test_no_clock_correction(self):
-        for text in ('۲۰:۳', '۲۰:۳۰:۴۵', '-۱:۰۰', 'ساعت ۸ شب'):
+        # A day-part word is read only inside fixed bounds (see test_persian_day_parts);
+        # "۲ شب" could be 02:00 or 14:00 and is never corrected.
+        for text in ('۲۰:۳', '۲۰:۳۰:۴۵', '-۱:۰۰', 'ساعت ۲ شب'):
             result = temporal(text)
             self.assertIsNone(result.start_time)
             self.assertIsNone(result.starts_at)

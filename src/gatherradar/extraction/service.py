@@ -10,7 +10,8 @@ from ..domain import (
     RawItem, Source,
 )
 from ..domain.evidence import primary_discovery_units
-from ..domain.website import FIELD_ORIGINS, STRUCTURED_FIELDS, SourceSession
+from ..domain.website import (FIELD_ORIGINS, MAX_SESSION_RECORDS, STRUCTURED_FIELDS, SourceSession,
+                              is_source_slice)
 from .base import DiscoveryProvider, InvalidExtractionOutputError, ProviderExtractionError
 from .models import DiscoveryEvidence, DiscoveryFacts, ExtractionInput, SourceField
 
@@ -86,7 +87,7 @@ def _source_fields(raw_item: RawItem, segments: tuple[tuple[str, str], ...]) -> 
         name, value, origin = entry.get('name'), entry.get('value'), entry.get('origin')
         if (name in STRUCTURED_FIELDS and origin in FIELD_ORIGINS and isinstance(value, str)
                 and value.strip() and len(value) <= _MAX_FIELD.get(name, 500)
-                and any(value in text for text in texts[origin])):
+                and any(is_source_slice(name, value, text) for text in texts[origin])):
             admitted.append(SourceField(name, value, origin))
     return tuple(dict.fromkeys(admitted))
 
@@ -104,11 +105,24 @@ def _source_sessions(raw_item: RawItem) -> tuple[tuple[SourceSession, ...], tupl
     allowed = {'embedded_sessions_absent', 'embedded_sessions_empty',
                'embedded_session_schema_drift', 'embedded_sessions_schema_drift',
                'embedded_session_identity_conflict', 'embedded_session_price_unit_unknown',
-               'embedded_session_discount_unresolved'}
+               'embedded_session_discount_unresolved', 'embedded_session_drift_new_properties',
+               'embedded_session_drift_timeslots', 'embedded_session_drift_field',
+               'embedded_session_unverified_shape', 'embedded_sessions_drift_payload_count',
+               'embedded_sessions_drift_payload_size', 'embedded_sessions_drift_call_shape',
+               'embedded_sessions_drift_table', 'embedded_sessions_drift_route',
+               'embedded_sessions_drift_event_identity', 'embedded_sessions_drift_sessions',
+               'embedded_sessions_drift_session_list', 'embedded_session_drift_sold_out_type',
+               'embedded_session_drift_timeslot_new_properties',
+               'embedded_session_drift_timeslot_missing_properties', 'embedded_session_drift_timeslot_type',
+               'embedded_session_drift_timeslot_ownership', 'embedded_session_drift_timeslot_timestamp',
+               'embedded_session_drift_timeslot_order', 'embedded_session_timeslots',
+               'embedded_timeslot_outside_parent_window', 'embedded_timeslot_parent_window_unknown',
+               'embedded_timeslot_availability_inconsistent', 'embedded_timeslot_duplicate_id',
+               'embedded_timeslot_identity_conflict'}
     reported = metadata.get('source_session_diagnostics', [])
     diagnostics = tuple(value for value in reported if isinstance(value, str) and value in allowed) if isinstance(reported, list) else ()
     values = metadata.get('source_sessions', [])
-    if not isinstance(values, list) or len(values) > 200:
+    if not isinstance(values, list) or len(values) > MAX_SESSION_RECORDS:
         return (), (*diagnostics, 'embedded_session_schema_drift')
     admitted = []
     for value in values:
@@ -119,7 +133,12 @@ def _source_sessions(raw_item: RawItem) -> tuple[tuple[SourceSession, ...], tupl
         if session.source_event_id != raw_item.external_id:
             return (), (*diagnostics, 'embedded_session_identity_conflict')
         admitted.append(session)
-    if len({s.source_session_id for s in admitted}) != len(admitted):
+    # A parent session is either one record or a set of uniquely named timeslots.
+    if (len({(s.source_session_id, s.source_timeslot_id) for s in admitted}) != len(admitted)
+            or len({s.source_timeslot_id for s in admitted if s.source_timeslot_id})
+            != len([s for s in admitted if s.source_timeslot_id])
+            or {s.source_session_id for s in admitted if s.source_timeslot_id}
+            & {s.source_session_id for s in admitted if not s.source_timeslot_id}):
         return (), (*diagnostics, 'embedded_session_identity_conflict')
     return tuple(admitted), tuple(dict.fromkeys(diagnostics))
 
@@ -299,6 +318,7 @@ def _event_candidate(raw_item: RawItem, facts: DiscoveryFacts,
         source_category_text=facts.source_category_text,
         reference_urls=facts.reference_urls,
         field_conflicts=facts.field_conflicts,
+        field_conflict_values=facts.field_conflict_values,
         extraction_diagnostics=tuple(dict.fromkeys((*facts.extraction_diagnostics,
             *(('media_ocr_only',) if all(f.kind in {EvidenceKind.IMAGE_OCR, EvidenceKind.CAROUSEL_SLIDE_OCR,
                 EvidenceKind.REEL_FRAME_OCR} for f in unit.fragments) else ()),

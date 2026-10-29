@@ -47,6 +47,7 @@ class EventCandidate:
     source_category_text: str | None = None
     reference_urls: tuple[str, ...] = ()
     field_conflicts: tuple[str, ...] = ()
+    field_conflict_values: tuple[tuple[str, str], ...] = ()
     occurrences: tuple[EventOccurrence, ...] = ()
     schedule_kind: ScheduleKind = ScheduleKind.UNKNOWN
     recurrence_rule: str | None = None

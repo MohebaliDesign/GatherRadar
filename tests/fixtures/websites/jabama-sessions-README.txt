@@ -29,3 +29,21 @@ Only the observed empty-timeslots shape is supported. Nonempty timeslots,
 different routes, new session properties and new stream envelopes remain
 explicitly unresolved. Public page prices are not inherited by sessions, and
 their currency is not inferred from unrelated page structured data.
+
+Cloud hardening (2026-10-29): unsupported sessions additionally report one of
+embedded_session_drift_new_properties / _timeslots / _field, and the raw item
+keeps only the names of unexpected session properties in
+source_session_drift_keys. The two audited pottery pages still need a fresh
+public snapshot before any new session shape is supported.
+
+2026-10-29 owner crawl: `soldOut` on all ten Jabama pages and non-empty
+`timeslots` on 48751310, 01519540 and 86400491 (Experiences). Names only were
+retained; types are unverified. Tests use synthetic values; see
+docs/DATA_CONTRACTS.md "Jabama session evidence boundary".
+
+2026-10-29 v3 structural report: soldOut is a boolean; timeslots are objects with
+twelve keys (id, sessionId, startAt, endAt, enabled, capacityLimit, bookedCount,
+remainingSeats, pricePerPerson, unitPrice, hostDiscountPct, platformDiscountPct).
+tests/test_jabama_timeslots.py builds synthetic pages in that shape; no saved HTML
+or real identifier is committed. Value relationships await the owner's
+`diagnose jabama-timeslots` report.

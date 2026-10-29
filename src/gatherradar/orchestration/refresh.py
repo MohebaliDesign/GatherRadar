@@ -187,6 +187,15 @@ class RefreshService:
                                 if getattr(evidence, 'ocr_failed', 0):
                                     media_diagnostics += ({'category': 'ocr_failed',
                                                            'count': evidence.ocr_failed},)
+                                if getattr(evidence, 'ocr_fallback_used', 0):
+                                    media_diagnostics += ({'category': 'ocr_fallback_used',
+                                                           'count': evidence.ocr_fallback_used},)
+                                if getattr(evidence, 'ocr_quality_retries', 0):
+                                    media_diagnostics += ({'category': 'ocr_quality_retry',
+                                                           'count': evidence.ocr_quality_retries},)
+                                for engine in getattr(evidence, 'ocr_unavailable', ()):
+                                    media_diagnostics += ({'category': 'ocr_engine_unavailable',
+                                                           'engine': engine},)
                             except Exception:
                                 failures.append('media_evidence_failed_caption_available')
                         reports.append(SourceRun(source.id, tuple(i.id for i in items),

@@ -497,6 +497,38 @@ KNOWN_CITIES: tuple[str, ...] = (
     "rasht",
 )
 
+# Cities outside the default region are read only from an explicit "<event term>
+# در <city>" / "in <city>" construction, never from an incidental mention. Each
+# spelling maps to one key, so Persian and English wording of one city agree.
+EXPLICIT_EVENT_CITIES: dict[str, str] = {
+    "استانبول": "istanbul", "istanbul": "istanbul",
+    "دبی": "dubai", "dubai": "dubai",
+    "ایروان": "yerevan", "yerevan": "yerevan",
+    "تفلیس": "tbilisi", "tbilisi": "tbilisi",
+}
+# Nouns that a stated length may directly modify: "این رویداد سه‌روزه".
+DURATION_EVENT_NOUNS: tuple[str, ...] = (
+    "رویداد", "ایونت", "فستیوال", "جشنواره", "کارگاه", "ورکشاپ", "دوره", "تور", "اردو", "برنامه", "نمایشگاه",
+)
+# Predicates that place an event at a just-named venue: "توی عمارت عقاب در جریانه".
+VENUE_HAPPENING_PREDICATES: tuple[str, ...] = ("در جریان", "برگزار")
+# "از ۶ تا ۸ آبان، توی عمارت زیرخاکی منتظر …": a predicate that directly follows a
+# just-named venue in a clause that also states the event's dates.
+VENUE_PRESENCE_PREDICATES: tuple[str, ...] = ("منتظر", "قراره")
+# Building heads that start an address component ("مجتمع تجاری تیدا سنتر").
+# A prose "در <name>" naming the rest of such a component is the venue.
+ADDRESS_BUILDING_HEADS: tuple[str, ...] = (
+    "مجتمع تجاری", "مرکز خرید", "مجتمع", "ساختمان", "برج", "پاساژ", "عمارت", "باغ", "هتل",
+)
+# Narrative length adjectives after these nouns ("تجربه‌ای سه‌ساعته").
+NARRATIVE_DURATION_NOUNS: tuple[str, ...] = ("تجربه", "جلسه", "دوره", "کلاس")
+# A head written after the venue name ("کوچوک‌چیفتلیک پارک"); accepted only
+# after "در" and directly before holding wording ("برگزار ...").
+TRAILING_VENUE_HEADS: tuple[str, ...] = ("پارک",)
+# "لوکیشن حدودی این تجربه ستارخانه": an approximate area, never an address.
+APPROXIMATE_LOCATION_TERMS: tuple[str, ...] = ("لوکیشن", "موقعیت", "محل")
+APPROXIMATE_QUALIFIERS: tuple[str, ...] = ("حدودی", "تقریبی")
+
 # A map-pin line is accepted as a structured location only when the following
 # text contains explicit geographic/address wording (or a written known city).
 LOCATION_DETAIL_TERMS: tuple[str, ...] = (
@@ -570,7 +602,8 @@ VENUE_HOLDING_TERMS: tuple[str, ...] = ("برگزار",)
 # turned into an area or a city.
 VENUE_BRANCH_TERMS: tuple[str, ...] = ("شعبه",)
 # Words that end a natural venue name rather than continue it.
-VENUE_NAME_STOPWORDS: frozenset[str] = frozenset({"شهر", "خود", "اصلی", "بعدی", "قبلی", "جدید", "دور"})
+VENUE_NAME_STOPWORDS: frozenset[str] = frozenset({"شهر", "خود", "اصلی", "بعدی", "قبلی", "جدید", "دور",
+                                                   "منتظر", "قراره"})
 MAX_VENUE_NAME_TOKENS: int = 5
 MAX_VENUE_BRANCH_TOKENS: int = 2
 VENUE_NUMBER_WORDS: frozenset[str] = frozenset({"یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده"})

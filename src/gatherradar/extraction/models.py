@@ -114,6 +114,8 @@ class DiscoveryFacts:
     reference_urls: tuple[str, ...] = ()
     # Fields left null because listing/detail evidence explicitly disagreed.
     field_conflicts: tuple[str, ...] = ()
+    # The disagreeing source wordings behind `field_conflicts`, as (field, value).
+    field_conflict_values: tuple[tuple[str, str], ...] = ()
     extraction_diagnostics: tuple[str, ...] = ()
     source_sessions: tuple[SourceSession, ...] = ()
     source_session_diagnostics: tuple[str, ...] = ()
