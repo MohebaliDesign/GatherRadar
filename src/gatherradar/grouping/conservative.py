@@ -511,10 +511,9 @@ class ConservativeGrouping:
                             and no_calendar and (noisy or not media_clocks or media_clocks.issubset(caption_clocks))):
                         lead.collapsed.extend(p.fragment for p in group.members)
                         lead.collapsed.extend(group.collapsed)
+                        # Corrupt OCR clocks are not evidence against the caption's
+                        # clean schedule; the frames stay auditable as collapsed provenance.
                         lead.notes.append((member.fragment.fragment_id, 'caption_corroborates_noisy_activity_title'))
-                        if noisy and not media_clocks.issubset(caption_clocks):
-                            # The disagreeing OCR clock stays visible for review.
-                            lead.notes.append((member.fragment.fragment_id, NOTE_TEMPORAL_OCR))
                         groups.remove(group)
                         absorbed = True
             bridge = _caption_date_bridge(caption, groups)

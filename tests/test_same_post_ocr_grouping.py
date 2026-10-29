@@ -36,7 +36,11 @@ class SamePostNoisyReelTests(unittest.TestCase):
         self.assertEqual(event.title, 'ورکشاپ ساخت پیتزا')
         self.assertEqual(event.source_date_text, 'دوشنبه ۲۷ مهر ساعت ۱۷')
         self.assertEqual(event.start_time.isoformat(), '17:00:00')  # caption clock, not OCR "۷"
-        self.assertIn('extraction:repeated_anchor_with_unreliable_temporal_ocr', {d.code for d in event.diagnostics})
+        # The clean caption date has passed: expired, not sent to schedule review
+        # because of corrupt frame clocks (which stay as collapsed provenance).
+        from test_event_recall import REFERENCE
+        from gatherradar.review.relevance import assess_relevance
+        self.assertEqual(assess_relevance(event, REFERENCE).disposition, 'expired')
         # Identity stays the caption's primary slot, as before the change.
         caption_only, = self.run_pipeline()
         self.assertEqual(event.event_id, caption_only.event_id)
