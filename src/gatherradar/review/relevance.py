@@ -13,7 +13,7 @@ DISPOSITIONS = ('actionable', 'expired', 'beyond_horizon', 'needs_schedule_revie
 TEMPORAL_FIELDS = {'temporal', 'source_date_text', 'source_schedule_text', 'occurrences',
                    'source_sessions', 'start_date', 'end_date', 'start_time', 'end_time', 'timezone'}
 UNSAFE = ('conflict', 'unresolved', 'weekday_mismatch', 'invalid', 'unparsed', 'ambiguous',
-          'schema_drift', 'unreliable_temporal_ocr')
+          'schema_drift', 'unreliable_temporal_ocr', 'unverified_shape')
 
 
 @dataclass(frozen=True)

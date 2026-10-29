@@ -15,6 +15,7 @@ STRUCTURED_FIELDS = frozenset({
 # listing card on the approved listing page.
 FIELD_ORIGINS = ('detail', 'listing')
 MAX_CARD_TEXT = 1500
+SESSION_UNVERIFIED_PROPERTIES = 'unverified_properties'
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +38,14 @@ class SourceSession:
     platform_discount_pct: str | None = None
     remaining_seats: int | None = None
     enabled: bool | None = None
+    # None for the documented shape. "unverified_properties" when the session also
+    # carried properties whose meaning was not inspected: only its identity, start
+    # and duration were kept, and it is never actionable until reviewed.
+    schema_status: str | None = None
 
     def __post_init__(self) -> None:
+        if self.schema_status not in (None, SESSION_UNVERIFIED_PROPERTIES):
+            raise ValueError('invalid source session schema status')
         for value in (self.source_session_id, self.source_event_id):
             if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value):
                 raise ValueError('invalid source session identity')
@@ -78,7 +85,10 @@ class SourceSession:
             raise ValueError('invalid source session enabled flag')
 
     def to_dict(self) -> dict[str, object]:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        # schema_status is omitted when unset so documented sessions serialize,
+        # and therefore hash, exactly as before it existed.
+        return {name: getattr(self, name) for name in self.__dataclass_fields__
+                if name != 'schema_status' or self.schema_status is not None}
 
     @classmethod
     def from_mapping(cls, value: object) -> SourceSession:

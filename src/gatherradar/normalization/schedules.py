@@ -181,6 +181,10 @@ def normalize_sessions(candidate: EventCandidate, raw: RawItem, source: Source) 
         discounted = any(value is not None and Decimal(value) != 0
                          for value in (session.host_discount_pct, session.platform_discount_pct))
         own_codes = []
+        if session.schema_status is not None:
+            # Dated by the source's own session, but its unknown properties were
+            # not inspected: reviewable, never actionable as is.
+            own_codes.append("embedded_session_unverified_shape")
         if len(prices) > 1:
             own_codes.append("session_price_conflict")
             diagnostics.append(Diagnostic("session_price_conflict", "source_sessions",

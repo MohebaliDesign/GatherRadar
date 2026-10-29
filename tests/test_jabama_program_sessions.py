@@ -104,29 +104,46 @@ class JabamaSessionDriftTests(unittest.TestCase):
         self.assertEqual(_result(mixed), _result(mixed))
         self.assertEqual(len(_result(mixed).sessions), 1)
 
+    def page(self, **changes):
+        from test_jabama_sessions import SESSION, _page
+        return _page([{**SESSION, **changes}]).replace(
+            'ساخت یک اثر با راهنمایی مربی.', 'ساخت یک اثر با راهنمایی مربی.</div><div>میزبان: استودیو نمونه، تهران')
+
+    def test_unknown_additive_session_keys_give_reviewable_dates_not_actionable_sessions(self):
+        from datetime import datetime, timezone
+        from test_jabama_session_pipeline import collected, pipeline
+        from gatherradar.review.readiness import DataReadiness, assess_readiness
+        from gatherradar.review.relevance import assess_relevance
+        raw = collected(self.page(newShape=1, pricePerPerson=999))
+        self.assertEqual(raw.raw_metadata['source_session_drift_keys'], ['newShape'])
+        _, result = pipeline(raw)
+        event, = result.events
+        occurrence, = event.occurrences  # the source's own session date, not invented
+        self.assertEqual(occurrence.source_session_id, 'demo-session-a')
+        self.assertIsNone(occurrence.price_amount)
+        self.assertIn('embedded_session_unverified_shape', occurrence.diagnostics)
+        before = datetime(2026, 9, 20, tzinfo=timezone.utc)
+        self.assertEqual(assess_relevance(event, before).disposition, 'needs_schedule_review')
+        readiness = assess_readiness(event)
+        self.assertEqual(readiness.status, DataReadiness.SCHEDULE)
+        self.assertIn('source_sessions_unverified', readiness.reasons)
+        again = collected(self.page(newShape=1, pricePerPerson=999))
+        self.assertEqual(raw.content_hash, again.content_hash)  # stable rerun
+
     def test_unreadable_sessions_route_to_schedule_review_with_explicit_reason(self):
         from test_jabama_session_pipeline import collected, pipeline
-        from test_jabama_sessions import SESSION, _page
         from gatherradar.review.readiness import DataReadiness, REASON_LABELS, assess_readiness
-        def page():
-            return _page([{**SESSION, 'newShape': 1}]).replace(
-                'ساخت یک اثر با راهنمایی مربی.', 'ساخت یک اثر با راهنمایی مربی.</div><div>میزبان: استودیو نمونه، تهران')
-        raw = collected(page())
-        self.assertEqual(raw.raw_metadata['source_session_drift_keys'], ['newShape'])
-        self.assertIn('embedded_session_drift_new_properties', raw.raw_metadata['source_session_diagnostics'])
+        raw = collected(self.page(timeslots=['09:00']))
+        self.assertIn('embedded_session_drift_timeslots', raw.raw_metadata['source_session_diagnostics'])
         _, result = pipeline(raw)
         event, = result.events
         self.assertEqual(event.occurrences, ())  # no fabricated sessions
-        codes = {d.code for d in event.diagnostics}
-        self.assertIn('normalization:embedded_session_drift_new_properties', codes)
+        self.assertIn('normalization:embedded_session_drift_timeslots', {d.code for d in event.diagnostics})
         readiness = assess_readiness(event)
         self.assertEqual(readiness.status, DataReadiness.SCHEDULE)
         self.assertIn('source_sessions_unreadable', readiness.reasons)
         self.assertIn('صفحه منبع', readiness.explanation)
         self.assertIn('source_sessions_unreadable', REASON_LABELS)
-        again = collected(page())
-        self.assertEqual(raw.content_hash, again.content_hash)  # stable rerun
-
 
 if __name__ == '__main__':
     unittest.main()

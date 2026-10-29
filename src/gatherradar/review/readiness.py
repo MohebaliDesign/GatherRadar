@@ -33,6 +33,7 @@ REASON_LABELS = {
     "missing_title": "عنوان قابل اتکا مشخص نیست",
     "invalid_source_url": "پیوند منبع معتبر نیست",
     "missing_schedule": "تاریخ یا زمان‌بندی مشخص نیست",
+    "source_sessions_unverified": "تاریخ جلسه‌ها از صفحه منبع خوانده شد ولی داده جلسه ویژگی‌های جدید و بررسی‌نشده دارد؛ پیش از انتشار تاریخ، قیمت و ظرفیت را در منبع تأیید کنید",
     "source_sessions_unreadable": "جلسه‌های صفحه منبع در قالب جدیدی منتشر شده و خوانده نشد؛ تاریخ‌ها را در صفحه منبع بررسی کنید",
     "unresolved_schedule": "زمان‌بندی به بررسی نیاز دارد",
     "inferred_year": "سال تاریخ نیاز به تأیید دارد",
@@ -144,6 +145,12 @@ def assess_readiness(event: Event, *, source_unavailable: bool = False,
     if evidence_incomplete or any("ocr" in c and ("failed" in c or "incomplete" in c) for c in codes):
         indicators.append("ocr_evidence_incomplete")
         reasons.append("evidence_incomplete")
+    if any("unverified_shape" in c for c in codes) or any(
+            "unverified_shape" in c for o in event.occurrences for c in o.diagnostics):
+        reasons.append("source_sessions_unverified")
+        schedule_unresolved = True
+        if "schedule_unresolved" not in indicators:
+            indicators.append("schedule_unresolved")
     if any("session_schema_drift" in c or "sessions_schema_drift" in c for c in codes) and not any(
             o.source_session_id for o in event.occurrences):
         # Public session data exists but its shape is unsupported: never guess

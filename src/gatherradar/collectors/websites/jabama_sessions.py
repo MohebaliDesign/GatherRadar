@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from urllib.parse import urlsplit
 
-from ...domain.website import SourceSession
+from ...domain.website import SESSION_UNVERIFIED_PROPERTIES, SourceSession
 from .html import Node
 
 _ENQUEUE = 'window.__reactRouterContext.streamController.enqueue'
@@ -117,11 +117,15 @@ def _decimal(value: object) -> str | None:
     return format(Decimal(str(value)), 'f')
 
 
-def _session(table: _Table, reference: object, event_id: str, index: int) -> SourceSession:
+def _session(table: _Table, reference: object, event_id: str, index: int,
+             tolerate: bool = False) -> SourceSession:
     obj = table.object(reference)
     # Extra session properties can change booking semantics, unlike unrelated
-    # event fields. Refuse until their meaning is inspected and fixture-backed.
-    if extra := set(obj) - _SESSION_KEYS:
+    # event fields. Strictly they are refused; tolerantly only the session's own
+    # identity, start and duration are kept, with the shape marked unverified.
+    extra = set(obj) - _SESSION_KEYS
+    if extra and (not tolerate or any(not _DRIFT_KEY.fullmatch(key) for key in extra)
+                  or len(extra) > _MAX_DRIFT_KEYS):
         keys = tuple(sorted(key for key in extra if _DRIFT_KEY.fullmatch(key)))[:_MAX_DRIFT_KEYS]
         raise _SchemaError('new session properties', 'new_properties', keys)
     values = {key: table.scalar(obj, key, required=key in ('id', 'eventId', 'startIso'))
@@ -137,6 +141,11 @@ def _session(table: _Table, reference: object, event_id: str, index: int) -> Sou
         if discount is not None and (type(discount) not in (int, Decimal)
                                      or not Decimal(discount).is_finite() or not 0 <= discount <= 100):
             raise _SchemaError('invalid session discount')
+    if extra:
+        return SourceSession(
+            source_session_id=values['id'], source_event_id=values['eventId'], start_iso=values['startIso'],
+            source_locator=f'react-router:loaderData/routes/events.$id/sessions/{index}',
+            duration_hours=_decimal(values['durationHours']), schema_status=SESSION_UNVERIFIED_PROPERTIES)
     return SourceSession(
         source_session_id=values['id'], source_event_id=values['eventId'],
         start_iso=values['startIso'],
@@ -192,7 +201,17 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
         drift_keys: set[str] = set()
         for index, reference in enumerate(refs):
             try:
-                session = _session(table, reference, event_id, index)
+                try:
+                    session = _session(table, reference, event_id, index)
+                except _SchemaError as error:
+                    if error.reason != 'new_properties':
+                        raise
+                    # Additive unknown properties: keep the session's own date
+                    # for review, report the drift, never its price/availability.
+                    drift_keys.update(error.keys)
+                    diagnostics.append('embedded_session_drift_new_properties')
+                    session = _session(table, reference, event_id, index, tolerate=True)
+                    diagnostics.append('embedded_session_unverified_shape')
                 if session.source_session_id in sessions:
                     before, after = sessions[session.source_session_id].to_dict(), session.to_dict()
                     before.pop('source_locator')
@@ -205,7 +224,7 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
                 if session.price_per_person is not None or session.unit_price is not None:
                     diagnostics.append('embedded_session_price_unit_unknown')
                 obj = table.object(reference)
-                if any(table.scalar(obj, key) not in (None, 0)
+                if session.schema_status is None and any(table.scalar(obj, key) not in (None, 0)
                        for key in ('hostDiscountPct', 'platformDiscountPct')):
                     diagnostics.append('embedded_session_discount_unresolved')
             except (ValueError, KeyError, TypeError, OverflowError) as error:

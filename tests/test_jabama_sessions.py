@@ -119,11 +119,29 @@ class JabamaSessionTests(unittest.TestCase):
         self.assertEqual(result.diagnostics, ('embedded_sessions_schema_drift',))
 
     def test_unsupported_timeslots_and_new_session_properties_are_visible(self):
-        for changes in ({'timeslots': ['09:00']}, {'newClock': '10:00'}):
+        for changes in ({'timeslots': ['09:00']}, {'newClock': '10:00', 'bad key!': 1}):
             with self.subTest(changes=changes):
                 result = _result(_page([{**SESSION, **changes}]))
                 self.assertEqual(result.sessions, ())
                 self.assertIn('embedded_session_schema_drift', result.diagnostics)
+
+    def test_additive_unknown_properties_keep_only_identity_start_and_duration(self):
+        result = _result(_page([{**SESSION, 'pricePerPerson': 250000, 'remainingSeats': 3,
+                                 'newClock': '10:00', 'statusCode': 'X'}]))
+        value, = result.sessions
+        self.assertEqual((value.source_session_id, value.start_iso, value.duration_hours),
+                         ('demo-session-a', '2026-09-24T17:00:00.000Z', '2'))
+        self.assertEqual(value.schema_status, 'unverified_properties')
+        self.assertIsNone(value.price_per_person)  # meaning may be changed by unknown keys
+        self.assertIsNone(value.remaining_seats)
+        self.assertIsNone(value.enabled)
+        self.assertEqual(result.drift_keys, ('newClock', 'statusCode'))
+        self.assertIn('embedded_session_drift_new_properties', result.diagnostics)
+        self.assertIn('embedded_session_unverified_shape', result.diagnostics)
+        self.assertNotIn('10:00', repr(result))
+        self.assertEqual(SourceSession.from_mapping(value.to_dict()), value)
+        documented = _result(_page()).sessions[0].to_dict()
+        self.assertNotIn('schema_status', documented)  # documented sessions hash as before
 
     def test_bad_timestamps_and_types_cannot_supply_sessions(self):
         for changes in ({'startIso': '2026-09-24'}, {'startIso': '2026-09-24T25:00:00Z'},
