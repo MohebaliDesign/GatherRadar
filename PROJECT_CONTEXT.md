@@ -35,6 +35,12 @@ described in [the data contracts](docs/DATA_CONTRACTS.md#cloud-field-hardening-2
 OCR and live-source defects without accessible evidence remain open; see
 [the cloud hardening report](docs/CLOUD_FIELD_HARDENING_VALIDATION.md).
 
+**Live-run QA (2026-10-29):** Fixes from run `e3ddedf3…`: nested labels, `·` clock
+separators, bounded Persian day-part words, bare early hours as `ambiguous_meridiem`,
+ordered weekday lists, two corroborated venue forms, reviewable Jabama sessions with
+unknown additive properties, and the optional local OCR fallback chain. See
+[the live-run QA report](docs/LIVE_RUN_QA_2026-10-29.md).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile
@@ -349,7 +355,10 @@ below `data/media/`; one artifact failure is isolated from other items. Audio is
 the local Tesseract executable with `fas+eng`, a bounded timeout, and no `shell=True`; it never
 downloads an executable or language pack. Raw and lightly cleaned OCR output, engine/version/
 configuration, artifact provenance, empty results, and failures are represented explicitly.
-No cloud OCR, paid AI, API key, or new Python dependency is required.
+No cloud OCR, paid AI, API key, or new Python dependency is required. An optional local
+fallback chain (default `tesseract,easyocr,windows`) skips engines that are not installed and
+tries a later engine only after a failed or empty result; each attempt stays separate
+evidence. EasyOCR is an optional extra; Windows OCR runs through built-in PowerShell.
 
 The earlier [Instaloader](https://instaloader.github.io/) transport remains as a legacy
 fallback reference in `collectors/instagram_instaloader.py`, since its profile lookup is

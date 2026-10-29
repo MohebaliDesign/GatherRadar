@@ -1356,6 +1356,43 @@ evidence gaps are in [the cloud hardening report](CLOUD_FIELD_HARDENING_VALIDATI
   occurrences are only date ranges; the `جلسه‌ها` cell lists sessions
   chronologically without changing stored order or identity.
 
+### Live-run QA fixes (2026-10-29)
+
+Defects confirmed in the owner's live run; see [the live-run QA report](LIVE_RUN_QA_2026-10-29.md).
+
+- **Nested labels.** A label written inside a longer matched label belongs to it:
+  `مدت زمان:` is a duration label, never also the date label `زمان:`. A later real
+  `زمان:` still counts.
+- **Clock separators and day-parts.** `۸ آبان · ۱۸:۰۰` keeps its clock. Extraction keeps
+  a Persian day-part word directly after a clock or clock range (`ساعت ۵ عصر`).
+  Normalization applies it within fixed bounds: `صبح/بامداد` 1–11; `عصر/بعدازظهر` 1–11
+  (+12) and 12; `ظهر` 9–12 as written and 1–4 (+12); `شب` 6–11 (+12). Anything else with
+  a day-part (e.g. `۱۲ شب`, `۲ شب`) is `ambiguous_meridiem`.
+- **Bare early hours.** A clock hour 1–6 written without minutes and without a day-part
+  (`ساعت ۵`) is `ambiguous_meridiem`: dates stay, no clock is chosen, the Event goes to
+  schedule review. `HH:MM` clocks and hours 7–24 are read as written.
+- **Weekday lists.** `جمعه و شنبه ۸ و ۹ آبان` expands only when the weekdays match the
+  listed dates one-to-one in order; otherwise `weekday_contradiction` and no occurrence.
+- **Venues.** A quoted event name placed at a name the address ends with
+  (`ایونت «چیزمیز» در کافه‌کتاب مدیا`), and a whole `در/توی <head> <name>` line directly
+  under an event title line when the same name appears again elsewhere.
+- **Jabama sessions with unknown properties.** If a session's only drift is extra,
+  safely named properties (at most 20), the session keeps its own `id`, `startIso` and
+  `durationHours`, with `SourceSession.schema_status = "unverified_properties"`; its
+  price, discount, seats and enabled flag are not read. The occurrence carries
+  `embedded_session_unverified_shape` and is never actionable, unless its date *and*
+  clock equal exactly one schedule stated in the page's visible text
+  (`embedded_session_corroborated_by_page_text`). Readiness reason:
+  `source_sessions_unverified`. Non-empty `timeslots` and unsafe key names are still
+  refused. `schema_status` is omitted when unset, so documented sessions hash as before.
+- **OCR fallback chain.** `FallbackOcrProvider` runs local engines in the order of
+  `GATHERRADAR_OCR_ENGINES` (default `tesseract,easyocr,windows`), skipping engines that are
+  not installed. A later engine runs only after a failed or empty result. Every attempt is
+  stored as its own fragment with its engine, version and config; the chosen attempt is
+  appended last, so latest-per-slot selection uses it. Attempts are never concatenated.
+  The cache follows the first available engine and empty cached results are retried.
+  Refresh manifests add `ocr_fallback_used` and `ocr_engine_unavailable` media diagnostics.
+
 ### Data readiness
 
 Readiness is an explainable assessment, separate from owner decisions, publication
