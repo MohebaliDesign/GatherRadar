@@ -33,6 +33,69 @@ _DRIFT_KEY = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,39}')
 _MAX_DRIFT_KEYS = 20
 
 
+_MAX_SHAPES = 3
+_SHAPE_DEPTH = 4
+_SHAPE_KEYS = 30
+
+
+def _string_form(value: str) -> str:
+    """The kind of a string, never the string itself."""
+    for form, pattern in (('iso_datetime', r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?'),
+                          ('iso_date', r'\d{4}-\d{2}-\d{2}'), ('clock', r'\d{1,2}:\d{2}(?::\d{2})?'),
+                          ('digits', r'\d+'), ('number_text', r'-?\d+(?:[.,]\d+)?'), ('url', r'https?://\S+'),
+                          ('identifier', r'[A-Za-z0-9_-]{1,64}')):
+        if re.fullmatch(pattern, value):
+            return form
+    return 'text'
+
+
+def _length_bucket(length: int) -> str:
+    return next(label for limit, label in ((0, '0'), (10, '1-10'), (40, '11-40'), (200, '41-200'))
+                if length <= limit) if length <= 200 else '>200'
+
+
+def value_shape(table: '_Table', reference: object, depth: int = 0) -> dict:
+    """A value-free structural description of one embedded value.
+
+    Strings report only their form and a length bucket; numbers their kind and
+    sign; booleans their value (public flags such as a sellout marker); objects
+    their sanitized key names; arrays their length and the shapes of up to five
+    items. Depth and key counts are bounded.
+    """
+    try:
+        value = table.value(reference)
+    except (_SchemaError, TypeError):
+        return {'type': 'unsupported_reference'}
+    if value is None:
+        return {'type': 'null'}
+    if isinstance(value, bool):
+        return {'type': 'bool', 'value': value}
+    if isinstance(value, (int, Decimal)):
+        return {'type': 'integer' if type(value) is int else 'decimal',
+                'sign': 'zero' if value == 0 else 'positive' if value > 0 else 'negative'}
+    if isinstance(value, str):
+        return {'type': 'string', 'form': _string_form(value), 'length': _length_bucket(len(value))}
+    if isinstance(value, list):
+        shape: dict = {'type': 'array', 'length': len(value)}
+        if depth < _SHAPE_DEPTH:
+            items = []
+            for item in value[:5]:
+                described = value_shape(table, item, depth + 1)
+                if described not in items:
+                    items.append(described)
+            shape['items'] = items
+        return shape
+    try:
+        obj = table.object(reference)
+    except _SchemaError:
+        return {'type': 'unsupported_object'}
+    shape = {'type': 'object', 'key_count': len(obj)}
+    if depth < _SHAPE_DEPTH:
+        shape['keys'] = {(key if _DRIFT_KEY.fullmatch(key) else '<unsafe-key>'): value_shape(table, ref, depth + 1)
+                         for key, ref in sorted(obj.items())[:_SHAPE_KEYS]}
+    return shape
+
+
 @dataclass(frozen=True, slots=True)
 class SessionResult:
     sessions: tuple[SourceSession, ...] = ()
@@ -41,6 +104,9 @@ class SessionResult:
     # Names only (never values) of unexpected session properties, so the owner
     # can report a new public shape without sharing page data.
     drift_keys: tuple[str, ...] = ()
+    # Value-free shapes of up to three sessions that did not match the documented
+    # schema; the structural evidence needed before supporting a new variant.
+    drift_shapes: tuple[dict, ...] = ()
 
 
 class _SchemaError(ValueError):
@@ -169,36 +235,50 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
     payloads = [script for script in scripts if _ENQUEUE in script]
     if not payloads:
         return SessionResult(diagnostics=('embedded_sessions_absent',))
+    def drift(stage: str) -> SessionResult:
+        # The generic code stays; the stage names the expectation that failed.
+        return SessionResult(diagnostics=('embedded_sessions_schema_drift', 'embedded_sessions_drift_' + stage),
+                             present=True)
     if len(payloads) != 1 or len(payloads[0]) > _MAX_PAYLOAD:
-        return SessionResult(diagnostics=('embedded_sessions_schema_drift',), present=True)
+        return drift('payload_count' if len(payloads) != 1 else 'payload_size')
     # JSON string argument only. No eval, execution, fetching imports, or attempt
     # to repair malformed JavaScript. Trailing program text is rejected.
     match = re.fullmatch(re.escape(_ENQUEUE) + r'\(\s*("(?:[^"\\]|\\.)*")\s*\);?', payloads[0], re.S)
     if not match:
-        return SessionResult(diagnostics=('embedded_sessions_schema_drift',), present=True)
+        return drift('call_shape')
+    stage = 'table'
     try:
         serialized = _json(match[1])
         if not isinstance(serialized, str) or len(serialized) > _MAX_PAYLOAD:
             raise _SchemaError('invalid serialized table')
         table = _Table(_json(serialized))
+        stage = 'route'
         envelope = table.object(0)
         loaders = table.object(envelope['loaderData'])
         route = table.object(loaders['routes/events.$id'])
+        stage = 'event_identity'
         event = table.object(route['event'])
         event_id = table.scalar(event, 'id', required=True)
         if event_id != path[1]:
             raise _SchemaError('page event identity mismatch')
+        stage = 'sessions'
         if 'sessions' not in route:
             raise _SchemaError('missing sessions')
         refs = table.value(route['sessions'])
         if not isinstance(refs, list) or len(refs) > _MAX_SESSIONS:
             raise _SchemaError('invalid sessions')
+        stage = 'session_list'
         if not refs:
             return SessionResult(diagnostics=('embedded_sessions_empty',), present=True)
         sessions: dict[str, SourceSession] = {}
         conflicts: set[str] = set()
         diagnostics: list[str] = []
         drift_keys: set[str] = set()
+        shapes: list[dict] = []
+
+        def keep_shape(reference: object) -> None:
+            if len(shapes) < _MAX_SHAPES:
+                shapes.append(value_shape(table, reference))
         for index, reference in enumerate(refs):
             try:
                 try:
@@ -210,6 +290,7 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
                     # for review, report the drift, never its price/availability.
                     drift_keys.update(error.keys)
                     diagnostics.append('embedded_session_drift_new_properties')
+                    keep_shape(reference)
                     session = _session(table, reference, event_id, index, tolerate=True)
                     diagnostics.append('embedded_session_unverified_shape')
                 if session.source_session_id in sessions:
@@ -233,8 +314,53 @@ def extract_sessions(root: Node, page_url: str) -> SessionResult:
                 diagnostics.append('embedded_session_schema_drift')
                 diagnostics.append('embedded_session_drift_' + getattr(error, 'reason', 'field'))
                 drift_keys.update(getattr(error, 'keys', ()))
+                if getattr(error, 'reason', 'field') in ('new_properties', 'timeslots'):
+                    keep_shape(reference)
         return SessionResult(tuple(value for key, value in sessions.items() if key not in conflicts),
                              tuple(dict.fromkeys(diagnostics)), True,
-                             tuple(sorted(drift_keys))[:_MAX_DRIFT_KEYS])
+                             tuple(sorted(drift_keys))[:_MAX_DRIFT_KEYS], tuple(shapes))
     except (ValueError, KeyError, TypeError, OverflowError, RecursionError):
-        return SessionResult(diagnostics=('embedded_sessions_schema_drift',), present=True)
+        return drift(stage)
+
+
+def describe_embedded_sessions(root: Node) -> dict:
+    """Value-free structural report of a saved public detail page's sessions.
+
+    For owner diagnostics only: never used for extraction, no URL is required,
+    and no string, price or identifier value is returned.
+    """
+    scripts = [''.join(part for part in node.children if isinstance(part, str)).strip()
+               for node in root.select('script') if not node.attrs.get('src')]
+    payloads = [script for script in scripts if _ENQUEUE in script]
+    if len(payloads) != 1:
+        return {'envelope': 'absent' if not payloads else 'multiple_payloads', 'payload_count': len(payloads)}
+    match = re.fullmatch(re.escape(_ENQUEUE) + r'\(\s*("(?:[^"\\]|\\.)*")\s*\);?', payloads[0], re.S)
+    if not match or len(payloads[0]) > _MAX_PAYLOAD:
+        return {'envelope': 'unsupported_call_shape'}
+    try:
+        table = _Table(_json(_json(match[1])))
+        loaders = table.object(table.object(0)['loaderData'])
+        if 'routes/events.$id' not in loaders:
+            return {'envelope': 'ok', 'route': 'missing',
+                    'loader_routes': sorted(k if _DRIFT_KEY.fullmatch(k.replace('/', '_').replace('.', '_').replace('$', ''))
+                                            else '<unsafe-key>' for k in loaders)[:_SHAPE_KEYS]}
+        route = table.object(loaders['routes/events.$id'])
+        report: dict = {'envelope': 'ok', 'route': 'routes/events.$id',
+                        'route_keys': sorted(k if _DRIFT_KEY.fullmatch(k) else '<unsafe-key>' for k in route)[:_SHAPE_KEYS]}
+        refs = table.value(route['sessions']) if 'sessions' in route else None
+        if not isinstance(refs, list):
+            return {**report, 'sessions': 'missing' if refs is None else 'not_a_list'}
+        shapes = [value_shape(table, ref) for ref in refs[:_MAX_SESSIONS]]
+        summary: dict = {}
+        for shape in shapes:
+            for key, described in (shape.get('keys') or {}).items():
+                entry = summary.setdefault(key, {'types': {}, 'true': 0, 'false': 0, 'present_in': 0})
+                entry['present_in'] += 1
+                entry['types'][described['type']] = entry['types'].get(described['type'], 0) + 1
+                if described['type'] == 'bool':
+                    entry['true' if described['value'] else 'false'] += 1
+        unknown = sorted(set(summary) - _SESSION_KEYS)
+        return {**report, 'session_count': len(refs), 'documented_keys_missing': sorted(_SESSION_KEYS - set(summary)) if shapes else [],
+                'unknown_keys': unknown, 'key_summary': summary, 'session_shapes': shapes[:20]}
+    except (ValueError, KeyError, TypeError, OverflowError, RecursionError):
+        return {'envelope': 'undecodable'}

@@ -173,3 +173,38 @@ paths with your isolated database and workbook:
 ```powershell
 .\.venv\Scripts\python.exe -m gatherradar export all --run ca3548cb65534d868277f140cdc92855 --db "data\state\gatherradar.sqlite3" --workbook "data\review\GatherRadar.xlsx" --export-dir "data\exports"
 ```
+
+## Follow-up: Jabama `soldOut` and `timeslots` (evidence boundary)
+
+Confirmed from the owner's local diagnostics: unknown property `soldOut` on Jabama Events
+`69063962`, `62170465`, `08945247`, `95037796` and Experiences `48751310`, `01519540`,
+`86400491`, `89740631`, `legacy-941`, `88230976`; non-empty `timeslots` on `48751310`,
+`01519540`, `86400491` (Experiences); `71461868` empty sessions; `86400491` (Events) generic
+envelope drift. The raw store keeps names only, the live pages are unreachable from Cloud,
+and no saved HTML was supplied, so **types and meaning are not verified** and no new schema
+is supported. See [the contract](DATA_CONTRACTS.md#jabama-session-evidence-boundary-2026-10-29).
+
+Fixed now: an unverified session whose own date has passed is `expired` instead of
+schedule review; envelope failures name their stage; new observations keep value-free
+shapes; the read-only `diagnose jabama-sessions` report.
+
+Generate the sanitized report (read-only; existing observations show names/diagnostics):
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar diagnose jabama-sessions --data-dir data --output data\exports\jabama-session-schema.json
+```
+
+To include structure without a crawl, save public pages in your browser (Ctrl+S, "Webpage,
+HTML only"), e.g. `https://jabama.events/events/48751310` and `.../62170465`, then:
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar diagnose jabama-sessions --data-dir data --html "$HOME\Downloads\48751310.html" --html "$HOME\Downloads\62170465.html" --output data\exports\jabama-session-schema.json
+```
+
+(The next regular refresh also records shapes automatically.) Offline replay and export,
+no crawl:
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar refresh --all-enabled --stored --limit 5 --days 14 --db data\replay\state.sqlite3 --workbook data\replay\GatherRadar.xlsx --export-dir data\replay\exports
+.\.venv\Scripts\python.exe -m gatherradar export all --run latest --db data\replay\state.sqlite3 --workbook data\replay\GatherRadar.xlsx --export-dir data\replay\exports
+```

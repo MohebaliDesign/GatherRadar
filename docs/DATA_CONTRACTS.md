@@ -1405,6 +1405,33 @@ Defects confirmed in the owner's live run; see [the live-run QA report](LIVE_RUN
   The cache follows the first available engine and empty cached results are retried.
   Refresh manifests add `ocr_fallback_used` and `ocr_engine_unavailable` media diagnostics.
 
+### Jabama session evidence boundary (2026-10-29)
+
+The owner's October 29 crawl reported the unknown session property `soldOut` on all ten
+Jabama pages and non-empty `timeslots` on three Experiences pages. Only property *names*
+were retained, so their types and meaning are not verified and neither is supported yet:
+
+- A session with `soldOut` (any type) keeps `schema_status = "unverified_properties"`:
+  its own id/start/duration only; no availability, seats, price or status is read from
+  `soldOut` or any other key. It is reviewable, never actionable, and never sets the Event
+  status to sold out or expired. A session whose own date has passed is `expired`
+  (unverified shape no longer forces schedule review after the session ended).
+- Non-empty `timeslots` remain refused (`embedded_session_drift_timeslots`); no slot
+  becomes an occurrence and no booking window becomes a duration.
+- Envelope failures add a value-free stage code after `embedded_sessions_schema_drift`:
+  `embedded_sessions_drift_{payload_count,payload_size,call_shape,table,route,event_identity,sessions,session_list}`.
+- New observations retain up to three value-free `source_session_drift_shapes`: per key
+  the type, string *form* (`iso_datetime`, `iso_date`, `clock`, `digits`, `identifier`,
+  `text`, …) and length bucket, number kind and sign, boolean value, array length and
+  item shapes, nested key names (depth ≤ 4, ≤ 30 keys). No string, price or identifier value.
+- `python -m gatherradar diagnose jabama-sessions [--html saved.html] [--output r.json]`
+  reads the local raw store (and optionally browser-saved public pages) and writes only a
+  sanitized structural JSON report. It opens no browser and contacts no source.
+
+Support is added only after a report shows, for `soldOut`: one consistent type, and its
+relation to `remainingSeats`/`enabled`; for `timeslots`: element type and keys, start
+fields' form and timezone, any link to the session ID, and per-slot capacity/price keys.
+
 ### Data readiness
 
 Readiness is an explainable assessment, separate from owner decisions, publication

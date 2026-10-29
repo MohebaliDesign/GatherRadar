@@ -116,7 +116,7 @@ class JabamaSessionTests(unittest.TestCase):
     def test_embedded_event_must_match_current_detail_identity(self):
         result = _result(_page(event_id='other-event'))
         self.assertEqual(result.sessions, ())
-        self.assertEqual(result.diagnostics, ('embedded_sessions_schema_drift',))
+        self.assertEqual(result.diagnostics, ('embedded_sessions_schema_drift', 'embedded_sessions_drift_event_identity'))
 
     def test_unsupported_timeslots_and_new_session_properties_are_visible(self):
         for changes in ({'timeslots': ['09:00']}, {'newClock': '10:00', 'bad key!': 1}):
@@ -173,16 +173,16 @@ class JabamaSessionTests(unittest.TestCase):
         for table in ([{'_1': 99999}, 'loaderData'], [{'_1': 0}, 'loaderData'],
                       [{'_1': -1}, 'loaderData']):
             page = '<script>' + PREFIX + '(' + json.dumps(json.dumps(table)) + ');</script>'
-            self.assertEqual(_result(page).diagnostics, ('embedded_sessions_schema_drift',))
+            self.assertEqual(_result(page).diagnostics[0], 'embedded_sessions_schema_drift')
 
     def test_duplicate_json_keys_nonfinite_values_and_resource_bounds_fail_closed(self):
         for serialized in ('[{"_1":2,"_1":3},"loaderData",{},{}]', '[NaN]'):
             page = '<script>' + PREFIX + '(' + json.dumps(serialized) + ');</script>'
-            self.assertEqual(_result(page).diagnostics, ('embedded_sessions_schema_drift',))
+            self.assertEqual(_result(page).diagnostics[0], 'embedded_sessions_schema_drift')
         many = _page([{**SESSION, 'id': f'session-{i}'} for i in range(201)])
         self.assertEqual(_result(many).sessions, ())
         large = '<script>' + PREFIX + '(' + json.dumps('x' * 1_000_001) + ');</script>'
-        self.assertEqual(_result(large).diagnostics, ('embedded_sessions_schema_drift',))
+        self.assertEqual(_result(large).diagnostics, ('embedded_sessions_schema_drift', 'embedded_sessions_drift_payload_size'))
 
     def test_session_discount_is_reported_without_adjusting_source_price(self):
         result = _result(_page([{**SESSION, 'pricePerPerson': 100, 'hostDiscountPct': 10}]))

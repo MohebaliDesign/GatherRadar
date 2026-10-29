@@ -36,6 +36,7 @@ class WebsiteDetail:
     sessions: tuple[SourceSession, ...] = ()
     session_diagnostics: tuple[str, ...] = ()
     session_drift_keys: tuple[str, ...] = ()
+    session_drift_shapes: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,7 +295,7 @@ class JabamaAdapter(GenericAdapter):
         detail = super().extract(page, source_url)
         embedded = extract_sessions(parse_html(page.html), page.url)
         return replace(detail, sessions=embedded.sessions, session_diagnostics=embedded.diagnostics,
-                       session_drift_keys=embedded.drift_keys,
+                       session_drift_keys=embedded.drift_keys, session_drift_shapes=embedded.drift_shapes,
                        structured_data_present=detail.structured_data_present or embedded.present)
 
     def _article(self, root: Node) -> Node:

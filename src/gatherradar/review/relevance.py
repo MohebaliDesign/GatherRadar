@@ -97,15 +97,23 @@ def assess_relevance(event: Event, started_at: datetime, days: int = 14,
     if event.schedule_kind == 'conflict':
         return result('needs_schedule_review', 'conflicting_schedule')
     if event.occurrences:
-        sessions = tuple((o.occurrence_id, *_dated(o, reference, horizon,
-                         [c for c in o.diagnostics if not any(w in c for w in ('price', 'discount', 'availability'))]))
-                         for o in event.occurrences)
+        def session(o):
+            codes = [c for c in o.diagnostics if not any(w in c for w in ('price', 'discount', 'availability'))]
+            kind, reason = _dated(o, reference, horizon, [c for c in codes if 'unverified_shape' not in c])
+            # An unverified session shape leaves its booking facts unknown, never its
+            # own source date: a session that has ended is expired, otherwise review.
+            if kind != 'expired' and len(codes) != len([c for c in codes if 'unverified_shape' not in c]):
+                return o.occurrence_id, 'needs_schedule_review', 'unverified_session_shape'
+            return o.occurrence_id, kind, reason
+        sessions = tuple(session(o) for o in event.occurrences)
         ids = tuple(key for key, kind, _ in sessions if kind == 'actionable')
         if ids:
             return result('actionable', 'supported_occurrences_in_window', ids, sessions)
         kinds = {kind for _, kind, _ in sessions}
         bounded_range = all(o.end_date is not None and not _unsafe(o.diagnostics) for o in event.occurrences)
-        if 'needs_schedule_review' in kinds or (_unsafe(codes) and not bounded_range) or event.schedule_kind == 'recurring':
+        # Unverified session shape is judged per session above, by its own date.
+        event_codes = [c for c in codes if 'unverified_shape' not in c]
+        if 'needs_schedule_review' in kinds or (_unsafe(event_codes) and not bounded_range) or event.schedule_kind == 'recurring':
             return result('needs_schedule_review', 'unresolved_sessions', occurrences=sessions)
         if 'beyond_horizon' in kinds:
             return result('beyond_horizon', 'remaining_sessions_after_horizon', occurrences=sessions)

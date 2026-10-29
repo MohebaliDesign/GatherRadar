@@ -148,6 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_instagram.add_argument('--max-carousel-slides', type=int, default=20)
     evidence_instagram.add_argument('--max-reel-frames', type=int, default=6)
 
+    diagnose = subcommands.add_parser('diagnose', help='Read-only structural diagnostics of retained local data.')
+    diagnose_kinds = diagnose.add_subparsers(dest='diagnose_kind', required=True)
+    sessions = diagnose_kinds.add_parser('jabama-sessions', help='Value-free report of Jabama embedded session schemas.')
+    sessions.add_argument('--data-dir', default='data')
+    sessions.add_argument('--html', action='append', default=[],
+                          help='A browser-saved public Jabama detail page to describe; repeatable.')
+    sessions.add_argument('--output', help='Write the JSON report here instead of printing it.')
+
     ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
     ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
     ocr_check = ocr_kinds.add_parser('check', help='Validate each configured engine and optionally read one image.')
@@ -551,6 +559,22 @@ def main(
 
     if args.command == 'ocr':
         return run_ocr_check(args)
+
+    if args.command == 'diagnose':
+        import json
+        from pathlib import Path
+        from .orchestration.session_schema_report import build_report
+        report = json.dumps(build_report(args.data_dir, args.html), ensure_ascii=False, indent=2, sort_keys=True)
+        if args.output:
+            output = Path(args.output)
+            if output.suffix.lower() != '.json' or output.exists() and output.is_dir():
+                print('error: --output must be a .json file path', file=sys.stderr)
+                return 2
+            output.write_text(report + '\n', encoding='utf-8')
+            print(f'report written: {output}')
+        else:
+            print(report)
+        return 0
 
     if args.command == "auth":
         if args.legacy_cookie:
