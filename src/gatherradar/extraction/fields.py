@@ -369,7 +369,8 @@ def venue_name(found: SignalSet) -> str | None:
         if labelled and " ".join(normalize(labelled).split()) not in CITY_TOKENS:
             return labelled
     compound = _compound_location(found)
-    return (compound[1] if compound else None) or _visual_venue(found) or _corroborated_venue(found) or _natural_venue(found)
+    return ((compound[1] if compound else None) or _visual_venue(found) or _corroborated_venue(found)
+            or _address_agreed_venue(found) or _natural_venue(found) or _trailing_head_venue(found))
 
 
 def _compound_location(found: SignalSet) -> tuple[str, str, str] | None:
@@ -601,6 +602,59 @@ def _corroborated_venue(found: SignalSet) -> str | None:
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
+_OFFICE_OR_SPONSOR = re.compile(r"(?<!\w)(?:دفتر|حامی|اسپانسر|حمایت|شعبه\s+مرکزی)(?!\w)")
+
+
+def _address_agreed_venue(found: SignalSet) -> str | None:
+    """A prose "در/توی <head> <name>" that is also the final part of the address.
+
+    "این رویداد … توی عمارت عقاب در جریانه" plus "مکان: …، عمارت عقاب": the
+    prose says the event is happening/held at the name ("در جریان", "برگزار"
+    directly after it) and the labelled address ends with exactly that name.
+    Both roles are required; neither alone is a venue, and mere mention in prose
+    ("برنامه اکران در خانه آبی، فرصتی …") is not. The clause must speak about
+    the event, not an office, sponsor or the past.
+    """
+    street_address = address(found)
+    if not street_address or not has_address_detail(street_address):
+        return None
+    tail = re.split("[،,]", street_address)[-1].strip(_TRIM)
+    words = phrase_tokens(tail)
+    heads = _VENUE_HEADS + _GENERIC_VENUE_HEADS
+    if not 2 <= len(words) <= 6 or not any(words[:len(head)] == head for head in heads):
+        return None
+    span = _labelled_span(found, "address") or _ambiguous_venue_address_span(found)
+    folded = re.escape(normalize(tail))
+    introducers = "|".join(re.escape(normalize(p)) for p in rules.NATURAL_VENUE_INTRODUCERS)
+    happening = "|".join(re.escape(normalize(p)) for p in rules.VENUE_HAPPENING_PREDICATES)
+    for match in re.finditer(r"(?<!\w)(?:" + introducers + r")\s+(" + folded + r")\s+(?:" + happening + r")",
+                             found.normalized):
+        if span is not None and span[0] <= match.start() < span[1]:
+            continue
+        clause = found.normalized[slice(*_clause_bounds(found.text, match.start()))]
+        if _PAST_CLAUSE.search(clause) or _OFFICE_OR_SPONSOR.search(clause):
+            continue
+        if not any(normalize(term) in clause for term in rules.DURATION_EVENT_NOUNS):
+            continue
+        return found.text[match.start(1):match.end(1)]
+    return None
+
+
+def _trailing_head_venue(found: SignalSet) -> str | None:
+    """"در <name> پارک برگزار …": a head written after a short foreign name."""
+    heads = "|".join(re.escape(normalize(h)) for h in rules.TRAILING_VENUE_HEADS)
+    holding = "|".join(re.escape(normalize(h)) for h in rules.VENUE_HOLDING_TERMS)
+    values = {}
+    for match in re.finditer(r"(?<![\w‌])در\s+((?:[^\W\d_]+[\s‌]){1,3}?(?:" + heads + r"))\s+(?:" + holding + r")",
+                             found.normalized):
+        value = found.text[match.start(1):match.end(1)]
+        name = phrase_tokens(value)[:-1]
+        if any(token in _NOT_A_NAME or len(token) < rules.MIN_NAME_TOKEN_LENGTH for token in name):
+            continue
+        values.setdefault(" ".join(phrase_tokens(value)), value)
+    return next(iter(values.values())) if len(values) == 1 else None
+
+
 def address(found: SignalSet) -> str | None:
     explicit = _labelled_value(found, "address")
     if explicit is not None:
@@ -632,7 +686,21 @@ def city(found: SignalSet) -> str | None:
     for token in found.tokens:
         if token.text in CITY_TOKENS:
             return found.text[token.start : token.end]
-    return None
+    return _explicit_event_city(found)
+
+
+def _explicit_event_city(found: SignalSet) -> str | None:
+    """"فستیوال اکتبر در استانبول": a city outside the default list, only when an
+    event noun is directly said to be in it. Persian/English spellings of one city
+    agree; two different cities yield None."""
+    nouns = "|".join(re.escape(normalize(n)) for n in rules.DURATION_EVENT_NOUNS)
+    cities = "|".join(re.escape(normalize(c)) for c in sorted(rules.EXPLICIT_EVENT_CITIES, key=len, reverse=True))
+    pattern = (r"(?<!\w)(?:" + nouns + r")(?:\s+[^\W\d_]+){0,3}\s+(?:در|in)\s+(" + cities + r")(?!\w)")
+    found_cities = {}
+    for match in re.finditer(pattern, found.normalized):
+        key = rules.EXPLICIT_EVENT_CITIES[match[1]]
+        found_cities.setdefault(key, found.text[match.start(1):match.end(1)])
+    return next(iter(found_cities.values())) if len(found_cities) == 1 else None
 
 
 def event_format(found: SignalSet) -> str | None:
@@ -748,6 +816,9 @@ def area_text(found: SignalSet) -> str | None:
     labelled = _short_labelled(found, "area", 120)
     if labelled:
         return labelled
+    approximate = _approximate_area(found)
+    if approximate:
+        return approximate
     values = {}
     for line in found.text.splitlines():
         if not line.lstrip(" \t\u2066\u2067\u2068\u2069").startswith("📍"):
@@ -760,6 +831,28 @@ def area_text(found: SignalSet) -> str | None:
     return next(iter(values.values())) if len(values) == 1 else None
 
 
+def _approximate_area(found: SignalSet) -> str | None:
+    """"لوکیشن حدودی این تجربه ستارخانه." -> "ستارخانه", exactly as written.
+
+    The sentence must say the location is approximate, and the value must be a
+    short name ending the sentence: no address detail, no city, no geocoding.
+    """
+    terms = "|".join(re.escape(normalize(t)) for t in rules.APPROXIMATE_LOCATION_TERMS)
+    qualifiers = "|".join(re.escape(normalize(q)) for q in rules.APPROXIMATE_QUALIFIERS)
+    nouns = "|".join(re.escape(normalize(n)) for n in ("تجربه", *rules.DURATION_EVENT_NOUNS))
+    pattern = (r"(?<!\w)(?:" + terms + r")\s+(?:" + qualifiers + r")\s*(?::\s*)?(?:(?:این|of\s+this)\s+(?:"
+               + nouns + r")\s+)?([^\W\d_](?:[^\n.،,!؟?:]{0,38}[^\W\d_])?)\s*(?=[.\n،,!؟?]|$)")
+    values = {}
+    for match in re.finditer(pattern, found.normalized):
+        value = found.text[match.start(1):match.end(1)].strip(_TRIM)
+        tokens = phrase_tokens(value)
+        if (not 1 <= len(tokens) <= 3 or has_address_detail(value)
+                or " ".join(tokens) in CITY_TOKENS or any(t in {"است", "هست", "دقیق"} for t in tokens)):
+            continue
+        values.setdefault(" ".join(tokens), value)
+    return next(iter(values.values())) if len(values) == 1 else None
+
+
 def location_context(found: SignalSet) -> str | None:
     """Explicit building context, separate from street address and named venue."""
     compound = _compound_location(found)
@@ -767,8 +860,22 @@ def location_context(found: SignalSet) -> str | None:
 
 
 def duration_text(found: SignalSet) -> str | None:
-    """An explicitly labelled length ("مدت: ۳ ساعت"); clocks never imply one."""
-    return _short_labelled(found, "duration", 60)
+    """An explicitly stated length; clocks never imply one.
+
+    A labelled value ("مدت: ۳ ساعت") wins. Otherwise only an "N‌روزه"/"N‌ساعته"
+    adjective directly modifying an event noun ("این رویداد سه‌روزه") counts.
+    """
+    labelled = _short_labelled(found, "duration", 60)
+    if labelled:
+        return labelled
+    nouns = "|".join(re.escape(normalize(n)) for n in rules.DURATION_EVENT_NOUNS)
+    numbers = "|".join(re.escape(normalize(n)) for n in rules.DURATION_NUMBER_WORDS if n not in {"نیم", "چند"})
+    pattern = (r"(?<!\w)(?:" + nouns + r")\s+((?:\d{1,2}|" + numbers + r")[\s‌]?(?:روزه|ساعته))(?!\w)")
+    values = {}
+    for match in re.finditer(pattern, found.normalized):
+        value = found.text[match.start(1):match.end(1)]
+        values.setdefault("".join(normalize(value).split()).replace("‌", ""), value)
+    return next(iter(values.values())) if len(values) == 1 else None
 
 
 def organizer_name(found: SignalSet) -> str | None:
