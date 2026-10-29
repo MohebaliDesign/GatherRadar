@@ -251,6 +251,15 @@ class TimeslotScheduleTests(unittest.TestCase):
         self.assertEqual(unknown.occurrences[0].diagnostics, ('embedded_timeslot_unverified_shape',))
         self.assertEqual(assess_relevance(unknown, RUN).disposition, 'needs_schedule_review')
 
+    def test_visible_parent_window_is_not_a_second_session(self):
+        # "۸ مهر ساعت ۱۰ تا ۱۶" on the page contains both timeslots (10-12, 13-15).
+        event = event_of([ONE], '</div><div>۸ مهر ساعت ۱۰ تا ۱۶')
+        self.assertEqual([o.source_timeslot_id for o in event.occurrences], ['901', '902'])
+        self.assertNotEqual(event.schedule_kind, 'conflict')
+        # A visible clock that contradicts the timeslots stays a visible conflict.
+        clash = event_of([ONE], '</div><div>۸ مهر ساعت ۹ تا ۱۱')
+        self.assertEqual(clash.schedule_kind, 'conflict')
+
     def test_shorter_timeslot_inside_parent_is_not_a_conflict(self):
         # The wheel page: every timeslot shorter than its parent duration, all inside.
         event = event_of([parent('111', '2026-09-30T06:30:00Z', [

@@ -68,7 +68,13 @@ def _overlay_sessions(primary: TemporalResult, schedule: TemporalResult) -> Temp
                 and all(getattr(a, field) is None or getattr(b, field) is None
                         or getattr(a, field) == getattr(b, field)
                         for field in ("start_date", "end_date", "start_time", "end_time", "timezone")))
-    if not all(any(compatible(a, b) for a in primary.occurrences) for b in schedule.occurrences):
+    def window(a, b):
+        # A visible same-day clock range that contains a child timeslot is that
+        # timeslot's parent window, not another session.
+        return (b.source_timeslot_id is not None and a.end_date is None and a.start_date == b.start_date
+                and a.start_time is not None and b.start_time is not None and a.start_time <= b.start_time
+                and (a.end_time is None or (b.end_time is not None and b.end_time <= a.end_time)))
+    if not all(any(compatible(a, b) or window(a, b) for a in primary.occurrences) for b in schedule.occurrences):
         return None
     values = []
     for value in schedule.occurrences:
@@ -86,7 +92,8 @@ def _overlay_sessions(primary: TemporalResult, schedule: TemporalResult) -> Temp
                 value = replace(value, diagnostics=tuple(sorted(
                     (set(value.diagnostics) - {UNVERIFIED_SHAPE}) | {"embedded_session_corroborated_by_page_text"})))
         values.append(value)
-    values.extend(a for a in primary.occurrences if not any(compatible(a, b) for b in schedule.occurrences))
+    values.extend(a for a in primary.occurrences
+                  if not any(compatible(a, b) or window(a, b) for b in schedule.occurrences))
     values.sort(key=lambda o: (o.start_date, o.start_time is None, o.start_time or datetime.min.time(), o.occurrence_id))
     result = replace(schedule, occurrences=tuple(values),
                      schedule_kind=ScheduleKind.SINGLE if len(values) == 1 else ScheduleKind.DISCRETE)
