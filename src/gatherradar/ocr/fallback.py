@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .base import OcrProvider, OcrResult, OcrStatus, OcrUnavailableError
+from .quality import assess_text
 
 OCR_ENGINES_ENV = 'GATHERRADAR_OCR_ENGINES'
 DEFAULT_ENGINES = ('tesseract', 'easyocr', 'windows')
@@ -13,9 +14,12 @@ DEFAULT_ENGINES = ('tesseract', 'easyocr', 'windows')
 class FallbackOcrProvider:
     """Local engines in order; a later engine runs only when earlier output is unusable.
 
-    Unavailable engines are skipped at validation, so a missing Tesseract no
-    longer stops media OCR when another local engine works. Each attempt stays a
-    separate result; the chosen one is last. Hypotheses are never concatenated.
+    Unusable means failed, empty, or text that `assess_text` judges implausible
+    (mostly symbols, fragmented, scattered Latin noise in Persian), so garbled
+    but nonempty output no longer stops recovery. Unavailable engines are skipped
+    at validation. Each attempt stays a separate result; the chosen one is last:
+    the first usable attempt, else the best-scoring nonempty one, else the last.
+    Hypotheses are never concatenated.
     """
 
     name = 'fallback'
@@ -58,11 +62,16 @@ class FallbackOcrProvider:
             raise OcrUnavailableError('No local OCR engine is available: ' + '; '.join(
                 f'{name}: {reason}' for name, reason in unavailable.items()))
 
-    def recognize_all(self, image_path: str | Path) -> tuple[OcrResult, ...]:
+    def recognize_all(self, image_path: str | Path, skip: frozenset = frozenset()) -> tuple[OcrResult, ...]:
+        """Attempts in engine order with the chosen one last. Engines whose
+        (name, version, config) is in `skip` already read this image and are
+        not run again."""
         if not self.available:
             self.validate()
         attempts = []
         for provider in self.available:
+            if (provider.name, getattr(provider, 'version', None), getattr(provider, 'config', None)) in skip:
+                continue
             try:
                 result = provider.recognize(image_path)
             except Exception as exc:  # One engine's failure never stops the next.
@@ -71,12 +80,24 @@ class FallbackOcrProvider:
                                    str(getattr(provider, 'config', None) or 'unknown'),
                                    f'OCR failed ({type(exc).__name__})')
             attempts.append(result)
-            if result.meaningful:
+            if result.meaningful and assess_text(result.text).usable:
                 break
-        return tuple(attempts)
+        return choose(tuple(attempts))
 
     def recognize(self, image_path: str | Path) -> OcrResult:
         return self.recognize_all(image_path)[-1]
+
+
+def choose(attempts: tuple[OcrResult, ...]) -> tuple[OcrResult, ...]:
+    """Reorder so the chosen attempt is last; the others keep engine order."""
+    if not attempts:
+        return attempts
+    usable = [a for a in attempts if a.meaningful and assess_text(a.text).usable]
+    readable = [a for a in attempts if a.meaningful]
+    chosen = usable[0] if usable else (max(readable, key=lambda a: assess_text(a.text).score)
+                                       if readable else attempts[-1])
+    index = attempts.index(chosen)
+    return attempts[:index] + attempts[index + 1:] + (chosen,)
 
 
 def build_ocr_provider(engines: Sequence[str] | None = None) -> OcrProvider:
@@ -95,4 +116,4 @@ def build_ocr_provider(engines: Sequence[str] | None = None) -> OcrProvider:
     return providers[0] if len(providers) == 1 else FallbackOcrProvider(providers)
 
 
-__all__ = ['DEFAULT_ENGINES', 'FallbackOcrProvider', 'OCR_ENGINES_ENV', 'build_ocr_provider']
+__all__ = ['DEFAULT_ENGINES', 'FallbackOcrProvider', 'OCR_ENGINES_ENV', 'build_ocr_provider', 'choose']

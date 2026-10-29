@@ -224,3 +224,63 @@ class RealTesseractTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+GARBLED = ('‎ae‏\n‎pee ae > [‏\n9 . ورکشاپ ساخت جاعودی روح و کدو هالووین 7\n'
+           '‎fal‏ با مهافت ‎a‏ مود روج ویر ی\n© جمعه و شنبه ۸ و ‎٩‏ آبان — <\n۹ و کل ۱')
+
+
+class QualityAwareFallbackTests(unittest.TestCase):
+    """O01: nonempty but implausible text no longer stops the fallback chain."""
+
+    def test_quality_decision_is_explainable_and_never_requires_event_facts(self):
+        from gatherradar.ocr.quality import assess_text
+        self.assertEqual(assess_text(GARBLED).reason, 'noisy_lines')  # shape of the real De98iwhkf3A OCR
+        for text, reason in (('| ~ . — : ;', 'mostly_symbols'), ('ا ب ت ث ج ح خ د', 'fragmented'), ('', 'empty')):
+            with self.subTest(text=text):
+                self.assertEqual(assess_text(text).reason, reason)
+        # Plain readable text is usable even without any date, title or price.
+        for text in ('یک متن معمولی بدون تاریخ', 'Halloween Party\nCafe Lamiz', 'ورکشاپ چارم‌بگ سالووینی ‎La'):
+            with self.subTest(text=text):
+                self.assertTrue(assess_text(text).usable)
+
+    def test_garbled_nonempty_output_tries_the_next_engine(self):
+        first, second = Engine('a', [GARBLED]), Engine('b', ['ورکشاپ ساخت جاعودی\nجمعه و شنبه ۸ و ۹ آبان'])
+        chain = FallbackOcrProvider([first, second])
+        attempts = chain.recognize_all('x.png')
+        self.assertEqual([r.engine for r in attempts], ['a', 'b'])
+        self.assertEqual(attempts[-1].engine, 'b')  # chosen last; never concatenated
+        self.assertNotIn('ae', attempts[-1].text)
+
+    def test_when_every_engine_is_implausible_the_best_reading_is_chosen_not_merged(self):
+        chain = FallbackOcrProvider([Engine('a', ['| ~ . — : ;']), Engine('b', [GARBLED])])
+        attempts = chain.recognize_all('x.png')
+        self.assertEqual([r.engine for r in attempts], ['a', 'b'])
+        self.assertEqual(attempts[-1].text, GARBLED)
+        chain = FallbackOcrProvider([Engine('a', [GARBLED]), Engine('b', [''])])
+        self.assertEqual(chain.recognize_all('x.png')[-1].engine, 'a')  # empty never beats text
+
+
+class QualityAwareCacheTests(FallbackEvidenceRunTests):
+    def test_cached_garbled_reading_is_retried_when_another_engine_becomes_available(self):
+        self.run_chain(Engine('tesseract', [GARBLED]), Engine('easyocr', available=False))
+        first, second = Engine('tesseract', []), Engine('easyocr', ['ورکشاپ ساخت جاعودی'])
+        summary = self.run_chain(first, second)
+        # The garbled cached reading is not reused while an unread engine exists.
+        self.assertEqual(second.calls, 1)
+        self.assertEqual(summary.ocr_quality_retries, 1)
+        stored = JsonlEvidenceStore(summary.output_path).read().fragments
+        chosen = [f for f in select_semantic_evidence(item(), stored).fragments if f.kind is EvidenceKind.IMAGE_OCR]
+        self.assertEqual([f.text for f in chosen], ['ورکشاپ ساخت جاعودی'])
+
+    def test_garbled_reading_is_not_rerun_once_every_engine_has_read_it(self):
+        self.run_chain(Engine('tesseract', [GARBLED]), Engine('easyocr', ['| ~ . —']))
+        first, second = Engine('tesseract', []), Engine('easyocr', [])
+        summary = self.run_chain(first, second)
+        self.assertEqual((first.calls, second.calls, summary.new_evidence), (0, 0, 0))
+
+    def test_usable_reading_from_the_fallback_engine_is_reused(self):
+        self.run_chain(Engine('tesseract', ['']), Engine('easyocr', ['کارگاه سفال']))
+        first, second = Engine('tesseract', []), Engine('easyocr', [])
+        summary = self.run_chain(first, second)
+        self.assertEqual((first.calls, second.calls, summary.new_evidence), (0, 0, 0))

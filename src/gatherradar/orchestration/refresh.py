@@ -190,6 +190,9 @@ class RefreshService:
                                 if getattr(evidence, 'ocr_fallback_used', 0):
                                     media_diagnostics += ({'category': 'ocr_fallback_used',
                                                            'count': evidence.ocr_fallback_used},)
+                                if getattr(evidence, 'ocr_quality_retries', 0):
+                                    media_diagnostics += ({'category': 'ocr_quality_retry',
+                                                           'count': evidence.ocr_quality_retries},)
                                 for engine in getattr(evidence, 'ocr_unavailable', ()):
                                     media_diagnostics += ({'category': 'ocr_engine_unavailable',
                                                            'engine': engine},)
