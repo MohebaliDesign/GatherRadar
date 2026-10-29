@@ -1,6 +1,9 @@
-# GatherRadar
+# GatherRadar 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/MohebaliDesign/badge.svg)](https://hub.xerj.org/contributors/MohebaliDesign)
 
 > A provenance-first event discovery pipeline for curated websites and Instagram sources.
+
+**Open-source recognition:** The [publisher channel recovery](https://github.com/MohebaliDesign/GatherRadar/commit/9377618ce1056c0358389bda644ede427fd7d39b) implementation was selected for inclusion in the [XERJ Corpus Hub](https://hub.xerj.org/contributors/MohebaliDesign) as a real-world reference for AI coding agents.
 
 GatherRadar is an early-stage Python project for answering a practical question: **what worthwhile events can a small community attend next?** It replaces repeated browsing across selected public sources with a reviewable pipeline that collects source content, preserves provenance, extracts structured facts, and classifies each observation as an **event**, a **place**, or **other**.
 
