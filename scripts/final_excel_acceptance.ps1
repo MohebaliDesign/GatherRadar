@@ -84,8 +84,11 @@ if ($branch -ne 'fix/gatherradar-source-field-hardening') {
 if (& git status --porcelain 2>$null) { Say 'Note: the working tree has local changes; they are left untouched.' }
 
 # 2. Dependencies and OCR engines (diagnosis only; nothing is installed).
-$depCode = Run-Logged 'dependencies.txt' @('-c', 'import gatherradar, openpyxl, persiantools, playwright; print("Python packages: ok")')
+# No quotes inside the Python argument: Windows PowerShell 5.1 strips embedded
+# double quotes when passing arguments to native programs.
+$depCode = Run-Logged 'dependencies.txt' @('-c', 'import gatherradar, openpyxl, persiantools, playwright')
 if ($depCode -ne 0) { Say 'error: required Python packages are missing. Install the project into .venv, then rerun.'; exit 3 }
+Say 'Python packages: ok'
 $null = Run-Logged 'ocr-check.txt' @('-m', 'gatherradar', 'ocr', 'check')
 Say 'OCR engines: see ocr-check.txt (an unavailable optional engine is reported, not fatal).'
 
