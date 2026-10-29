@@ -1411,9 +1411,13 @@ The owner's October 29 crawl reported the session property `soldOut` on all ten 
 pages and non-empty `timeslots` on three Experiences pages. The owner's value-free v3
 structural report (two saved pages: 81 and 7 sessions) then confirmed the *shapes*:
 `soldOut` is a boolean (false in all 88 sessions), and every timeslot is an object with
-exactly twelve keys. It did not show value relationships (whether `sessionId` equals the
-parent `id`, actual timestamps, or any `soldOut=true` example). Support is therefore
-typed and strict, while publication waits for the owner's local relationship report.
+exactly twelve keys. The owner's relationship report over the same two pages (88 parents,
+295 timeslots; GR-EXCEL-CLOSURE-20261029) then verified the value relationships for every
+timeslot: `sessionId` equals the parent `id`, the page Event owns every session, start is
+before end, every timeslot lies inside its parent window and on the parent's local date,
+seat counts are consistent, no duplicate or overlapping timeslots, no unknown or missing
+keys, all 590 endpoints are UTC `Z`. The 288 wheel timeslots are all shorter than their
+parent duration; the 7 hand-pottery timeslots equal it. No `soldOut=true` example exists.
 
 **`soldOut` (parent session).** A boolean is documented (`SourceSession.sold_out`), kept
 separate from `enabled`, `remainingSeats`, timeslot capacity and page availability wording.
@@ -1422,13 +1426,16 @@ shape retained); JSON null is no flag. `false` proves nothing and adds nothing, 
 documented session with `soldOut: false` and `timeslots: []` is handled exactly like
 the earlier documented shape. `true` never sets the Event status by itself:
 
-| Record | Occurrence code | Schedule effect |
+| Record | Occurrence code | Effect |
 | --- | --- | --- |
-| `true` and the same record has remaining seats > 0 | `embedded_session_sold_out_conflict` | Schedule Review |
-| `true`, meaning unverified (default) | `embedded_session_sold_out_unverified` | Schedule Review while upcoming; expired once its own date passed |
-| `true`, meaning verified, no contradiction | `source_session_sold_out` | Actionable; Event `sold_out` only when every occurrence carries it |
+| `true` and the same record has remaining seats > 0 | `embedded_session_sold_out_availability_conflict` | Seat count dropped; readiness `source_availability_conflict` (needs enrichment); dates unaffected |
+| `true`, meaning unverified (default) | `embedded_session_sold_out_unverified` | Booking column and readiness reason `source_sold_out_flag`; dates unaffected |
+| `true`, meaning verified (gate `"sold_out"`, not set), no contradiction | `source_session_sold_out` | Event `sold_out` only when every occurrence carries it |
 
-An upcoming sold-out Event is never `expired`.
+Booking facts never decide temporal relevance: a sold-out-flagged session is current
+until its own end and then expired, exactly like any other session. An upcoming
+sold-out Event is never `expired`, and `false`/`enabled`/positive seats never promise a
+completed booking.
 
 **Timeslots (child records).** Allowlisted keys, all required: `id`, `sessionId`, `startAt`,
 `endAt` (strings), `enabled` (boolean), `capacityLimit`, `bookedCount`, `remainingSeats`
@@ -1462,13 +1469,30 @@ Occurrence identity adds `("timeslot", id)` only for timeslots, so existing sess
 identities, stored records (which lack the fields) and raw hashes are unchanged: new
 `SourceSession` keys are omitted from serialization while null.
 
-**Publication gate.** `normalization.schedules.VERIFIED_SESSION_SEMANTICS` is empty. Until it
-contains `"timeslots"`, every timeslot occurrence carries `embedded_timeslot_unverified_shape`
-and waits in Schedule Review with readiness reason `source_timeslots_unverified` (Persian
-label in `readiness.py`); until it contains `"sold_out"`, `soldOut=true` stays unverified as
-above. A timeslot whose own end has passed is `expired`. The gate is applied during
-normalization, so after a code change `refresh --stored` re-projects stored observations
-offline, with no new collection.
+**Publication gate.** `normalization.schedules.VERIFIED_SESSION_SEMANTICS` contains
+`"timeslots"` (2026-10-29, from the relationship report above). It is schema-scoped: only
+records produced by the strict Jabama parser carry `source_timeslot_id`, and each still
+passes every per-record check. A timeslot inside its parent window is a dated occurrence
+with its own start/end and no diagnostic; it is eligible for the current Event view when it
+falls inside the horizon (applied per timeslot; only in-horizon sessions are listed there,
+SQLite keeps all). Temporal eligibility is not a claim that a seat can be booked. Outside
+the parent window (`embedded_timeslot_parent_window_conflict`) or with no parent duration
+(`embedded_timeslot_unverified_shape`) it stays in Schedule Review. A visible page clock
+range on the same date that contains the timeslots is their parent window and is not
+emitted as another session. `"sold_out"` is not set. Removing a name re-holds those records
+on an offline `refresh --stored`.
+
+**Whole-session windows (legacy-941).** A session without timeslots whose window disagrees
+with the activity's own stated length (`duration_text`) — shorter than it, or at least twice
+as long and at least one hour longer — is an opening/booking window, not attendance time:
+`session_window_duration_conflict` keeps its dates but sends it to Schedule Review with the
+Persian reason `session_window_conflict`. No timeslots are invented and no length is chosen.
+The pottery reports do not validate this different page.
+
+**Old observations.** Stored observations keep the session records parsed at collection
+time. `refresh --stored` cannot recover timeslots refused by an earlier parser; the next
+normal collection appends new revisions because the parsed session records are part of
+the observation hash.
 
 **Owner relationship check.** `python -m gatherradar diagnose jabama-timeslots --html a.html
 [--html b.html] --output r.json` reads browser-saved public pages and writes only booleans
@@ -1492,6 +1516,51 @@ form, length bucket, number kind/sign, boolean value, array length/item shapes, 
 names; depth ≤ 4, ≤ 30 keys). `python -m gatherradar diagnose jabama-sessions [--html saved.html]
 [--output r.json]` still writes the structural report; it now also shows adapter and schema
 names containing `/`.
+
+### Final Excel closure (GR-EXCEL-CLOSURE-20261029)
+
+General rules added from the latest owner workbook (run `ca3548cb…`); no title or ID is
+used by production code. See [the closure report](FINAL_EXCEL_ACCEPTANCE.md).
+
+- **Presence venue.** "در/توی <head> <name>" followed directly by a presence verb
+  (`منتظر`, `قراره`) in the clause that also states the event's dates is the venue, for
+  generic heads too ("از ۶ تا ۸ آبان، توی عمارت زیرخاکی منتظر …"). Those verbs end names.
+- **Address-building venue.** A prose "در/توی <name>" followed by a clause boundary or a
+  presence/holding verb, whose exact name is an address component after a building head
+  (`مجتمع تجاری`, `مرکز خرید`, `مجتمع`, `ساختمان`, `برج`, `پاساژ`, `عمارت`, `باغ`, `هتل`), is the
+  venue in the prose wording ("در تیدا سنتر" + "مجتمع تجاری تیدا سنتر، طبقه دوم"). The
+  building and floor stay in the address. The clause must carry an event noun or the
+  event's dates; office, sponsor, past and city names never qualify.
+- **City.** Hashtags and handles (`#ایونت_تهران`, `@…`) never supply an event city;
+  explicit labels, address tokens and ordinary prose still do.
+- **Narrative length.** A length adjective after an activity noun ("تجربه‌ای سه‌ساعته",
+  "کارگاه ۹۰ دقیقه‌ای") is a narrative length, like "به مدت …". A disagreement with the
+  header length leaves `duration_text` null with `source_field_conflict`.
+- **Conflicting values.** `EventCandidate.field_conflict_values` and
+  `Event.conflicting_values` keep the disagreeing wordings as `(field, value)` pairs in
+  source order for every field left null by a conflict (absent in older records). The
+  readiness explanation quotes them: "مدت در منبع: «۲ ساعت» / «سه‌ساعته»".
+- **Program sections.** Jabama "چه برنامه‌ای داریم؟" sections join About in page order even
+  when another section (venue, rules) separates them. Adjacent sections are one exact
+  slice; a separated one is its own exact slice after a blank line, so no contiguous span
+  is implied. Repeated blocks are kept once; other sections are never copied. Structural
+  description values may therefore be blank-line-separated ordered exact slices.
+- **Booking column.** The capacity column shows the source's availability wording, else
+  per-session booking facts in Persian (sellout flag, contradicted flag, first listed
+  session's remaining seats) — facts, never a guarantee.
+
+**OCR quality policy `ocr-quality/1`.** `ocr/quality.py` decides only whether another
+local engine should read an image: text is unusable when it is empty, mostly symbols,
+mostly fragments, has scattered short Latin tokens in Persian text, or has several noisy
+lines. Missing dates, titles or prices are never treated as OCR failure, and text is never
+edited. The fallback chain continues past unusable text and chooses the first usable
+reading, else the best-scoring one; readings are never concatenated. The evidence cache
+is keyed by image hash, media slot and engine/version/configuration: a usable latest
+reading is reused; an unusable one is retried only with engines that have not read that
+image yet, so a newly installed engine can recover old images without rerunning good
+ones. Semantic selection prefers the latest usable reading of the same image over a newer
+unusable one; a new capture still replaces older readings. Reliable caption or website
+facts are never replaced by OCR.
 
 ### Data readiness
 

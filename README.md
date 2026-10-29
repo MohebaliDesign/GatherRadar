@@ -87,8 +87,9 @@ The Python dependencies are declared in `pyproject.toml`. Tesseract is an extern
 
 Media OCR uses a local fallback chain, by default `tesseract,easyocr,windows`
 (`GATHERRADAR_OCR_ENGINES` changes the order or the selection). Engines that are not
-installed are skipped; a later engine runs only when an earlier one fails or reads
-nothing, and every engine's attempt is kept as separate evidence. EasyOCR downloads
+installed are skipped; a later engine runs only when an earlier one fails, reads
+nothing, or reads text the quality policy (`ocr-quality/1`) finds implausible, and
+every engine's attempt is kept as separate evidence. EasyOCR downloads
 its model files once on first use; Windows OCR is used only when the language in
 `GATHERRADAR_WINDOWS_OCR_LANGUAGE` (default `fa`) is installed. Check your machine with:
 
@@ -96,6 +97,18 @@ its model files once on first use; Windows OCR is used only when the language in
 python -m gatherradar ocr check
 python -m gatherradar ocr check --image path/to/slide.png
 ~~~
+
+## Final Excel acceptance (Windows)
+
+One command runs the offline tests, exactly one fresh bounded crawl
+(`refresh --all-enabled --limit 5 --days 14`) into a new isolated
+`data\qa-final-<timestamp>\` directory, and writes one review bundle to return:
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File scripts\final_excel_acceptance.ps1
+~~~
+
+See [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md).
 
 ## Quick start
 
@@ -537,6 +550,7 @@ The project does not need followers, comments, direct messages, private profiles
 - [`docs/GEMINI_HANDOFF.md`](docs/GEMINI_HANDOFF.md) — optional manual publishing
 - [`docs/SOURCE_FIELD_COVERAGE.md`](docs/SOURCE_FIELD_COVERAGE.md) — which facts each source exposes and the per-Event field audit
 - [`docs/STAGE9_VALIDATION.md`](docs/STAGE9_VALIDATION.md) — Stage 9 acceptance evidence
+- [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md) — final Excel closure, case results and the one-run local acceptance
 - [`docs/PUBLISHER_RECOVERY.md`](docs/PUBLISHER_RECOVERY.md) — publisher/channel/strategy model, coverage and Davvvat channel investigation
 - [`config/sources.yaml`](config/sources.yaml) — currently approved sources and adapter configuration
 

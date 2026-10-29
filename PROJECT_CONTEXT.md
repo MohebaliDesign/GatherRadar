@@ -44,10 +44,18 @@ unknown additive properties, and the optional local OCR fallback chain. See
 **Jabama timeslots (2026-10-29):** `soldOut` is a typed boolean and child timeslots are
 parsed strictly (twelve allowlisted keys, parent ownership, explicit-offset ordered
 timestamps, unique IDs, parent-window check), each kept as its own occurrence with parent
-and timeslot identity. Value relationships are not yet verified, so timeslots and
-`soldOut=true` stay in Schedule Review behind `VERIFIED_SESSION_SEMANTICS` until the owner's
-local `diagnose jabama-timeslots` report confirms them. See
+and timeslot identity. The owner's relationship report (88 parents / 295 timeslots)
+verified those relationships, so valid timeslots are dated occurrences (temporal
+eligibility only, never a booking guarantee). `soldOut=true` stays an unverified booking
+flag that never affects temporal relevance. See
 [the data contracts](docs/DATA_CONTRACTS.md#jabama-session-evidence-boundary-2026-10-29).
+
+**Final Excel closure (GR-EXCEL-CLOSURE-20261029):** attributable presence/address-building
+venues, no hashtag cities, narrative length conflicts with both values quoted, nonadjacent
+Jabama program sections, whole-session windows that contradict the stated activity length
+held for review, a booking column separate from date relevance, a quality-aware OCR
+fallback and cache, and one Windows acceptance script that runs one fresh bounded crawl
+and writes one review bundle. See [the closure report](docs/FINAL_EXCEL_ACCEPTANCE.md).
 
 ## 1. Product summary
 
