@@ -14,7 +14,7 @@ from ..domain import (
     EvidenceFragment, EvidenceKind, MediaArtifact, MediaKind, RawItem, Source, SourceType,
     caption_fragment,
 )
-from ..ocr import OcrProvider, OcrResult, OcrStatus, TesseractOcrProvider
+from ..ocr import OcrProvider, OcrResult, OcrStatus, build_ocr_provider
 from ..storage import JsonlEvidenceStore, JsonlRawItemStore, MediaArtifactStore
 from .collection_run import find_source, instagram_output_path
 from .discovery_run import select_latest
@@ -39,6 +39,11 @@ class EvidenceRunSummary:
     malformed: tuple[str, ...] = ()
     capture_failed_slides: int = 0
     capture_diagnostics: tuple[dict, ...] = ()
+    # Engines that could run, engines skipped as unavailable (names only), and
+    # artifacts for which a later engine was tried after unusable output.
+    ocr_engines: tuple[str, ...] = ()
+    ocr_unavailable: tuple[str, ...] = ()
+    ocr_fallback_used: int = 0
 
 
 def _evidence_kind(kind: MediaKind) -> EvidenceKind:
@@ -83,9 +88,13 @@ def run_instagram_evidence(
     if (len(items) > limit or len({i.id for i in items}) != len(items)
             or any(i.source_id != source.id or i.source_type is not SourceType.INSTAGRAM for i in items)):
         raise ValueError('invalid evidence run membership')
-    provider = ocr_provider or TesseractOcrProvider()
+    provider = ocr_provider or build_ocr_provider()
     if items:
         provider.validate()
+    # A fallback chain caches by its first available engine and retries empty
+    # cached results, because a later engine may read what the first could not.
+    engine_name = getattr(provider, 'engine', None) or getattr(provider, 'name', None)
+    chained = hasattr(provider, 'recognize_all')
 
     media_store = MediaArtifactStore(
         data_dir, 'instagram', source.username or source.id
@@ -100,7 +109,7 @@ def run_instagram_evidence(
     )
 
     fragments = [caption_fragment(item) for item in items]
-    succeeded = empty = failed = 0
+    succeeded = empty = failed = fallback_used = 0
     failures = [failure.report() for failure in capture.failures]
     evidence_store = JsonlEvidenceStore(instagram_evidence_output_path(source, data_dir))
     prior_read = evidence_store.read()
@@ -109,24 +118,32 @@ def run_instagram_evidence(
             if f.raw_item_id == artifact.raw_item_id and f.asset_hash == artifact.asset_hash
             and f.kind == _evidence_kind(artifact.kind) and f.slide_index == artifact.slide_index
             and f.frame_timestamp_ms == artifact.frame_timestamp_ms
-            and f.extraction_engine == getattr(provider, 'name', None)
+            and f.extraction_engine == engine_name
             and f.extraction_version == getattr(provider, 'version', None)
             and f.extraction_config == getattr(provider, 'config', None)
-            and getattr(provider, 'version', None) is not None and not f.failure_reason), None)
+            and getattr(provider, 'version', None) is not None and not f.failure_reason
+            and (f.text or not chained)), None)
         if cached is not None:
             fragments.append(cached)
             succeeded += bool(cached.text)
             empty += not bool(cached.text)
             continue
         try:
-            result = provider.recognize(artifact.local_path)
+            attempts = (provider.recognize_all(artifact.local_path) if chained
+                        else (provider.recognize(artifact.local_path),))
         except Exception as exc:
-            result = OcrResult(
+            attempts = (OcrResult(
                 status=OcrStatus.FAILED, raw_text='', text='',
                 engine=getattr(provider, 'name', 'unknown'), engine_version='unknown',
                 config=str(getattr(provider, 'config', 'unknown')),
                 failure_reason=f'OCR failed ({type(exc).__name__})',
-            )
+            ),)
+        # Every engine's attempt stays separate evidence; the chosen one is
+        # appended last, so latest-per-slot selection uses it.
+        fragments.extend(fragment_from_ocr(artifact, attempt) for attempt in attempts[:-1])
+        if len(attempts) > 1:
+            fallback_used += 1
+        result = attempts[-1]
         if result.status is OcrStatus.SUCCEEDED:
             succeeded += 1
         elif result.status is OcrStatus.EMPTY:
@@ -150,6 +167,9 @@ def run_instagram_evidence(
             slide_index=f.slide_index, category=f.category, retry_count=f.retry_count,
             frame_timestamp_ms=f.frame_timestamp_ms)
             for f in capture.failures),
+        ocr_engines=tuple(p.name for p in getattr(provider, 'available', (provider,))),
+        ocr_unavailable=tuple(sorted(getattr(provider, 'unavailable', {}))),
+        ocr_fallback_used=fallback_used,
     )
 
 

@@ -148,6 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_instagram.add_argument('--max-carousel-slides', type=int, default=20)
     evidence_instagram.add_argument('--max-reel-frames', type=int, default=6)
 
+    ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
+    ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
+    ocr_check = ocr_kinds.add_parser('check', help='Validate each configured engine and optionally read one image.')
+    ocr_check.add_argument('--image', help='A local image to recognize with every available engine.')
+    ocr_check.add_argument('--engines', help='Comma-separated engines (default: GATHERRADAR_OCR_ENGINES or '
+                                             'tesseract,easyocr,windows).')
+
     auth = subcommands.add_parser(
         "auth", help="Create and verify an authenticated session for a source type."
     )
@@ -496,6 +503,35 @@ def run_auth_instagram_cookie(
     return 0
 
 
+def run_ocr_check(args) -> int:
+    """Report each engine's availability and, with --image, each engine's own reading."""
+    from .ocr import OcrUnavailableError, build_ocr_provider
+    engines = tuple(e.strip().lower() for e in args.engines.split(',') if e.strip()) if args.engines else None
+    try:
+        provider = build_ocr_provider(engines)
+    except ValueError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    members = getattr(provider, 'providers', (provider,))
+    usable = []
+    for member in members:
+        try:
+            member.validate()
+        except OcrUnavailableError as exc:
+            print(f'{member.name}: unavailable — {exc}')
+            continue
+        usable.append(member)
+        print(f'{member.name}: available ({member.version}; {member.config})')
+    if args.image:
+        for member in usable:
+            result = member.recognize(args.image)
+            print(f'--- {member.name}: {result.status.value}'
+                  + (f' ({result.failure_reason})' if result.failure_reason else ''))
+            if result.text:
+                print(result.text)
+    return 0 if usable else 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -512,6 +548,9 @@ def main(
     if args.command == 'sheets' or (args.command == 'auth' and args.auth_type == 'google'):
         from .sheets.cli import run
         return run(args)
+
+    if args.command == 'ocr':
+        return run_ocr_check(args)
 
     if args.command == "auth":
         if args.legacy_cookie:
