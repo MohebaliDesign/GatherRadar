@@ -120,3 +120,30 @@ Raw and evidence stores under `data\` are shared append-only history, not isolat
 - `acceptance-report.json`, with workbook checks, per-case outcomes and the OCR evidence index.
 
 It excludes the database, cookies, browser profile, `.env`, raw stores, local paths and signed media URLs.
+
+## Owner acceptance run `3e9237b1…` (2026-10-29)
+
+Commit `0318b82`: 16 actionable Events, 4 Schedule Review, 6 expired, valid workbook,
+10 missing-title exclusions. Every image in the returned bundle (40) and every stored
+OCR reading was inspected; captions were not in that bundle. Per-item findings are in
+`FINAL_EXCEL_CASE_RESULTS.json` (`acceptance_run_3e9237b1`):
+
+- **Evenza `DfCIk4Njdij` (3 exclusions):**
+  - The carousel holds nine genuine single activities, several still upcoming at the run (۸ آبان).
+  - They were missed because both local engines misread the stylized date headers and Persian titles.
+  - Even exact text would require choosing the title among same-shaped lines, i.e. encoding one publisher's template. Not changed.
+- **Jabama `DfC8atTke1c` (4 exclusions):**
+  - A one-day itinerary whose clocks are suggested slots.
+  - Two stops have their own dates, but their stored OCR is garbled.
+  - Using itinerary clocks would fabricate schedules. Not changed.
+- **Tehran by Tehran:**
+  - `DfE3vanOLGI` is a mood Reel; its concrete show is already an Event from the Jabama website.
+  - `DfC2146NWtl` had no bundled frames.
+- **Davvvat `DfFPSscke1e`** was untracked, so no evidence was bundled.
+
+The bundle tooling now:
+- indexes captions and every title- or evidence-excluded item;
+- shares the image budget round-robin;
+- writes the zip itself, so entry names are portable (Windows PowerShell 5.1 `Compress-Archive` had stored `media\…`).
+
+The dependency probe no longer nests quotes. No further live crawl is required for closure. Recovering the poster-only activities needs better local OCR of stylized Persian type or the publishers' caption text, not a rule change.

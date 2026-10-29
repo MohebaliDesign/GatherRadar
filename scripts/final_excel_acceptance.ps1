@@ -123,16 +123,14 @@ if (-not (Test-Path (Join-Path $out 'state.sqlite3'))) {
 # 5. Validate and write ONE review bundle.
 $acceptArgs = @('-m', 'gatherradar', 'acceptance', '--run-dir', $out, '--data-dir', $DataDir,
                 '--test-log', (Join-Path $out 'test-summary.txt'))
+# The Python tool writes the zip (forward-slash entry names); Windows PowerShell
+# 5.1 Compress-Archive would store backslash paths such as media\slide.png.
+foreach ($name in @('refresh-output.txt', 'ocr-check.txt', 'dependencies.txt', 'acceptance-log.txt')) {
+    $acceptArgs += @('--include', (Join-Path $out $name))
+}
 if ($IncludeMedia) { $acceptArgs += '--include-media' }
 $acceptCode = Run-Logged 'acceptance-output.txt' $acceptArgs
-$bundleDir = Join-Path $out 'review-bundle'
 $bundle = Join-Path $out 'GatherRadar-review-bundle.zip'
-if (Test-Path $bundleDir) {
-    foreach ($name in @('acceptance-log.txt', 'refresh-output.txt', 'ocr-check.txt', 'dependencies.txt', 'acceptance-output.txt')) {
-        Copy-Item -Path (Join-Path $out $name) -Destination (Join-Path $bundleDir $name) -ErrorAction SilentlyContinue
-    }
-    Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $bundle -Force
-}
 
 Say ''
 if ($acceptCode -eq 0) { Say "Workbook: $(Join-Path $out 'GatherRadar.xlsx')" }

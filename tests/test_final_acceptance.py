@@ -120,6 +120,55 @@ class AcceptanceBundleTests(unittest.TestCase):
         media = [n for n in zipfile.ZipFile(archive).namelist() if n.startswith('media/')]
         self.assertEqual(len(media), 1)
 
+    def add_untracked_excluded_carousel(self):
+        """A title-excluded carousel outside the tracked list, with three slides."""
+        from dataclasses import replace
+        source = find_source('davvvat_instagram', CONFIG)
+        raw = replace(item(), id='instagram:davvvat:UNTRACKED', external_id='UNTRACKED',
+                      content_url='https://www.instagram.com/p/UNTRACKED/', raw_text='کپشن عمومی پست')
+        JsonlRawItemStore(instagram_output_path(source, self.data)).append_new([raw])
+        store = MediaArtifactStore(self.data, 'instagram', source.username)
+        readings = []
+        for index in range(3):
+            artifact = store.write(raw, MediaKind.CAROUSEL_SLIDE, f'slide{index}'.encode(), slide_index=index).artifact
+            readings.append(EvidenceFragment.create(
+                raw_item_id=raw.id, kind=EvidenceKind.CAROUSEL_SLIDE_OCR, text=f'کارگاه شماره {index}',
+                local_asset_path=artifact.local_path, asset_hash=artifact.asset_hash, slide_index=index,
+                extraction_engine='easyocr', extraction_version='1', extraction_config='c'))
+        JsonlEvidenceStore(instagram_evidence_output_path(source, self.data)).append_new(readings)
+        manifest_path = self.data / 'runs' / 'run-accept.json'
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        manifest['sources'][0]['observed_item_ids'].append(raw.id)
+        manifest['source_funnel'][0]['investigations'].append(
+            {'raw_item_id': raw.id, 'reason': 'title_resolution_failed'})
+        manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+
+    def test_title_excluded_items_are_indexed_with_their_caption(self):
+        self.add_untracked_excluded_carousel()
+        _, report = self.bundle()
+        entry = next(e for e in report['evidence_index'] if e['raw_item_id'] == 'instagram:davvvat:UNTRACKED')
+        self.assertEqual(entry['caption_excerpt'], 'کپشن عمومی پست')
+        self.assertEqual(len(entry['readings']), 3)
+        # Non-event investigations are not indexed as media cases.
+        self.assertFalse(any(e['raw_item_id'].endswith('NOTEVENT') for e in report['evidence_index']))
+
+    def test_media_budget_is_shared_round_robin_across_items(self):
+        self.add_untracked_excluded_carousel()
+        archive, report = self.bundle(include_media=True, max_media=2)
+        bundled = {e['raw_item_id']: sum(1 for r in e.get('readings', ()) if r.get('bundled_media'))
+                   for e in report['evidence_index'] if e.get('readings')}
+        self.assertEqual(bundled, {'instagram:davvvat:ABC': 1, 'instagram:davvvat:UNTRACKED': 1})
+        names = zipfile.ZipFile(archive).namelist()
+        self.assertTrue(all('\\' not in name for name in names))  # portable entry names
+
+    def test_extra_log_files_join_the_bundle(self):
+        log = self.root / 'refresh-output.txt'
+        log.write_text('Collection: success', encoding='utf-8')
+        archive, _ = self.bundle(extra_files=(log, self.root / 'missing.txt', self.run_dir / 'state.sqlite3'))
+        names = zipfile.ZipFile(archive).namelist()
+        self.assertIn('refresh-output.txt', names)
+        self.assertNotIn('state.sqlite3', names)
+
     def test_cli_reports_workbook_status_and_bundle_path(self):
         stream = io.StringIO()
         with redirect_stdout(stream):

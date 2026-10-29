@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance.add_argument('--include-media', action='store_true',
                             help='Copy selected stored media of tracked cases into the bundle (bounded).')
     acceptance.add_argument('--max-media', type=int, default=40)
+    acceptance.add_argument('--include', action='append', default=[],
+                            help='Extra .txt/.json/.log file to add to the bundle; repeatable.')
 
     ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
     ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
@@ -585,7 +587,8 @@ def main(
         archive, report = build_bundle(
             Path(args.run_dir), data_dir=Path(args.data_dir), config_path=Path(args.config),
             cases_path=Path(args.cases), test_log=Path(args.test_log) if args.test_log else None,
-            include_media=args.include_media, max_media=max(0, min(args.max_media, 200)))
+            include_media=args.include_media, max_media=max(0, min(args.max_media, 200)),
+            extra_files=tuple(Path(p) for p in args.include))
         workbook = report['workbook']
         print(f"Run: {report['run']['run_id']} status={report['run']['status']}")
         print('Workbook: ' + ('valid' if workbook.get('ok') else 'PROBLEMS: ' + ', '.join(

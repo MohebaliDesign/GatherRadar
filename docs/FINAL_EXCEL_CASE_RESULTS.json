@@ -762,5 +762,51 @@
     "notes": "website detail page not supplied"
    }
   ]
+ },
+ "acceptance_run_3e9237b1": {
+  "run_id": "3e9237b12e8746579b5c665184c94c7c",
+  "commit": "0318b8299781c16d5356889e444094be5adf4747",
+  "reference_at": "2026-10-29T21:15:21+03:30",
+  "result": "16 actionable, 4 schedule review, 6 expired; workbook valid; 10 missing-title exclusions",
+  "evidence_inspected": "40 bundled slide/frame images and every stored OCR reading in acceptance-report.json; captions were not in that bundle",
+  "exclusions": [
+   {
+    "item": "evenza.platform:DfCIk4Njdij",
+    "excluded": 3,
+    "status": "EVIDENCE_UNAVAILABLE",
+    "ground_truth": "Weekly-picks carousel: cover (۶-۸ آبان) and outro are promotional; slides 1-9 are nine genuine single activities, each with date header, title, clock and venue (New Groove ۶ آبان; آموزش گل‌آرایی, تداکس فشن ۷ آبان; تجربه‌ای از خاک ۷-۸ آبان; A little magic, Meraki Holloween, Yoga x Holloween, پرسه‌گردی تجریش تا ونک, تولد یکسالگی جو کافه ۸ آبان).",
+    "why_not_recovered": "Both local engines misread the stylized date header (آیان/آیسان/آبنان) and most Persian titles; 3x upscale and region crops did not fix the month word or Persian titles. Even exact transcriptions do not yield a defensible title: the title must be chosen among equally shaped short lines (Weekly Picks, category badge, name, venue), which would encode one publisher's template in source-neutral extraction."
+   },
+   {
+    "item": "jabama.events:DfC8atTke1c",
+    "excluded": 4,
+    "status": "SOURCE_AMBIGUITY_HANDLED",
+    "ground_truth": "One-day itinerary (پنجشنبه ۷ آبان) with five stops; the slide clocks are suggested itinerary slots, not the venues' schedules. Stop 2 (Pompeii exhibition, ۱-۱۲ آبان, گالری هما) and stop 3 (رویداد ایرانشهر, ۶-۸ آبان ۱۴-۲۲, خانه میر) carry their own dates; stops 1, 4, 5 have no independent date.",
+    "why_not_recovered": "Stored OCR of stops 2 and 3 is garbled (title words and quotes lost). Assigning itinerary clocks to the venues' activities would fabricate schedules."
+   },
+   {
+    "item": "tehran_by_tehran:DfE3vanOLGI",
+    "excluded": 1,
+    "status": "SOURCE_AMBIGUITY_HANDLED",
+    "ground_truth": "Mood Reel 'pov: Nights of Music in Tehran'; its only concrete show «بودن پس از حذف» is already an Event from the Jabama website (69063962).",
+    "why_not_recovered": "Not a separate dated Event; no loss."
+   },
+   {
+    "item": "tehran_by_tehran:DfC2146NWtl",
+    "excluded": 1,
+    "status": "EVIDENCE_UNAVAILABLE",
+    "ground_truth": "No frame was bundled (40-image budget used by earlier items); stored readings are illegible fragments.",
+    "why_not_recovered": "Cannot be judged without images or caption."
+   },
+   {
+    "item": "davvvat:DfFPSscke1e",
+    "excluded": 1,
+    "status": "EVIDENCE_UNAVAILABLE",
+    "ground_truth": "Not in the tracked case list, so no caption, OCR or image was bundled.",
+    "why_not_recovered": "Cannot be judged."
+   }
+  ],
+  "code_changes": "No extraction, grouping or title change (no evidence-supported generic rule). Acceptance bundle: captions and every title/evidence-excluded item are indexed, the media budget is shared round-robin, and the zip is written by Python with portable entry names; PowerShell 5.1 dependency probe without nested quotes.",
+  "another_live_crawl_required": false
  }
 }

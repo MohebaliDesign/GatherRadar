@@ -176,7 +176,11 @@ def case_results(full: dict, manifest: dict, cases: list[dict]) -> list[dict]:
 
 def evidence_index(data_dir: Path, config_path: Path, manifest: dict, locators: list[str],
                    media_dir: Path | None = None, max_media: int = 40) -> list[dict]:
-    """Stored OCR evidence for tracked media items, located by recorded IDs only."""
+    """Stored caption and OCR evidence for tracked media items, by recorded IDs only.
+
+    With `media_dir`, selected images are copied round-robin across items (one per
+    item per pass) so a long carousel never uses up the whole `max_media` budget.
+    """
     from ..config import load_sources
     from ..domain import SourceType
     from ..grouping.selection import select_semantic_evidence
@@ -184,7 +188,7 @@ def evidence_index(data_dir: Path, config_path: Path, manifest: dict, locators: 
     from .collection_run import instagram_output_path
     from .evidence_paths import instagram_evidence_output_path
     sources = {s.id: s for s in load_sources(config_path)}
-    copied = 0
+    pending: list[list[tuple[dict, Path]]] = []
     index = []
     keys = [locator.strip('/').split('/')[-1] for locator in locators]
     for report in manifest.get('sources', ()):
@@ -202,7 +206,7 @@ def evidence_index(data_dir: Path, config_path: Path, manifest: dict, locators: 
                 index.append({'raw_item_id': item_id, 'status': 'EVIDENCE_GAP', 'reason': 'raw item not stored'})
                 continue
             chosen = {f.fragment_id for f in select_semantic_evidence(item, history).fragments}
-            readings = []
+            readings, media = [], []
             for fragment in history:
                 if fragment.raw_item_id != item_id or fragment.kind.value == 'caption':
                     continue
@@ -215,16 +219,25 @@ def evidence_index(data_dir: Path, config_path: Path, manifest: dict, locators: 
                          'asset_present': bool(asset and asset.exists()), 'selected': fragment.fragment_id in chosen,
                          'failure': fragment.failure_reason, 'quality': quality.reason,
                          'text_excerpt': (fragment.text or '')[:300]}
-                if media_dir is not None and entry['selected'] and asset and asset.exists() and copied < max_media:
-                    media_dir.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(asset, media_dir / asset.name)
-                    entry['bundled_media'] = f'media/{asset.name}'
-                    copied += 1
+                if entry['selected'] and asset and asset.exists():
+                    media.append((entry, asset))
                 readings.append(entry)
+            pending.append(media)
+            # The caption is public post text the extractor saw alongside the media.
             index.append({'raw_item_id': item_id, 'source_id': source.id,
                           'status': 'READINGS_STORED' if readings else 'EVIDENCE_GAP',
                           'reason': None if readings else 'no stored media readings for this item',
-                          'readings': readings})
+                          'caption_excerpt': (item.raw_text or '')[:2000], 'readings': readings})
+    copied, position = 0, 0
+    while media_dir is not None and copied < max_media and any(position < len(m) for m in pending):
+        for media in pending:
+            if position < len(media) and copied < max_media:
+                entry, asset = media[position]
+                media_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(asset, media_dir / asset.name)
+                entry['bundled_media'] = f'media/{asset.name}'
+                copied += 1
+        position += 1
     for key in keys:
         if not any(entry['raw_item_id'].endswith(':' + key) for entry in index):
             index.append({'raw_item_id': key, 'status': 'EVIDENCE_GAP',
@@ -234,7 +247,8 @@ def evidence_index(data_dir: Path, config_path: Path, manifest: dict, locators: 
 
 def build_bundle(run_dir: Path, *, data_dir: Path = Path('data'), config_path: Path = Path('config/sources.yaml'),
                  cases_path: Path = Path('scripts/acceptance_cases.json'), test_log: Path | None = None,
-                 include_media: bool = False, max_media: int = 40) -> tuple[Path, dict]:
+                 include_media: bool = False, max_media: int = 40,
+                 extra_files: tuple[Path, ...] = ()) -> tuple[Path, dict]:
     """Validate one run directory and write `review-bundle/` plus its zip."""
     from ..storage.sqlite_repository import SqliteCanonicalRepository
     run_dir = Path(run_dir)
@@ -251,6 +265,12 @@ def build_bundle(run_dir: Path, *, data_dir: Path = Path('data'), config_path: P
         shutil.rmtree(bundle)
     bundle.mkdir(parents=True)
     media_locators = [loc for case in cases if case.get('media') for loc in case.get('locators', ())]
+    # Every item this run could not admit (title or evidence investigations) is
+    # indexed too, so exclusions outside the tracked list are still auditable.
+    media_locators += [i['raw_item_id'].rsplit(':', 1)[-1] for funnel in manifest.get('source_funnel', ())
+                       for i in funnel.get('investigations', ())
+                       if i.get('reason', '').startswith(('title_resolution_failed', 'needs_evidence'))]
+    media_locators = list(dict.fromkeys(media_locators))
     report = {
         'report': 'gatherradar-final-excel-acceptance', 'version': REPORT_VERSION,
         'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
@@ -280,6 +300,9 @@ def build_bundle(run_dir: Path, *, data_dir: Path = Path('data'), config_path: P
         shutil.copy2(manifest_path, bundle / manifest_path.name)
     if test_log is not None and Path(test_log).exists():
         shutil.copy2(test_log, bundle / 'test-summary.txt')
+    for extra in map(Path, extra_files):
+        if extra.is_file() and extra.suffix.lower() in ('.txt', '.json', '.log'):
+            shutil.copy2(extra, bundle / extra.name)
     archive = run_dir / 'GatherRadar-review-bundle.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as handle:
         for path in sorted(bundle.rglob('*')):
