@@ -378,7 +378,8 @@ def venue_name(found: SignalSet) -> str | None:
             return labelled
     compound = _compound_location(found)
     return ((compound[1] if compound else None) or _visual_venue(found) or _corroborated_venue(found)
-            or _address_agreed_venue(found) or _natural_venue(found) or _trailing_head_venue(found))
+            or _address_agreed_venue(found) or _natural_venue(found) or _trailing_head_venue(found)
+            or _standalone_venue_line(found))
 
 
 def _compound_location(found: SignalSet) -> tuple[str, str, str] | None:
@@ -635,8 +636,15 @@ def _address_agreed_venue(found: SignalSet) -> str | None:
     folded = re.escape(normalize(tail))
     introducers = "|".join(re.escape(normalize(p)) for p in rules.NATURAL_VENUE_INTRODUCERS)
     happening = "|".join(re.escape(normalize(p)) for p in rules.VENUE_HAPPENING_PREDICATES)
-    for match in re.finditer(r"(?<!\w)(?:" + introducers + r")\s+(" + folded + r")\s+(?:" + happening + r")",
-                             found.normalized):
+    nouns = "|".join(re.escape(normalize(n)) for n in rules.DURATION_EVENT_NOUNS)
+    # "… توی <head> <name> در جریانه" or a quoted event name "ایونت «چیزمیز» در
+    # <head> <name>،": the event is said to be at the name the address ends with.
+    # An unnamed mention ("برنامه اکران در خانه آبی، …") is not enough.
+    placed = (r"(?<!\w)(?:" + introducers + r")\s+(" + folded + r")\s+(?:" + happening + r")"
+              r"|(?<!\w)(?:" + nouns + r")\s+«[^»\n]{1,40}»\s+(?:در|توی)\s+("
+              + folded + r")(?=\s*[،,.!؛\n]|\s*$)")
+    for match in re.finditer(placed, found.normalized):
+        group = 1 if match.group(1) is not None else 2
         if span is not None and span[0] <= match.start() < span[1]:
             continue
         clause = found.normalized[slice(*_clause_bounds(found.text, match.start()))]
@@ -644,8 +652,37 @@ def _address_agreed_venue(found: SignalSet) -> str | None:
             continue
         if not any(normalize(term) in clause for term in rules.DURATION_EVENT_NOUNS):
             continue
-        return found.text[match.start(1):match.end(1)]
+        return found.text[match.start(group):match.end(group)]
     return None
+
+
+def _standalone_venue_line(found: SignalSet) -> str | None:
+    """A whole line "در/توی <head> <name>" directly under an event title line.
+
+    "رویداد “سکانس چهارم”\nدر عمارت زیرخاکی": the same head+name must also
+    appear elsewhere in the text, so a one-off phrase ("در خانه بمانید") never
+    becomes a venue. Several different names yield None.
+    """
+    heads = "|".join(re.escape(normalize(h)) for h in (*rules.NATURAL_VENUE_HEADS, *rules.GENERIC_VENUE_HEADS))
+    nouns = tuple(normalize(n) for n in rules.DURATION_EVENT_NOUNS)
+    lines = found.text.splitlines(keepends=True)
+    names = {}
+    offset, previous = 0, ""
+    for line in lines:
+        folded = found.normalized[offset:offset + len(line)]
+        match = re.fullmatch(r"\s*(?:در|توی)\s+((?:" + heads + r")(?:\s+[^\W\d_]{2,}){1,3})\s*", folded)
+        if match and any(noun in previous for noun in nouns):
+            value = found.text[offset + match.start(1):offset + match.end(1)]
+            tokens = phrase_tokens(value)
+            pattern = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in tokens) + r"(?!\w)"
+            elsewhere = [m for m in re.finditer(pattern, found.normalized)
+                         if not offset <= m.start() < offset + len(line)]
+            if elsewhere and not any(t in _NOT_A_NAME for t in tokens[1:]):
+                names.setdefault(" ".join(tokens), value)
+        if folded.strip(" \t\r\n.") :
+            previous = folded
+        offset += len(line)
+    return next(iter(names.values())) if len(names) == 1 else None
 
 
 def _trailing_head_venue(found: SignalSet) -> str | None:

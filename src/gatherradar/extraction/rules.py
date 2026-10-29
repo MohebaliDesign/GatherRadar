@@ -508,7 +508,7 @@ EXPLICIT_EVENT_CITIES: dict[str, str] = {
 }
 # Nouns that a stated length may directly modify: "این رویداد سه‌روزه".
 DURATION_EVENT_NOUNS: tuple[str, ...] = (
-    "رویداد", "فستیوال", "جشنواره", "کارگاه", "ورکشاپ", "دوره", "تور", "اردو", "برنامه", "نمایشگاه",
+    "رویداد", "ایونت", "فستیوال", "جشنواره", "کارگاه", "ورکشاپ", "دوره", "تور", "اردو", "برنامه", "نمایشگاه",
 )
 # Predicates that place an event at a just-named venue: "توی عمارت عقاب در جریانه".
 VENUE_HAPPENING_PREDICATES: tuple[str, ...] = ("در جریان", "برگزار")
