@@ -12,7 +12,8 @@ separate; weekly recurrence never generates arbitrary future dates. Data readine
 is separate from owner decisions, availability and collection health. Records/export
 schema 3 adds occurrences and readiness without recreating SQLite (DDL schema 1) or
 rewriting historical workbook snapshots (XLSX schema 3). The owner explicitly
-authorized this extension; Telegram remains deferred.
+authorized this extension; Telegram remained deferred until the owner-authorized bot
+foundation below.
 
 **Event admission clarification (2026-10-23):** Establish a real activity before
 resolving its display title. A formal source heading is not mandatory: a named
@@ -57,6 +58,14 @@ held for review, a booking column separate from date relevance, a quality-aware 
 fallback and cache, and one Windows acceptance script that runs one fresh bounded crawl
 and writes one review bundle. See [the closure report](docs/FINAL_EXCEL_ACCEPTANCE.md).
 
+**Telegram bot Phase 1 (owner-authorized, 2026-10-31):** `python -m gatherradar telegram run`
+runs `@GatherRadar_Bot` locally with long polling (no server or webhook). Only the numeric
+owner ID from `GATHERRADAR_TELEGRAM_OWNER_ID`, in a private chat, gets the Persian menu and a
+read-only source list from `config/sources.yaml`; before it is set only `/whoami` answers.
+Crawling, exports and source changes are not exposed yet; later phases must call existing
+services (`RefreshService`, exporters) through `telegram_bot/services.py`. See
+[the bot setup](docs/TELEGRAM_BOT_SETUP.md).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile
@@ -99,7 +108,8 @@ no Google account, server, paid API, or Office installation.
 ### Deferred
 
 - Selecting events through a dedicated dashboard.
-- Telegram publishing, polls, or community voting.
+- Telegram publishing, polls, or community voting (the owner-only bot foundation exists;
+  crawling and delivery through it are Phase 2).
 - Personalized ranking and recommendation models.
 - Automated booking or registration.
 - A public SaaS product, accounts, roles, payments, or multi-tenant infrastructure.

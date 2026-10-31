@@ -174,6 +174,13 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance.add_argument('--include', action='append', default=[],
                             help='Extra .txt/.json/.log file to add to the bundle; repeatable.')
 
+    telegram = subcommands.add_parser('telegram', help='Owner-only Telegram bot (long polling, local).')
+    telegram_actions = telegram.add_subparsers(dest='telegram_action', required=True)
+    telegram_run = telegram_actions.add_parser(
+        'run', help='Start the bot; reads GATHERRADAR_TELEGRAM_BOT_TOKEN and GATHERRADAR_TELEGRAM_OWNER_ID.')
+    telegram_run.add_argument('--config', default='config/sources.yaml')
+    telegram_run.add_argument('--data-dir', default='data')
+
     ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
     ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
     ocr_check = ocr_kinds.add_parser('check', help='Validate each configured engine and optionally read one image.')
@@ -558,6 +565,34 @@ def run_ocr_check(args) -> int:
     return 0 if usable else 1
 
 
+def run_telegram(args: argparse.Namespace) -> int:
+    try:
+        from .telegram_bot.lock import AlreadyRunningError
+        from .telegram_bot.runner import StartupError, run_bot
+        from .telegram_bot.settings import SettingsError, TelegramSettings
+    except ImportError:
+        print('error: python-telegram-bot is not installed. Run: python -m pip install -e .', file=sys.stderr)
+        return 2
+    try:
+        settings = TelegramSettings.from_env()
+    except SettingsError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    try:
+        return run_bot(settings, config_path=args.config, data_dir=args.data_dir)
+    except AlreadyRunningError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 3
+    except StartupError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 4
+    except ValueError:
+        print('error: config/sources.yaml could not be read.', file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -577,6 +612,9 @@ def main(
 
     if args.command == 'ocr':
         return run_ocr_check(args)
+
+    if args.command == 'telegram':
+        return run_telegram(args)
 
     if args.command == 'acceptance':
         from pathlib import Path
