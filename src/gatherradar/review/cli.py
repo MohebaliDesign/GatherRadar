@@ -111,15 +111,11 @@ def run(args: argparse.Namespace) -> int:
                     print(f'Export error: {failure}', file=sys.stderr)
                 print_eligibility(repository.load(args.run)['run'])
                 return int(bool(failures))
-            from ..orchestration.refresh import RefreshService
+            from ..orchestration.refresh import application_refresh_service
             run_id = args.run_id or uuid4().hex
             print(f'Run id: {run_id}', flush=True)
-            from ..acquisition.policy import recheck_policies
-            from ..acquisition.strategies import LinkedPageStrategy
             from ..config import load_sources
-            result = RefreshService(repository, import_reviews=workspace.import_reviews,
-                export_reviews=workspace.export, linked=LinkedPageStrategy(),
-                policy_check=recheck_policies).run(tuple(args.sources or ()), all_enabled=args.all_enabled,
+            result = application_refresh_service(repository, workspace).run(tuple(args.sources or ()), all_enabled=args.all_enabled,
                 config_path=args.config, data_dir=root, limit=args.limit, days=args.days,
                 review_timezone=args.review_timezone, skip_instagram_evidence=args.skip_instagram_evidence,
                 collect=not args.stored, run_id=run_id)

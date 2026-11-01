@@ -132,8 +132,11 @@ class OwnerMenuTests(BotCase):
         self.assertEqual(first['parse_mode'], 'HTML')
         buttons = [b['text'] for row in json.loads(first['reply_markup'])['inline_keyboard'] for b in row]
         self.assertIn('📚 فهرست منابع', buttons)
-        for label in ui.FEATURES.values():  # future items are visibly marked, never presented as working
-            self.assertIn(f'{label} · به‌زودی', buttons)
+        for feature, label in ui.FEATURES.items():
+            # Only genuinely unfinished items keep the «به‌زودی» mark.
+            expected = f'{label} · به‌زودی' if feature in ui.UNFINISHED else label
+            self.assertIn(expected, buttons)
+        self.assertNotIn('🔄 کرال همه منابع · به‌زودی', buttons)
 
     def test_help_and_whoami(self):
         self.send(command('/help'), command('/whoami'))
@@ -162,10 +165,14 @@ class OwnerMenuTests(BotCase):
         self.assertIn('رادار رویدادها', menu)
 
     def test_planned_feature_is_honest(self):
-        self.send(callback(ui.SOON + 'crawl_all'))
-        answer, = self.fake.sent('answerCallbackQuery')
-        self.assertEqual(answer['text'], ui.NOT_YET)
+        self.send(callback(ui.SOON + 'manage_sources'), callback(ui.SOON + 'settings'))
+        self.assertEqual([a['text'] for a in self.fake.sent('answerCallbackQuery')], [ui.NOT_YET] * 2)
         self.assertEqual(self.fake.sent('editMessageText'), [])
+
+    def test_old_phase1_soon_button_reopens_the_menu_without_crawling(self):
+        self.send(callback(ui.SOON + 'crawl_all'))
+        menu, = self.fake.sent('editMessageText')
+        self.assertIn('رادار رویدادها', menu['text'])
 
     def test_repeated_callback_is_harmless(self):
         fake = FakeTelegram(not_modified=True)

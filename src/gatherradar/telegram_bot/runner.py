@@ -72,12 +72,12 @@ async def verify_identity(bot: Bot, expected: str, attempts: int = STARTUP_ATTEM
 
 
 def build_application(settings: TelegramSettings, catalog: SourceCatalog,
-                      request: BaseRequest | None = None) -> Application:
+                      request: BaseRequest | None = None, operations=None) -> Application:
     builder = ApplicationBuilder().token(settings.token).concurrent_updates(False)
     if request is not None:
         builder = builder.request(request).get_updates_request(request)
     application = builder.build()
-    register(application, BotHandlers(settings, catalog))
+    register(application, BotHandlers(settings, catalog, operations))
     return application
 
 
@@ -95,7 +95,9 @@ def run_bot(settings: TelegramSettings, *, config_path: str | Path = 'config/sou
         username = asyncio.run(preflight(settings))
         mode = 'bootstrap (/whoami only)' if settings.bootstrap else 'owner configured'
         LOGGER.info('telegram_bot_starting username=@%s mode=%s', username, mode)
-        application = build_application(settings, catalog)
+        from .operations import LocalOperations
+        operations = LocalOperations(catalog, data_dir=data_dir, config_path=config_path)
+        application = build_application(settings, catalog, operations=operations)
 
         async def post_init(app: Application) -> None:
             await publish_commands(app, settings)
@@ -109,5 +111,10 @@ def run_bot(settings: TelegramSettings, *, config_path: str | Path = 'config/sou
         except Conflict:
             raise StartupError('Another process is already polling this bot (maybe on another computer). '
                                'Stop it and retry.') from None
+        finally:
+            # Never abandon a crawl mid-write: stop at the next safe boundary and wait.
+            if operations.jobs.cancel() is not None:
+                LOGGER.info('telegram_bot_stopping: waiting for the current source to finish safely')
+            operations.jobs.wait()
         LOGGER.info('telegram_bot_stopped')
     return 0

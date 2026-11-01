@@ -1,7 +1,16 @@
-"""Telegram update handlers. Authorization runs before any handler and again inside it."""
+"""Telegram update handlers. Authorization runs before any handler and again inside it.
+
+Handlers stay thin: they parse an allowlisted callback, ask `LocalOperations`
+(possibly in a worker thread) and render with `presentation`. Crawls start only
+from a one-time confirmation token, so a replayed or forged callback cannot
+launch a job.
+"""
 from __future__ import annotations
 
+import asyncio
 import logging
+import secrets
+import time
 
 from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from telegram.error import BadRequest, Conflict, TelegramError
@@ -10,17 +19,28 @@ from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHand
 
 from . import presentation as ui
 from .auth import OwnerPolicy
+from .jobs import JobBusyError, JobRecord
 from .services import PlannedFeature, SourceCatalog
 from .settings import TelegramSettings
 
 LOGGER = logging.getLogger('gatherradar.telegram')
 OWNER_COMMANDS = (('menu', 'منوی اصلی'), ('sources', 'فهرست منابع'), ('help', 'راهنما'), ('whoami', 'شناسه من'))
+CONFIRM_TTL = 600          # seconds a crawl confirmation stays valid
+PROGRESS_INTERVAL = 4.0    # minimum seconds between progress edits of one message
 
 
 class BotHandlers:
-    def __init__(self, settings: TelegramSettings, catalog: SourceCatalog) -> None:
-        self.settings, self.catalog = settings, catalog
+    def __init__(self, settings: TelegramSettings, catalog: SourceCatalog, operations=None) -> None:
+        self.settings, self.catalog, self.ops = settings, catalog, operations
         self.policy = OwnerPolicy(settings.owner_id)
+        self.selection: set[str] = set()
+        self.pending: dict[str, tuple[tuple[str, ...] | None, float]] = {}
+        self.status_messages: dict[str, tuple[int, int]] = {}   # job id -> (chat id, message id)
+        self._last_edit: dict[str, tuple[float, str]] = {}
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.bot = None
+        if operations is not None:
+            operations.jobs.subscribe(self._job_changed)
 
     # -- authorization -------------------------------------------------------
     async def guard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -72,28 +92,261 @@ class BotHandlers:
         query = update.callback_query
         if query is None or not self._owner(update):
             return
+        self.bot = context.bot
         action = ui.parse_callback(query.data)
         if action is None:
             await self._safe(query.answer(ui.INVALID))
             return
         if 'soon' in action:
-            known = action['soon'] in {feature.value for feature in PlannedFeature}
-            await self._safe(query.answer(ui.NOT_YET if known else ui.INVALID, show_alert=known))
+            unfinished = action['soon'] in {f.value for f in ui.UNFINISHED}
+            if unfinished:
+                await self._safe(query.answer(ui.NOT_YET, show_alert=True))
+            elif action['soon'] in {f.value for f in PlannedFeature}:
+                # An old Phase 1 button: reopen the current menu; it never starts anything.
+                await self._render(query, ui.main_text(), ui.main_keyboard())
+            else:
+                await self._safe(query.answer(ui.INVALID))
             return
         if 'menu' in action:
-            text, markup = ui.main_text(), ui.main_keyboard()
+            await self._render(query, ui.main_text(), ui.main_keyboard())
         elif 'help' in action:
-            text, markup = ui.help_text(), ui.back_keyboard()
+            await self._render(query, ui.help_text(), ui.back_keyboard())
         elif 'page' in action:
             views = self.catalog.list()
-            text, markup = ui.sources_text(views), ui.sources_keyboard(views, int(action['page']))
-        else:
+            await self._render(query, ui.sources_text(views), ui.sources_keyboard(views, int(action['page'])))
+        elif 'source' in action:
             view = self.catalog.get(action['source'])
             if view is None:  # a forged or stale id never reaches data
                 await self._safe(query.answer(ui.INVALID))
                 return
-            text, markup = ui.source_text(view), ui.source_keyboard()
-        await self._safe(query.answer())
+            await self._render(query, ui.source_text(view), ui.source_keyboard())
+        elif self.ops is None:
+            await self._safe(query.answer(ui.NOT_YET))
+        else:
+            await self._phase2(query, action, update)
+
+    async def _phase2(self, query, action: dict, update: Update) -> None:
+        if 'crawl_all' in action:
+            await self._confirm(query, None, back=ui.MAIN)
+        elif any(k in action for k in ('sel_page', 'sel_toggle', 'sel_all', 'sel_clear')):
+            await self._selection(query, action)
+        elif 'sel_ok' in action:
+            enabled = {v.id for v in self.ops.enabled_sources()}
+            self.selection &= enabled  # a source disabled meanwhile leaves the selection
+            if not self.selection:
+                await self._safe(query.answer('هیچ منبعی انتخاب نشده است.', show_alert=True))
+                return
+            await self._confirm(query, tuple(sorted(self.selection)), back=ui.SELECT + '0')
+        elif 'go' in action:
+            await self._launch(query, action['go'], update)
+        elif 'no' in action:
+            self.pending.pop(action['no'], None)
+            await self._render(query, ui.main_text(), ui.main_keyboard(), 'کرال لغو شد.')
+        elif 'job' in action:
+            await self._show_job(query)
+        elif 'job_cancel' in action:
+            job = self.ops.jobs.cancel()
+            await self._safe(query.answer('درخواست توقف ثبت شد؛ اجرا پس از پایان منبع فعلی متوقف می‌شود.'
+                                          if job else 'اجرایی در جریان نیست.', show_alert=True))
+            if job:
+                await self._edit(query, ui.job_text(job, self._names()), ui.job_keyboard(job))
+        elif 'outputs' in action:
+            run = await asyncio.to_thread(self.ops.latest_exported_run)
+            if run is None:
+                await self._render(query, '<b>دریافت خروجی</b>\nهنوز خروجی Excel معتبری ثبت نشده است. '
+                                   'ابتدا یک کرال اجرا کنید.', ui.back_keyboard())
+            else:
+                await self._render(query, ui.run_summary_text(run, self._names(), True, 'آخرین خروجی'),
+                                   ui.outputs_keyboard(run.token, True))
+        elif 'runs' in action:
+            runs = await asyncio.to_thread(self.ops.recent_runs, 30)
+            page = int(action['runs'])
+            await self._render(query, ui.runs_text(runs, page), ui.runs_keyboard(runs, page))
+        elif 'run' in action:
+            await self._show_run(query, action['run'])
+        elif 'excel' in action:
+            await self._send_excel(query, action['excel'], update)
+        elif 'ev_run' in action:
+            await self._events(query, action['ev_run'], action['ev_kind'], int(action['ev_page']))
+        elif 'ed_run' in action:
+            await self._event(query, action['ed_run'], action['ed_kind'], int(action['ed_index']))
+
+    # -- crawl -----------------------------------------------------------------
+    async def _confirm(self, query, scope: tuple[str, ...] | None, back: str) -> None:
+        current = self.ops.jobs.current
+        if current is not None and current.status in ('running', 'cancelling'):
+            await self._render(query, ui.job_text(current, self._names()), ui.job_keyboard(current), ui.BUSY)
+            return
+        try:
+            resolved = self.ops.resolve_scope(scope)
+        except ValueError:
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        now = time.monotonic()
+        self.pending = {k: v for k, v in self.pending.items() if now - v[1] < CONFIRM_TTL}
+        nonce = secrets.token_hex(6)
+        self.pending[nonce] = (scope, now)
+        views = tuple(v for v in self.ops.enabled_sources() if v.id in resolved)
+        await self._render(query, ui.crawl_confirm_text(views, scope is None, self.ops.limit, self.ops.days),
+                           ui.confirm_keyboard(nonce, back))
+
+    async def _launch(self, query, nonce: str, update: Update) -> None:
+        pending = self.pending.pop(nonce, None)  # one-time: a replayed tap finds nothing
+        if pending is None or time.monotonic() - pending[1] >= CONFIRM_TTL:
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        scope = pending[0]
+        try:
+            job = self.ops.start_crawl(scope)
+        except JobBusyError as busy:
+            await self._render(query, ui.job_text(busy.current, self._names()), ui.job_keyboard(busy.current), ui.BUSY)
+            return
+        except ValueError:  # the registry changed: a source is now unknown or disabled
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        self.loop = asyncio.get_running_loop()
+        self.status_messages[job.job_id] = (update.effective_chat.id, query.message.message_id)
+        self.selection.clear()
+        await self._render(query, ui.job_text(job, self._names()), ui.job_keyboard(job), 'کرال شروع شد.')
+
+    async def _selection(self, query, action: dict) -> None:
+        views = self.ops.enabled_sources()
+        enabled = {v.id for v in views}
+        if 'sel_toggle' in action:
+            source = action['sel_toggle']
+            if source not in enabled:  # disabled, unknown or forged
+                await self._safe(query.answer(ui.INVALID, show_alert=True))
+                return
+            self.selection ^= {source}
+            page = int(action['sel_toggle_page'])
+        elif 'sel_all' in action:
+            self.selection = set(enabled)
+            page = int(action['sel_all'])
+        elif 'sel_clear' in action:
+            self.selection.clear()
+            page = int(action['sel_clear'])
+        else:
+            page = int(action['sel_page'])
+        self.selection &= enabled
+        await self._render(query, ui.selection_text(views, self.selection),
+                           ui.selection_keyboard(views, self.selection, page))
+
+    async def _show_job(self, query) -> None:
+        job = self.ops.jobs.current or next(iter(reversed(self.ops.jobs.store.read())), None)
+        if job is None:
+            await self._render(query, '<b>وضعیت اجرا</b>\nهنوز اجرایی از طریق ربات انجام نشده است.', ui.back_keyboard())
+        elif job.status in ('running', 'cancelling'):
+            await self._render(query, ui.job_text(job, self._names()), ui.job_keyboard(job))
+        else:
+            await self._show_run(query, job.job_id[:12])
+
+    # -- progress from the worker thread ----------------------------------------
+    def _job_changed(self, job: JobRecord) -> None:
+        """Called in the worker thread; schedules a bounded number of edits."""
+        if self.loop is None or self.loop.is_closed() or job.job_id not in self.status_messages:
+            return
+        final = job.status not in ('running', 'cancelling')
+        key = f'{job.status}:{job.stage}:{job.current_source}:{job.done_sources}'
+        last_time, last_key = self._last_edit.get(job.job_id, (0.0, ''))
+        if not final and (key == last_key or time.monotonic() - last_time < PROGRESS_INTERVAL):
+            return
+        self._last_edit[job.job_id] = (time.monotonic(), key)
+        asyncio.run_coroutine_threadsafe(self._report(job, final), self.loop)
+
+    async def _report(self, job: JobRecord, final: bool) -> None:
+        chat_id, message_id = self.status_messages[job.job_id]
+        if not final:
+            text, markup = ui.job_text(job, self._names()), ui.job_keyboard(job)
+        else:
+            run = await asyncio.to_thread(self.ops.find_run, job.job_id[:12])
+            excel = run is not None and run.persisted and (await asyncio.to_thread(self.ops.workbook_for, run.run_id)).ok
+            if run is None:
+                text, markup = ui.job_text(job, self._names()), ui.back_keyboard()
+            else:
+                text = ui.run_summary_text(run, self._names(), job.export_ok if run.persisted else None)
+                if job.message:
+                    text += '\n\n' + ui.e(job.message)
+                markup = ui.outputs_keyboard(run.token if run.persisted else None, excel)
+            self.status_messages.pop(job.job_id, None)
+        try:
+            await self.bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode='HTML',
+                                             reply_markup=markup, disable_web_page_preview=True)
+        except BadRequest as error:
+            if 'not modified' not in str(error).lower():
+                LOGGER.warning('telegram_progress_edit_failed: %s', type(error).__name__)
+        except TelegramError as error:
+            LOGGER.warning('telegram_progress_edit_failed: %s', type(error).__name__)
+
+    # -- runs, outputs and events (read-only) ------------------------------------
+    async def _run(self, token: str):
+        return await asyncio.to_thread(self.ops.find_run, token)
+
+    async def _show_run(self, query, token: str) -> None:
+        run = await self._run(token)
+        if run is None:
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        check = await asyncio.to_thread(self.ops.workbook_for, run.run_id) if run.persisted else None
+        job = await asyncio.to_thread(self.ops.jobs.store.get, run.run_id)
+        text = ui.run_summary_text(run, self._names(), check.ok if check else None)
+        if job is not None and job.message and not run.persisted:
+            text += '\n\n' + ui.e(job.message)
+        if check is not None and not check.ok:
+            text += '\n\n' + ui.e(check.reason)
+        await self._render(query, text, ui.outputs_keyboard(run.token if run.persisted else None,
+                                                            bool(check and check.ok)))
+
+    async def _send_excel(self, query, token: str, update: Update) -> None:
+        run = await self._run(token)
+        if run is None or not run.persisted:
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        check = await asyncio.to_thread(self.ops.workbook_for, run.run_id)
+        if not check.ok:  # never send an older or unrelated file instead
+            await self._safe(query.answer(check.reason, show_alert=True))
+            return
+        await self._safe(query.answer('در حال ارسال فایل Excel…'))
+        content = await asyncio.to_thread(check.path.read_bytes)
+        try:
+            await query.get_bot().send_document(update.effective_chat.id, document=content,
+                                                filename=check.filename,
+                                                caption=ui.excel_caption(run, check.sheet, self._names()))
+        except TelegramError as error:
+            LOGGER.warning('telegram_document_failed: %s', type(error).__name__)
+            await self._safe(query.get_bot().send_message(update.effective_chat.id,
+                                                          'ارسال فایل ناموفق بود؛ دوباره تلاش کنید.'))
+
+    async def _records(self, token: str, kind: str):
+        run = await self._run(token)
+        if run is None or not run.persisted:
+            return None, None
+        document = await asyncio.to_thread(self.ops.run_document, run.run_id)
+        if document is None:
+            return None, None
+        return run, document['events'] if kind == 'a' else document.get('schedule_review', [])
+
+    async def _events(self, query, token: str, kind: str, page: int) -> None:
+        run, records = await self._records(token, kind)
+        if run is None:
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        await self._render(query, ui.events_text(records, kind, page, run),
+                           ui.events_keyboard(records, kind, page, run.token))
+
+    async def _event(self, query, token: str, kind: str, index: int) -> None:
+        run, records = await self._records(token, kind)
+        if run is None or not 0 <= index < len(records):  # stale or forged index
+            await self._safe(query.answer(ui.INVALID, show_alert=True))
+            return
+        await self._render(query, ui.event_text(records[index], kind, index, len(records)),
+                           ui.event_keyboard(records[index], kind, index, len(records), run.token))
+
+    def _names(self) -> dict[str, str]:
+        return {v.id: v.name for v in self.catalog.list()}
+
+    # -- message helpers ---------------------------------------------------------
+    async def _render(self, query, text, markup, notice: str | None = None) -> None:
+        await self._safe(query.answer(notice) if notice else query.answer())
         await self._edit(query, text, markup)
 
     async def _edit(self, query, text, markup) -> None:
@@ -126,6 +379,7 @@ class BotHandlers:
 
 
 def register(application: Application, handlers: BotHandlers) -> None:
+    handlers.bot = application.bot
     application.add_handler(TypeHandler(Update, handlers.guard), group=-1)
     application.add_handler(CommandHandler(['start', 'menu'], handlers.start))
     application.add_handler(CommandHandler('help', handlers.help))

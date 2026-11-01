@@ -41,8 +41,8 @@ The current implementation includes source collection, append-only raw storage, 
 | SQLite canonical/review history + XLSX/CSV/JSON/Gemini exports | ✅ Implemented; local validation |
 | Optional Google Sheets API adapter | ✅ Retained; live validation pending |
 | Manual refresh, immutable fact snapshots, local review carry-forward | ✅ Implemented; local validation |
-| Owner-only Telegram bot: Persian menu and read-only source list (Phase 1) | ✅ Implemented; local acceptance pending |
-| Telegram crawling/export delivery, scheduling, recommendations, public dashboard | ⏸ Deferred |
+| Owner-only Telegram bot: menu, sources, crawl (all/selected), Excel delivery, event browsing, run history | ✅ Implemented; Phase 2 local acceptance pending |
+| Telegram source management, scheduling, recommendations, public dashboard | ⏸ Deferred |
 
 ## How it works
 
@@ -112,8 +112,9 @@ user environment variables, then:
 .\.venv\Scripts\python.exe -m gatherradar telegram run
 ~~~
 
-Phase 1 shows a Persian menu and a read-only source list; it never crawls or exports.
-See [`docs/TELEGRAM_BOT_SETUP.md`](docs/TELEGRAM_BOT_SETUP.md) for secure setup.
+It crawls all enabled or selected sources after confirmation (one job at a time, through
+the same `RefreshService` as `refresh`), sends the run's Excel workbook, shows events as
+Persian messages and lists recent runs. See [`docs/TELEGRAM_BOT_SETUP.md`](docs/TELEGRAM_BOT_SETUP.md).
 
 ## Final Excel acceptance (Windows)
 

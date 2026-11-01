@@ -27,6 +27,15 @@ from .evidence_run import run_instagram_evidence
 LOGGER = logging.getLogger(__name__)
 
 
+class RunCancelled(RuntimeError):
+    """The owner asked to stop; the run stopped at a safe boundary before analysis."""
+
+
+# Progress callback: (stage, details). Stages: source_started, source_finished,
+# analyzing, persisting, exporting. Details carry IDs and counts, never paths.
+ProgressCallback = Callable[[str, dict], None]
+
+
 @dataclass(frozen=True)
 class SourceRun:
     source_id: str
@@ -97,7 +106,12 @@ class RefreshService:
             config_path: str | Path = 'config/sources.yaml', data_dir: str | Path = 'data',
             limit: int = 5, days: int = 14, review_timezone: str = 'Asia/Tehran',
             skip_instagram_evidence: bool = False, collect: bool = True,
-            run_id: str | None = None) -> RefreshResult:
+            run_id: str | None = None, progress: ProgressCallback | None = None,
+            should_stop: Callable[[], bool] | None = None) -> RefreshResult:
+        """`should_stop` is checked only before each source and before analysis: a
+        source in progress (browser capture, OCR) and persistence/export are never
+        interrupted. Stopping records the manifest as `cancelled` and raises
+        `RunCancelled`; observations already collected stay in the raw store."""
         if type(limit) is not int or not 1 <= limit <= 30:
             raise ValueError('limit must be between 1 and 30 per source')
         if type(days) is not int or not 1 <= days <= 90:
@@ -151,6 +165,19 @@ class RefreshService:
                 atomic_json(path, payload)
 
             save('running')
+
+            def notify(stage: str, **details) -> None:
+                if progress is not None:
+                    try:
+                        progress(stage, dict(details, run_id=run_id))
+                    except Exception:  # a reporting failure never breaks the run
+                        LOGGER.warning('refresh_progress_callback_failed', extra={'run_id': run_id})
+
+            def stop_requested() -> bool:
+                if should_stop is not None and should_stop():
+                    save('cancelled', self.now())
+                    return True
+                return False
             observed = {} if collect else None
             channels: list[ChannelResult] = []
             # Deliberately disabled channels of the selected publishers are
@@ -160,7 +187,10 @@ class RefreshService:
                      if not s.enabled and s.publisher_key in publishers]
             notices = ()
             if collect:
-                for source in selected:
+                for index, source in enumerate(selected, 1):
+                    if stop_requested():
+                        raise RunCancelled(run_id)
+                    notify('source_started', source_id=source.id, index=index, total=len(selected))
                     LOGGER.info('source_collection_started', extra={'run_id': run_id, 'source_id': source.id})
                     strategy = strategy_for(source, self.strategies)
                     if strategy is None:
@@ -208,6 +238,8 @@ class RefreshService:
                     LOGGER.info('source_collection_finished', extra={'run_id': run_id,
                         'source_id': source.id, 'status': reports[-1].status})
                     save('running')
+                    notify('source_finished', source_id=source.id, index=index, total=len(selected),
+                           status=reports[-1].status)
                 for peer in peers:
                     strategy = strategy_for(peer, self.strategies)
                     if strategy is not None:
@@ -220,7 +252,10 @@ class RefreshService:
                                                     now=started)
                     except Exception:
                         LOGGER.warning('policy_recheck_failed', extra={'run_id': run_id})
+            if stop_requested():
+                raise RunCancelled(run_id)
             try:
+                notify('analyzing')
                 review = self.analyze(ids, config_path=config_path, data_dir=data_dir, limit=limit,
                     instagram_evidence=not skip_instagram_evidence, observed_items=observed)
                 existing = {r.source_id: r for r in reports}
@@ -274,6 +309,7 @@ class RefreshService:
                 admission['source_funnel'] = funnel
                 finished = self.now()
                 save('syncing', finished)
+                notify('persisting')
                 snapshot = self.repository.sync(canonical, window, run_id=run_id,
                     started_at=started, finished_at=finished, days=days, review_timezone=review_timezone,
                     source_count=len(selected), failures=failures, status=status,
@@ -284,6 +320,7 @@ class RefreshService:
                                   'publisher_coverage': [c.record() for c in coverage],
                                   'policy_checks': [n.record() for n in notices]})
                 save(status, finished)
+                notify('exporting')
                 paths, errors = self._export(run_id)
                 return RefreshResult(snapshot, tuple(reports), paths, errors, imported,
                                      tuple(channels), coverage, tuple(notices))
@@ -313,3 +350,11 @@ class RefreshService:
             return self.export_reviews(run_id)
         except Exception:
             return (), ('Export failed after persistence; retry offline export for this run ID.',)
+
+
+def application_refresh_service(repository: SnapshotRepository, workspace) -> RefreshService:
+    """The application wiring shared by the CLI and the Telegram bot."""
+    from ..acquisition.policy import recheck_policies
+    return RefreshService(repository, import_reviews=workspace.import_reviews,
+                          export_reviews=workspace.export, linked=LinkedPageStrategy(),
+                          policy_check=recheck_policies)

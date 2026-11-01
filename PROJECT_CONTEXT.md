@@ -62,9 +62,11 @@ and writes one review bundle. See [the closure report](docs/FINAL_EXCEL_ACCEPTAN
 runs `@GatherRadar_Bot` locally with long polling (no server or webhook). Only the numeric
 owner ID from `GATHERRADAR_TELEGRAM_OWNER_ID`, in a private chat, gets the Persian menu and a
 read-only source list from `config/sources.yaml`; before it is set only `/whoami` answers.
-Crawling, exports and source changes are not exposed yet; later phases must call existing
-services (`RefreshService`, exporters) through `telegram_bot/services.py`. See
-[the bot setup](docs/TELEGRAM_BOT_SETUP.md).
+Phase 2 (2026-11-01) adds owner-confirmed crawls of all enabled or selected sources (one job
+at a time in a worker thread, the same `RefreshService` wiring as the CLI, cooperative stop
+between sources), delivery of the existing workbook when its run index holds that run,
+read-only Persian event browsing from the persisted projection, and run history. Source
+management stays deferred. See [the bot setup](docs/TELEGRAM_BOT_SETUP.md).
 
 ## 1. Product summary
 
@@ -108,8 +110,8 @@ no Google account, server, paid API, or Office installation.
 ### Deferred
 
 - Selecting events through a dedicated dashboard.
-- Telegram publishing, polls, or community voting (the owner-only bot foundation exists;
-  crawling and delivery through it are Phase 2).
+- Telegram publishing to the community, polls, or voting (the owner-only bot crawls and
+  delivers outputs to the owner; source management through it is Phase 3).
 - Personalized ranking and recommendation models.
 - Automated booking or registration.
 - A public SaaS product, accounts, roles, payments, or multi-tenant infrastructure.
