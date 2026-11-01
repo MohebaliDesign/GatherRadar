@@ -12,7 +12,8 @@ separate; weekly recurrence never generates arbitrary future dates. Data readine
 is separate from owner decisions, availability and collection health. Records/export
 schema 3 adds occurrences and readiness without recreating SQLite (DDL schema 1) or
 rewriting historical workbook snapshots (XLSX schema 3). The owner explicitly
-authorized this extension; Telegram remains deferred.
+authorized this extension; Telegram remained deferred until the owner-authorized bot
+foundation below.
 
 **Event admission clarification (2026-10-23):** Establish a real activity before
 resolving its display title. A formal source heading is not mandatory: a named
@@ -57,6 +58,25 @@ held for review, a booking column separate from date relevance, a quality-aware 
 fallback and cache, and one Windows acceptance script that runs one fresh bounded crawl
 and writes one review bundle. See [the closure report](docs/FINAL_EXCEL_ACCEPTANCE.md).
 
+**Telegram bot Phase 1 (owner-authorized, 2026-10-31):** `python -m gatherradar telegram run`
+runs `@GatherRadar_Bot` locally with long polling (no server or webhook). Only the numeric
+owner ID from `GATHERRADAR_TELEGRAM_OWNER_ID`, in a private chat, gets the Persian menu and a
+read-only source list from `config/sources.yaml`; before it is set only `/whoami` answers.
+Phase 2 (2026-11-01) adds owner-confirmed crawls of all enabled or selected sources (one job
+at a time in a worker thread, the same `RefreshService` wiring as the CLI, cooperative stop
+between sources), delivery of the existing workbook when its run index holds that run,
+read-only Persian event browsing from the persisted projection, and run history. Phase 3
+(2026-11-01) adds:
+- monotonic elapsed time and a history-based remaining-time range, never invented (per-source
+  medians and ranges in `data/telegram/timings.json`);
+- owner source management: guided Instagram/website add, reversible disable and archive.
+
+One effective registry, used by the CLI and the bot alike, is the tracked
+`config/sources.yaml` plus the git-ignored overlay `config/sources.local.json`. Base definitions
+win, and policy/unsupported reasons cannot be cleared. Websites are runnable only through an
+existing adapter, with SSRF checks; unsupported sites stay inactive. Auto-start is documented,
+not installed. See [the bot setup](docs/TELEGRAM_BOT_SETUP.md).
+
 ## 1. Product summary
 
 GatherRadar helps its owner answer a practical question: **What worthwhile
@@ -99,7 +119,8 @@ no Google account, server, paid API, or Office installation.
 ### Deferred
 
 - Selecting events through a dedicated dashboard.
-- Telegram publishing, polls, or community voting.
+- Telegram publishing to the community, polls, or voting (the owner-only bot crawls, delivers
+  outputs and manages sources for the owner only).
 - Personalized ranking and recommendation models.
 - Automated booking or registration.
 - A public SaaS product, accounts, roles, payments, or multi-tenant infrastructure.

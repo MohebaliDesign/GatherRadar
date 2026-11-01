@@ -41,7 +41,9 @@ The current implementation includes source collection, append-only raw storage, 
 | SQLite canonical/review history + XLSX/CSV/JSON/Gemini exports | ✅ Implemented; local validation |
 | Optional Google Sheets API adapter | ✅ Retained; live validation pending |
 | Manual refresh, immutable fact snapshots, local review carry-forward | ✅ Implemented; local validation |
-| Scheduling, Telegram publishing, recommendations, public dashboard | ⏸ Deferred |
+| Owner-only Telegram bot: menu, crawl (all/selected) with elapsed time and evidence-based estimates, Excel delivery, event browsing, run history | ✅ Implemented; Phase 3 local acceptance pending |
+| Telegram source management: add Instagram/website (validated, never auto-crawled), disable/enable, reversible archive | ✅ Implemented; Phase 3 local acceptance pending |
+| Scheduling, auto-start, recommendations, public dashboard | ⏸ Deferred |
 
 ## How it works
 
@@ -100,6 +102,29 @@ its model files once on first use; Windows OCR is used only when the language in
 python -m gatherradar ocr check
 python -m gatherradar ocr check --image path/to/slide.png
 ~~~
+
+## Telegram bot (Windows)
+
+`@GatherRadar_Bot` runs locally with long polling and answers only the owner. Set
+`GATHERRADAR_TELEGRAM_BOT_TOKEN` (and, after `/whoami`, `GATHERRADAR_TELEGRAM_OWNER_ID`) as
+user environment variables, then:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m gatherradar telegram run
+~~~
+
+It crawls all enabled or selected sources after confirmation (one job at a time, through
+the same `RefreshService` as `refresh`), sends the run's Excel workbook, shows events as
+Persian messages and lists recent runs. Progress shows real elapsed time and, once local
+history supports it, a remaining-time range. «📋 مدیریت منابع» adds Instagram or supported
+website sources, pauses, archives and restores them. Changes go to the git-ignored overlay
+`config/sources.local.json`, which every CLI command reads too. To see the effective registry:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m gatherradar sources list
+~~~
+
+See [`docs/TELEGRAM_BOT_SETUP.md`](docs/TELEGRAM_BOT_SETUP.md).
 
 ## Final Excel acceptance (Windows)
 
@@ -537,7 +562,7 @@ The intended MVP continuation is:
 4. Pilot the manual review workflow and refine measured extraction errors.
 5. Evaluate broader delivery only after the owner validates the discovery workflow; no scheduler is implemented.
 
-Telegram publishing, recommendations, community voting, automated booking, a public dashboard, and a multi-user SaaS product are intentionally outside the current implementation.
+Telegram publishing to the community (beyond the owner-only bot), recommendations, community voting, automated booking, a public dashboard, and a multi-user SaaS product are intentionally outside the current implementation.
 
 ## Safety and collection boundaries
 
@@ -554,6 +579,7 @@ The project does not need followers, comments, direct messages, private profiles
 - [`docs/SOURCE_FIELD_COVERAGE.md`](docs/SOURCE_FIELD_COVERAGE.md) — which facts each source exposes and the per-Event field audit
 - [`docs/STAGE9_VALIDATION.md`](docs/STAGE9_VALIDATION.md) — Stage 9 acceptance evidence
 - [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md) — final Excel closure, case results and the one-run local acceptance
+- [`docs/TELEGRAM_BOT_SETUP.md`](docs/TELEGRAM_BOT_SETUP.md) — owner-only Telegram bot: architecture, security and Windows setup
 - [`docs/PUBLISHER_RECOVERY.md`](docs/PUBLISHER_RECOVERY.md) — publisher/channel/strategy model, coverage and Davvvat channel investigation
 - [`config/sources.yaml`](config/sources.yaml) — currently approved sources and adapter configuration
 

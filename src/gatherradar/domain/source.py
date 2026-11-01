@@ -9,8 +9,12 @@ from .website import WebsiteConfig
 
 
 # Why an automatic channel is switched off. `robots`/`terms`: the publisher's
-# access policy excludes GatherRadar; `owner`: the owner paused it.
-DISABLED_REASONS = frozenset({"robots", "terms", "owner"})
+# access policy excludes GatherRadar; `owner`: the owner paused it;
+# `unsupported`: an owner-registered website no existing adapter supports yet.
+DISABLED_REASONS = frozenset({"robots", "terms", "owner", "unsupported"})
+# Reasons the owner cannot clear from a UI: only a changed policy or a new
+# adapter (a reviewed code/config change) can make such a source runnable.
+LOCKED_REASONS = frozenset({"robots", "terms", "unsupported"})
 
 
 class SourceType(StrEnum):
@@ -32,6 +36,8 @@ class Source:
     locale: str = "fa-IR"
     website: WebsiteConfig | None = None
     disabled_reason: str | None = None
+    # Archived ("removed from the list"): reversible, never crawled, history kept.
+    archived: bool = False
 
     def __post_init__(self) -> None:
         for field_name in ("id", "publisher_key", "name", "url"):
@@ -52,7 +58,9 @@ class Source:
         if not isinstance(self.enabled, bool):
             raise ValueError('enabled must be a boolean')
         if self.disabled_reason is not None and (self.enabled or self.disabled_reason not in DISABLED_REASONS):
-            raise ValueError('disabled_reason requires a disabled source and one of robots, terms, owner')
+            raise ValueError('disabled_reason requires a disabled source and one of robots, terms, owner, unsupported')
+        if not isinstance(self.archived, bool) or (self.archived and self.enabled):
+            raise ValueError('an archived source must be disabled')
         if self.website is not None and (
             self.source_type is not SourceType.WEBSITE or not isinstance(self.website, WebsiteConfig)
         ):

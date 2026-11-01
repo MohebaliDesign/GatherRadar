@@ -159,10 +159,11 @@ class HttpTransport:
             return url, text
         raise SourceUnavailableError('redirect limit exceeded',category='redirect')
 
-    def policy(self) -> RobotsPolicy:
-        """This origin's robots rules for GatherRadar; fetched once per transport."""
+    def policy(self, *, allowed: Callable[[str], bool] | None = None) -> RobotsPolicy:
+        """This origin's robots rules for GatherRadar; fetched once per transport.
+        `allowed` vets every hop (including same-origin redirects) before a request."""
         if self._policy is None:
-            _, text = self._read('/robots.txt', robots=True)
+            _, text = self._read('/robots.txt', robots=True, allowed=allowed)
             self._policy = RobotsPolicy(text)
         return self._policy
 
