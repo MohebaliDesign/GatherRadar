@@ -1,12 +1,12 @@
 """Application boundary used by the Telegram handlers.
 
-Phase 1 implements only the read-only source catalog over the existing
-`config.load_sources`. Later operations are declared as one protocol so a
-Telegram handler never reaches collectors, OCR or exporters directly; their
-implementation must reuse `RefreshService`, existing source validation, the
-SQLite repository and the existing exporters (no second database, event model
-or export path). Adding a source never implies that an arbitrary website is
-supported: unknown layouts need an adapter, and robots/access policy applies.
+`SourceCatalog` is a read-only view of the effective source registry
+(`config/sources.yaml` plus the local overlay, see `source_registry`). Crawls,
+source changes and reads go through `LocalOperations`, which reuses
+`RefreshService`, the SQLite repository and the existing exporters (no second
+database, event model or export path). Adding a source never implies that an
+arbitrary website is supported: unknown layouts need an adapter, and
+robots/access policy applies.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from ..config import load_sources
 from ..domain import SourceType
 
 
@@ -30,28 +29,39 @@ class SourceView:
     enabled: bool
     disabled_reason: str | None
     public_url: str
+    archived: bool = False
+    origin: str = 'base'     # 'base' (tracked YAML) | 'local' (added by the owner)
+    locked: bool = False     # policy-blocked or unsupported: never runnable from the bot
 
 
 class SourceCatalog:
-    """Read-only view of `config/sources.yaml` in its configured order."""
+    """Read-only view of the effective registry (base YAML + local overlay)."""
 
     def __init__(self, config_path: str | Path = 'config/sources.yaml') -> None:
         self.config_path = Path(config_path)
 
-    def list(self) -> tuple[SourceView, ...]:
+    def all(self) -> tuple[SourceView, ...]:
+        from ..source_registry import SourceRegistry
         views = []
-        for source in load_sources(self.config_path):
+        for entry in SourceRegistry(self.config_path).entries():
+            source = entry.source
             parts = urlsplit(source.url)
             views.append(SourceView(
                 id=source.id, name=source.name,
                 kind='instagram' if source.source_type is SourceType.INSTAGRAM else 'website',
                 enabled=bool(source.enabled), disabled_reason=source.disabled_reason,
-                # Query strings and fragments are dropped; the registry URL is public.
-                public_url=urlunsplit((parts.scheme, parts.netloc, parts.path, '', ''))))
+                # Query strings are kept only for websites (they can select a listing).
+                public_url=urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                       parts.query if source.source_type is SourceType.WEBSITE else '', '')),
+                archived=source.archived, origin=entry.origin, locked=entry.locked))
         return tuple(views)
 
+    def list(self) -> tuple[SourceView, ...]:
+        """Sources in the active list (archived ones are hidden), registry order."""
+        return tuple(view for view in self.all() if not view.archived)
+
     def get(self, source_id: str) -> SourceView | None:
-        return next((view for view in self.list() if view.id == source_id), None)
+        return next((view for view in self.all() if view.id == source_id), None)
 
 
 class PlannedFeature(str, Enum):

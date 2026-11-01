@@ -65,8 +65,17 @@ read-only source list from `config/sources.yaml`; before it is set only `/whoami
 Phase 2 (2026-11-01) adds owner-confirmed crawls of all enabled or selected sources (one job
 at a time in a worker thread, the same `RefreshService` wiring as the CLI, cooperative stop
 between sources), delivery of the existing workbook when its run index holds that run,
-read-only Persian event browsing from the persisted projection, and run history. Source
-management stays deferred. See [the bot setup](docs/TELEGRAM_BOT_SETUP.md).
+read-only Persian event browsing from the persisted projection, and run history. Phase 3
+(2026-11-01) adds:
+- monotonic elapsed time and a history-based remaining-time range, never invented (per-source
+  medians and ranges in `data/telegram/timings.json`);
+- owner source management: guided Instagram/website add, reversible disable and archive.
+
+One effective registry, used by the CLI and the bot alike, is the tracked
+`config/sources.yaml` plus the git-ignored overlay `config/sources.local.json`. Base definitions
+win, and policy/unsupported reasons cannot be cleared. Websites are runnable only through an
+existing adapter, with SSRF checks; unsupported sites stay inactive. Auto-start is documented,
+not installed. See [the bot setup](docs/TELEGRAM_BOT_SETUP.md).
 
 ## 1. Product summary
 
@@ -110,8 +119,8 @@ no Google account, server, paid API, or Office installation.
 ### Deferred
 
 - Selecting events through a dedicated dashboard.
-- Telegram publishing to the community, polls, or voting (the owner-only bot crawls and
-  delivers outputs to the owner; source management through it is Phase 3).
+- Telegram publishing to the community, polls, or voting (the owner-only bot crawls, delivers
+  outputs and manages sources for the owner only).
 - Personalized ranking and recommendation models.
 - Automated booking or registration.
 - A public SaaS product, accounts, roles, payments, or multi-tenant infrastructure.

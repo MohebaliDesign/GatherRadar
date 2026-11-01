@@ -237,3 +237,7 @@ client_secret*.json
 *.xlsx
 /exports/
 /review/
+
+# Local source registry overlay (owner-added sources and lifecycle state)
+config/sources.local.json
+config/sources.local.json.*

@@ -161,8 +161,9 @@ class CrawlFlowTests(Phase2Case):
         self.session(callback(ui.CRAWL_ALL), confirm_then_go)
         confirm = self.edits()[0]['text']
         self.assertIn(f'همه منابع فعال ({ui.persian(len(ENABLED))} منبع)', confirm)
-        self.assertIn('تعداد مطالب اخیر هر منبع: ۵', confirm)
-        self.assertIn('افق رویدادها: ۱۴ روز', confirm)
+        self.assertIn('از هر منبع حداکثر ۵ مورد اخیر بررسی می‌شود', confirm)
+        self.assertIn('بازه ۱۴ روز آینده', confirm)
+        self.assertIn('آیا می‌خواهید جمع‌آوری شروع شود؟', confirm)
         (scope, all_enabled), = self.runner.calls
         self.assertTrue(all_enabled)
         self.assertEqual(set(scope), set(ENABLED))
@@ -223,7 +224,7 @@ class CrawlFlowTests(Phase2Case):
             return callback(ui.NO + holder['nonce'])
         self.session(callback(ui.CRAWL_ALL), cancel, lambda: callback(ui.GO + holder['nonce']))
         self.assertEqual(self.runner.calls, [])
-        self.assertIn('کرال لغو شد.', self.answers())
+        self.assertIn('جمع‌آوری شروع نشد.', self.answers())
 
     def test_strangers_cannot_use_any_new_action(self):
         actions = (ui.CRAWL_ALL, ui.SELECT + '0', ui.SELECT + 'ok', ui.GO + 'deadbeef0000', ui.OUTPUTS,
@@ -240,7 +241,8 @@ class JobTests(Phase2Case):
     def test_progress_edits_one_status_message_and_completion_offers_outputs(self):
         self.session(callback(ui.CRAWL_ALL), lambda: callback(ui.GO + self.nonce()))
         texts = [p['text'] for p in self.edits()]
-        self.assertIn('اجرای کرال', texts[1])
+        self.assertIn('در حال جمع‌آوری رویدادها', texts[1])
+        self.assertIn('⏱ زمان سپری‌شده:', texts[1])
         final = self.edits()[-1]
         self.assertEqual(final['message_id'], '7')  # the same status message is edited
         self.assertIn('این اجرا به ثبت نتیجه نرسید', final['text'])  # the fake runner persists nothing
@@ -457,16 +459,17 @@ class PresentationTests(unittest.TestCase):
                          discovered=36, excluded_missing_title=10, canonical=26, actionable=16,
                          schedule_review=4, expired=6)
         text = ui.run_summary_text(run, {'a': 'منبع الف', 'b': 'منبع ب'}, False)
-        for expected in ('نیمه‌موفق', '✅ موفق: منبع الف', '❌ ناموفق: منبع ب', 'نامزدهای رویداد کشف‌شده: ۳۶',
-                         'رویدادهای یکتا (پس از ادغام تکراری‌ها): ۲۶', 'پیش‌رو / در جریان: ۱۶',
-                         'بررسی زمان‌بندی: ۴', 'گذشته: ۶', 'نبود عنوان: ۱۰', 'خروجی Excel: ناموفق'):
+        for expected in ('نیمه‌موفق', '✅ تکمیل‌شده (۱): منبع الف', '❌ ناموفق (۱): منبع ب',
+                         'نامزدهای رویداد کشف‌شده: ۳۶', 'رویدادهای یکتا پس از ادغام تکراری‌ها: ۲۶',
+                         'پیش‌رو / در جریان: ۱۶', 'بررسی زمان‌بندی: ۴', 'گذشته: ۶',
+                         'بدون عنوان قابل‌اتکا (کنار گذاشته شد): ۱۰', 'خروجی Excel: ساخته نشد'):
             self.assertIn(expected, text)
 
     def test_progress_text_has_no_invented_percentages(self):
         job = JobRecord('j' * 32, ('a', 'b'), False, stage='collecting', current_source='b',
                         done_sources=1, total_sources=2, source_status={'a': 'partial'})
         text = ui.job_text(job, {'a': 'الف', 'b': 'ب'})
-        self.assertIn('منابع انجام‌شده: ۱ از ۲', text)
+        self.assertIn('منابع تکمیل‌شده: ۱ از ۲', text)
         self.assertIn('منبع فعلی: ب', text)
         self.assertNotIn('%', text)
         self.assertNotIn('٪', text)

@@ -181,6 +181,13 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_run.add_argument('--config', default='config/sources.yaml')
     telegram_run.add_argument('--data-dir', default='data')
 
+    sources_cmd = subcommands.add_parser(
+        'sources', help='Show the effective source registry (base YAML + local overlay); read-only.')
+    sources_actions = sources_cmd.add_subparsers(dest='sources_action', required=True)
+    sources_list = sources_actions.add_parser('list', help='List sources with state and origin.')
+    sources_list.add_argument('--config', default='config/sources.yaml')
+    sources_list.add_argument('--all', action='store_true', help='Include archived sources.')
+
     ocr = subcommands.add_parser('ocr', help='Check local OCR engines; read-only, no collection.')
     ocr_kinds = ocr.add_subparsers(dest='ocr_action', required=True)
     ocr_check = ocr_kinds.add_parser('check', help='Validate each configured engine and optionally read one image.')
@@ -565,6 +572,29 @@ def run_ocr_check(args) -> int:
     return 0 if usable else 1
 
 
+def run_sources_list(args: argparse.Namespace) -> int:
+    from .source_registry import SourceRegistry, overlay_path
+    try:
+        entries = SourceRegistry(args.config).entries()
+    except ValueError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    overlay = overlay_path(args.config)
+    print(f'Base: {args.config}')
+    print(f'Overlay: {overlay if overlay is not None else "disabled"}'
+          + ('' if overlay is None or overlay.exists() else ' (not created yet)'))
+    for entry in entries:
+        source = entry.source
+        if source.archived and not args.all:
+            continue
+        state = ('archived' if source.archived else 'enabled' if source.enabled
+                 else f'disabled ({source.disabled_reason or "config"})')
+        print(f'{source.id}\t{source.source_type.value}\t{state}\t{entry.origin}\t{source.url}')
+    runnable = [e.source.id for e in entries if e.source.enabled]
+    print(f'All-enabled crawl would include {len(runnable)} source(s).')
+    return 0
+
+
 def run_telegram(args: argparse.Namespace) -> int:
     try:
         from .telegram_bot.lock import AlreadyRunningError
@@ -615,6 +645,9 @@ def main(
 
     if args.command == 'telegram':
         return run_telegram(args)
+
+    if args.command == 'sources':
+        return run_sources_list(args)
 
     if args.command == 'acceptance':
         from pathlib import Path

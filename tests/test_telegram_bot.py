@@ -5,6 +5,12 @@ token below is a syntactically valid fake and must never appear in output.
 """
 from __future__ import annotations
 
+import os
+
+# The suite never reads the owner's local registry overlay (config/sources.local.json);
+# tests that need an overlay point GATHERRADAR_SOURCE_OVERLAY at a temporary file.
+os.environ.setdefault('GATHERRADAR_SOURCE_OVERLAY', 'none')
+
 import asyncio
 import io
 import json
@@ -128,15 +134,14 @@ class OwnerMenuTests(BotCase):
         self.send(command('/start'), command('/menu'))
         first, second = self.fake.sent('sendMessage')
         self.assertEqual(first['text'], second['text'])
-        self.assertIn('رادار رویدادها', first['text'])
+        self.assertIn('به GatherRadar خوش آمدید', first['text'])
         self.assertEqual(first['parse_mode'], 'HTML')
         buttons = [b['text'] for row in json.loads(first['reply_markup'])['inline_keyboard'] for b in row]
-        self.assertIn('📚 فهرست منابع', buttons)
-        for feature, label in ui.FEATURES.items():
-            # Only genuinely unfinished items keep the «به‌زودی» mark.
-            expected = f'{label} · به‌زودی' if feature in ui.UNFINISHED else label
-            self.assertIn(expected, buttons)
-        self.assertNotIn('🔄 کرال همه منابع · به‌زودی', buttons)
+        for label in ('🔄 کرال همه منابع', '🎯 انتخاب منابع', '📋 مدیریت منابع', '📊 دریافت خروجی',
+                      '🕘 آخرین اجراها', '⚙️ تنظیمات (فقط نمایش)', '❓ راهنما'):
+            self.assertIn(label, buttons)
+        self.assertFalse(any('به‌زودی' in b for b in buttons))  # every visible action is implemented
+        self.assertNotIn('⏳ وضعیت اجرای جاری', buttons)  # shown only while a crawl runs
 
     def test_help_and_whoami(self):
         self.send(command('/help'), command('/whoami'))
@@ -152,7 +157,7 @@ class OwnerMenuTests(BotCase):
             self.assertIn(ui.e(view.name), text)
         self.assertIn('<b>اینستاگرام</b>', text)
         self.assertIn('<b>وب‌سایت</b>', text)
-        self.assertIn('⛔️ Davvvat Website — غیرفعال (فایل robots.txt سایت اجازه جمع‌آوری نمی‌دهد)', text)
+        self.assertIn('Davvvat Website — ⛔️ مسدود به‌دلیل سیاست سایت', text)
         self.assertNotIn(str(ROOT), text)
 
     def test_source_detail_and_navigation_callbacks(self):
@@ -162,17 +167,19 @@ class OwnerMenuTests(BotCase):
         self.assertIn('غیرفعال', detail)
         self.assertIn('https://davvvat.ir/', detail)
         self.assertIn('منابع ثبت‌شده', page)
-        self.assertIn('رادار رویدادها', menu)
+        self.assertIn('به GatherRadar خوش آمدید', menu)
 
-    def test_planned_feature_is_honest(self):
+    def test_old_soon_buttons_now_reopen_the_menu(self):
+        # Manage sources and Settings are implemented; an old «به‌زودی» button only reopens the menu.
         self.send(callback(ui.SOON + 'manage_sources'), callback(ui.SOON + 'settings'))
-        self.assertEqual([a['text'] for a in self.fake.sent('answerCallbackQuery')], [ui.NOT_YET] * 2)
-        self.assertEqual(self.fake.sent('editMessageText'), [])
+        menus = [p['text'] for p in self.fake.sent('editMessageText')]
+        self.assertEqual(len(menus), 2)
+        self.assertTrue(all('به GatherRadar خوش آمدید' in m for m in menus))
 
     def test_old_phase1_soon_button_reopens_the_menu_without_crawling(self):
         self.send(callback(ui.SOON + 'crawl_all'))
         menu, = self.fake.sent('editMessageText')
-        self.assertIn('رادار رویدادها', menu['text'])
+        self.assertIn('به GatherRadar خوش آمدید', menu['text'])
 
     def test_repeated_callback_is_harmless(self):
         fake = FakeTelegram(not_modified=True)

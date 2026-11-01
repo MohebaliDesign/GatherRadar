@@ -40,6 +40,7 @@ class JobRecord:
     source_status: dict = field(default_factory=dict)
     export_ok: bool | None = None
     message: str | None = None       # safe, path-free explanation
+    duration_seconds: float | None = None  # measured with a monotonic clock
 
     @classmethod
     def from_dict(cls, value: dict) -> JobRecord:

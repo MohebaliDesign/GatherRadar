@@ -1,3 +1,9 @@
+import os
+
+# The suite never reads the owner's local registry overlay (config/sources.local.json);
+# tests that need an overlay point GATHERRADAR_SOURCE_OVERLAY at a temporary file.
+os.environ.setdefault('GATHERRADAR_SOURCE_OVERLAY', 'none')
+
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse

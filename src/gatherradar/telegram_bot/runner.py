@@ -102,7 +102,13 @@ def run_bot(settings: TelegramSettings, *, config_path: str | Path = 'config/sou
         async def post_init(app: Application) -> None:
             await publish_commands(app, settings)
 
+        async def post_shutdown(app: Application) -> None:
+            handlers = app.bot_data.get('gatherradar_handlers')
+            if handlers is not None:
+                await handlers.close()  # stop progress loops; no orphaned timers
+
         application.post_init = post_init
+        application.post_shutdown = post_shutdown
         try:
             # Long polling only; stale commands queued while offline are discarded
             # so nothing old is executed after a restart.
