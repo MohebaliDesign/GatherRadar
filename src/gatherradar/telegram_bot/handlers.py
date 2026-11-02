@@ -119,7 +119,7 @@ class BotHandlers:
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if self._owner(update):
-            await update.effective_message.reply_html(ui.help_text(), reply_markup=ui.back_keyboard())
+            await update.effective_message.reply_html(ui.help_text(), reply_markup=ui.help_keyboard())
 
     async def sources(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if self._owner(update):
@@ -155,7 +155,9 @@ class BotHandlers:
         if 'menu' in action:
             await self._render(query, ui.main_text(), ui.main_keyboard(self._active()))
         elif 'help' in action:
-            await self._render(query, ui.help_text(), ui.back_keyboard())
+            await self._render(query, ui.help_text(), ui.help_keyboard())
+        elif 'about' in action:
+            await self._render(query, ui.about_text(), ui.about_keyboard())
         elif 'page' in action:
             views = self.catalog.list()
             await self._render(query, ui.sources_text(views), ui.sources_keyboard(views, int(action['page'])))

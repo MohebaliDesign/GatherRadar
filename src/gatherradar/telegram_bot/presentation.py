@@ -17,6 +17,9 @@ from .services import PlannedFeature, SourceView
 PREFIX = 'gr1'
 MAIN = f'{PREFIX}:menu'
 HELP = f'{PREFIX}:help'
+ABOUT = f'{PREFIX}:about'
+CREATOR_GITHUB = 'https://github.com/MohebaliDesign'
+REPOSITORY = 'https://github.com/MohebaliDesign/GatherRadar'
 SOURCES = f'{PREFIX}:src:list:'          # + page
 SOURCE = f'{PREFIX}:src:show:'           # + source id
 SOON = f'{PREFIX}:soon:'                 # + PlannedFeature value
@@ -45,7 +48,7 @@ ADD_BACK = f'{PREFIX}:sm:bk'
 _ID = r'[a-z0-9_]{1,40}'
 _TOKEN = r'[A-Za-z0-9_-]{4,12}'
 _CALLBACK = re.compile(
-    rf'{PREFIX}:(?:(?P<menu>menu)|(?P<help>help)|src:list:(?P<page>[0-9]{{1,3}})'
+    rf'{PREFIX}:(?:(?P<menu>menu)|(?P<help>help)|(?P<about>about)|src:list:(?P<page>[0-9]{{1,3}})'
     rf'|src:show:(?P<source>{_ID})|soon:(?P<soon>[a-z_]{{1,20}})'
     rf'|(?P<crawl_all>crawl:all)'
     rf'|sel:(?:(?P<sel_page>[0-9]{{1,3}})|t:(?P<sel_toggle>{_ID}):(?P<sel_toggle_page>[0-9]{{1,3}})'
@@ -197,22 +200,47 @@ def main_keyboard(active_job: bool = False) -> InlineKeyboardMarkup:
          InlineKeyboardButton(FEATURES[PlannedFeature.EXPORTS], callback_data=OUTPUTS)],
         [InlineKeyboardButton(FEATURES[PlannedFeature.RUNS], callback_data=RUNS + '0'),
          InlineKeyboardButton('⚙️ تنظیمات (فقط نمایش)', callback_data=SETTINGS)],
-        [InlineKeyboardButton('❓ راهنما', callback_data=HELP)],
+        [InlineKeyboardButton('❓ راهنما', callback_data=HELP),
+         InlineKeyboardButton('👤 درباره سازنده', callback_data=ABOUT)],
     ]
     return InlineKeyboardMarkup(rows)
 
 
 def help_text() -> str:
     return ('<b>❓ راهنما</b>\n'
-            '<b>کرال همه منابع:</b> همه منابع فعال را پس از تأیید شما بررسی می‌کند.\n'
-            '<b>انتخاب منابع:</b> فقط منابعی را که علامت می‌زنید بررسی می‌کند.\n'
-            '<b>مدیریت منابع:</b> افزودن منبع اینستاگرام یا وب‌سایت، غیرفعال/فعال‌سازی، حذف از فهرست و بازیابی. '
-            'حذف از فهرست برگشت‌پذیر است و رویدادها و اجراهای قبلی پاک نمی‌شوند.\n'
-            '<b>دریافت خروجی:</b> فایل Excel و فهرست فارسی رویدادهای آخرین اجرا.\n'
-            '<b>آخرین اجراها:</b> نتیجه و خروجی هر اجرا.\n\n'
-            'هر بار فقط یک کرال اجرا می‌شود. توقف، پس از پایان منبع در حال بررسی انجام می‌شود. '
-            'منابع غیرفعال، حذف‌شده یا مسدود به‌دلیل سیاست سایت هرگز اجرا نمی‌شوند.\n\n'
-            '/menu منوی اصلی · /sources فهرست منابع · /whoami شناسه شما · /cancel لغو گفتگوی جاری')
+            'GatherRadar رویدادهای منابع منتخب را جمع‌آوری می‌کند و نتیجه را برای بررسی آماده می‌کند.\n\n'
+            '<b>روند کار</b>\n'
+            '۱. «🔄 کرال همه منابع» یا «🎯 انتخاب منابع» را بزنید.\n'
+            '۲. خلاصه را ببینید و جمع‌آوری را تأیید کنید.\n'
+            '۳. پیشرفت کار، زمان سپری‌شده و در صورت وجود داده کافی، زمان باقی‌مانده تقریبی را دنبال کنید.\n'
+            '۴. فایل Excel را دریافت کنید یا رویدادها را به‌صورت متن مرور کنید.\n\n'
+            '<b>مدیریت منابع:</b> افزودن منبع اینستاگرام یا وب‌سایت، فعال یا غیرفعال کردن، '
+            'حذف از فهرست و بازیابی. حذف برگشت‌پذیر است و رویدادها و اجراهای قبلی پاک نمی‌شوند.\n'
+            '<b>آخرین اجراها:</b> نتیجه، فایل Excel و رویدادهای هر اجرای قبلی.\n\n'
+            'هر بار فقط یک جمع‌آوری انجام می‌شود و توقف پس از پایان منبع فعلی اعمال می‌شود.\n'
+            '/menu منوی اصلی · /sources فهرست منابع · /cancel لغو گفتگوی جاری\n\n'
+            'ساخته‌شده توسط Mohamad Mohebali')
+
+
+def help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('👤 درباره سازنده', callback_data=ABOUT)],
+        [InlineKeyboardButton('↩️ بازگشت به منوی اصلی', callback_data=MAIN)],
+    ])
+
+
+def about_text() -> str:
+    return ('<b>درباره سازنده</b>\n'
+            'GatherRadar ابزاری برای کشف، جمع‌آوری و بررسی رویدادها، دورهمی‌ها و تجربه‌های جدید است.\n\n'
+            'طراحی و توسعه: Mohamad Mohebali')
+
+
+def about_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('GitHub', url=CREATOR_GITHUB),
+         InlineKeyboardButton('Repository', url=REPOSITORY)],
+        [InlineKeyboardButton('↩️ بازگشت به منوی اصلی', callback_data=MAIN)],
+    ])
 
 
 def settings_text(limit: int, days: int) -> str:
