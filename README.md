@@ -1,588 +1,198 @@
-# GatherRadar 
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/MohebaliDesign/badge.svg)](https://hub.xerj.org/contributors/MohebaliDesign)
 
-Current Event review outputs require a real, source-attributed title. Blank and
-placeholder titles are excluded before new canonical persistence and from every
-new export, including re-exports of historical runs. Raw evidence and historical
-review data remain intact. See [Event admission](docs/DATA_CONTRACTS.md#event-admission)
-and [local re-export behavior](docs/LOCAL_REVIEW.md#workbook-and-human-ownership).
+# GatherRadar
 
-> A provenance-first event discovery pipeline for curated websites and Instagram sources.
+**Less scrolling. More showing up.**
 
-**Open-source recognition:** The [publisher channel recovery](https://github.com/MohebaliDesign/GatherRadar/commit/9377618ce1056c0358389bda644ede427fd7d39b) implementation was selected for inclusion in the [XERJ Corpus Hub](https://hub.xerj.org/contributors/MohebaliDesign) as a real-world reference for AI coding agents.
+GatherRadar is an open-source, local-first tool for discovering **events, workshops, exhibitions, and social gatherings** across selected websites and Instagram accounts. It brings scattered announcements into one place, identifies useful event details, and turns them into a reviewable **Persian Excel workbook** and a **Telegram experience**.
 
-GatherRadar is an early-stage Python project for answering a practical question: **what worthwhile events can a small community attend next?** It replaces repeated browsing across selected public sources with a reviewable pipeline that collects source content, preserves provenance, extracts structured facts, and classifies each observation as an **event**, a **place**, or **other**.
+Built around a simple idea: finding something worth doing shouldn't mean checking dozens of pages, decoding posters, and copying dates into a spreadsheet.
 
-The current implementation includes source collection, append-only raw storage, optional visual evidence and OCR, conservative evidence grouping, deterministic rule-based discovery, date/time/price normalization, and conservative in-memory event canonicalization. Stage 9 adds local SQLite canonical/review persistence, a Persian RTL XLSX workspace, portable CSV/JSON, and a manual Gemini handoff bundle. Google Sheets API publishing is optional; its live validation remains pending.
+**AI-assisted Event Discovery** · Source-grounded · Persian & English · No paid AI API required
 
-## Why GatherRadar
+[Get started](#quick-start) · [See what it can do](#what-you-can-do) · [Telegram bot](#telegram-bot) · [Documentation](#documentation)
 
-- **Curated, not broad crawling.** Sources are explicitly approved in `config/sources.yaml`.
-- **Deterministic discovery.** The default engine is rule-based, local, explainable, and requires no paid AI API.
-- **Provenance first.** Raw source wording and direct evidence URLs are preserved so extracted facts can be audited.
-- **Persian + English aware.** The discovery layer recognizes Persian and English event signals, dates, times, prices, locations, and related wording.
-- **Human review by design.** Unknown or ambiguous facts stay unknown instead of being invented.
-- **Offline reprocessing.** Stored observations can be re-run through discovery without contacting the original source.
+> **Open-source recognition:** GatherRadar's [publisher channel recovery implementation](https://github.com/MohebaliDesign/GatherRadar/commit/9377618ce1056c0358389bda644ede427fd7d39b) was selected for inclusion in the [XERJ Corpus Hub](https://hub.xerj.org/contributors/MohebaliDesign) as a real-world reference for AI coding agents.
 
-## Project status
+## Why GatherRadar?
 
-| Capability | Status |
-| --- | --- |
-| Curated source registry | ✅ Implemented |
-| Public website collection | ✅ Implemented |
-| Instagram collection through a dedicated Chrome profile | ✅ Implemented |
-| Append-only raw JSONL storage | ✅ Implemented |
-| Optional Instagram media capture + local OCR | ✅ Implemented |
-| Conservative evidence grouping | ✅ Implemented |
-| Event / place / other discovery | ✅ Implemented |
-| Explainable deterministic rule engine | ✅ Implemented |
-| Date / time / price normalization | ✅ Implemented; conservative offline review |
-| Duplicate grouping / canonical event drafts | ✅ Implemented; conservative offline review |
-| SQLite canonical/review history + XLSX/CSV/JSON/Gemini exports | ✅ Implemented; local validation |
-| Optional Google Sheets API adapter | ✅ Retained; live validation pending |
-| Manual refresh, immutable fact snapshots, local review carry-forward | ✅ Implemented; local validation |
-| Owner-only Telegram bot: menu, crawl (all/selected) with elapsed time and evidence-based estimates, Excel delivery, event browsing, run history | ✅ Implemented; Phase 3 local acceptance pending |
-| Telegram source management: add Instagram/website (validated, never auto-crawled), disable/enable, reversible archive | ✅ Implemented; Phase 3 local acceptance pending |
-| Scheduling, auto-start, recommendations, public dashboard | ⏸ Deferred |
+Interesting experiences are often buried in Instagram posts, event websites, carousels, and announcements with different formats. Checking every source by hand takes time; comparing dates, locations, prices, and repeated listings takes even more.
+
+GatherRadar streamlines that workflow. You choose the sources; it gathers public event information, connects each result to its evidence, and prepares an organized list that is easier to explore and verify.
+
+It is designed to **help people discover experiences**, not to automate bookings or fill missing facts with guesses.
+
+## What you can do
+
+- **Collect from multiple sources.** Follow curated Instagram accounts and supported event websites; run all enabled sources or choose specific ones.
+- **Discover events from text and images.** Analyze listings and captions, with optional local OCR for posters, carousels, and other visual evidence.
+- **Make sense of schedules.** Normalize Persian and English dates, times, locations, prices, and events with multiple sessions.
+- **Spot possible duplicates.** Group only well-supported matches; keep uncertain matches visible for review.
+- **Keep information traceable.** Retain source links and original wording, and flag incomplete or conflicting details rather than inventing them.
+- **Review everything in Excel.** Get a Persian-friendly workbook with upcoming events, schedule-review items, sources, and review history.
+- **Control the workflow from Telegram.** Start crawls, select and manage sources, follow progress, browse results, and receive Excel files from the owner-controlled bot.
+
+The default discovery pipeline uses deterministic, explainable rules. An external AI model or paid API is **not** required to run GatherRadar.
 
 ## How it works
 
-~~~text
-Curated source registry
-        ↓
-Website / Instagram collectors
-        ↓
-RawItem observations
-        ↓
-Optional media evidence + OCR
-        ↓
-EvidenceBundle
-        ↓
-0..N DiscoveryUnits
-        ↓
-DiscoveryService + RuleBasedDiscoveryProvider
-        ↓
-EventCandidate | PlaceCandidate | Other
-        ↓
-Deterministic normalization (opt-in, transient results)
-        ↓
-Conservative deduplication → canonical Event drafts (in memory)
-        ↓
-Review-window filtering → SQLite canonical/review repository
-        ↓
-XLSX review workspace + CSV/JSON + manual Gemini bundle
-        ↓
-Optional Google Sheets API adapter
-~~~
+```text
+Selected public sources (websites + Instagram)
+                    ↓
+         Collection and evidence
+       (pages, captions, optional OCR)
+                    ↓
+       Event discovery and extraction
+                    ↓
+      Dates, sessions, places, prices
+                    ↓
+     Duplicate checks and data review
+                    ↓
+         Excel + Telegram results
+```
 
-The important boundary is that **collection and discovery are separate operations**. Collection talks to a source and stores observations. Extraction/discovery reads stored data and classifies it. For Instagram, media evidence is also an explicit, separate step.
+GatherRadar separates collection from interpretation. Source observations and evidence are retained locally; extracted details can be checked against their origins. Ambiguous dates, unsupported schedules, or conflicting values stay marked for review instead of being presented as certain.
 
-By default, Instagram extraction analyzes the stored caption only. Passing `--evidence` selects already-stored caption/OCR fragments and groups only evidence that can be joined conservatively; unrelated carousel slides or reel frames are not blindly concatenated.
+## Ways to use GatherRadar
 
-## Requirements
+| Interface | Best for |
+| --- | --- |
+| **Command line** | Running collections, checking sources, and working with locally stored results. |
+| **Excel workbook** | Filtering, comparing, reviewing, and keeping a record of discovered events. |
+| **Telegram bot** | Managing sources and crawls from a phone, checking progress, and receiving results. |
 
-- Python **3.11+**
-- `pip` and a local virtual environment
-- Google Chrome for Instagram collection/authentication
-- For media OCR, at least one local OCR engine (all optional, all free and offline):
-  Tesseract with `fas` and `eng` language data, EasyOCR (`pip install -e ".[ocr-easyocr]"`),
-  or Windows OCR with an installed OCR language
+### Excel output
 
-The Python dependencies are declared in `pyproject.toml`. Tesseract is an external executable, not a Python package. If it is not on `PATH`, set `GATHERRADAR_TESSERACT_PATH` to the executable path.
+A refresh writes the review workbook to **`data/review/GatherRadar.xlsx`**. It includes the current event view, separate schedule-review information, source links, and review-related sheets. Dates are presented for Persian readers, with the original evidence retained for verification.
 
-Media OCR uses a local fallback chain, by default `tesseract,easyocr,windows`
-(`GATHERRADAR_OCR_ENGINES` changes the order or the selection). Engines that are not
-installed are skipped; a later engine runs only when an earlier one fails, reads
-nothing, or reads text the quality policy (`ocr-quality/1`) finds implausible, and
-every engine's attempt is kept as separate evidence. EasyOCR downloads
-its model files once on first use; Windows OCR is used only when the language in
-`GATHERRADAR_WINDOWS_OCR_LANGUAGE` (default `fa`) is installed. Check your machine with:
+Machine-readable CSV and JSON exports are also written under **`data/exports/`**.
 
-~~~bash
-python -m gatherradar ocr check
-python -m gatherradar ocr check --image path/to/slide.png
-~~~
+### Telegram bot
 
-## Telegram bot (Windows)
+The official bot is [**@GatherRadar_Bot**](https://t.me/GatherRadar_Bot). Its current deployment is **owner-only**, not a public, always-online bot service.
 
-`@GatherRadar_Bot` runs locally with long polling and answers only the owner. Set
-`GATHERRADAR_TELEGRAM_BOT_TOKEN` (and, after `/whoami`, `GATHERRADAR_TELEGRAM_OWNER_ID`) as
-user environment variables, then:
+From the bot, the owner can:
 
-~~~powershell
-.\.venv\Scripts\python.exe -m gatherradar telegram run
-~~~
+- Crawl all enabled sources or select individual sources.
+- Track actual elapsed time and view an estimated remaining-time range when local history supports one.
+- Browse events and schedule-review items, expand details, and open source links.
+- Receive the Excel workbook and revisit previous runs.
+- Add supported sources, pause or restore them, and archive them without deleting historical results.
 
-It crawls all enabled or selected sources after confirmation (one job at a time, through
-the same `RefreshService` as `refresh`), sends the run's Excel workbook, shows events as
-Persian messages and lists recent runs. Progress shows real elapsed time and, once local
-history supports it, a remaining-time range. «📋 مدیریت منابع» adds Instagram or supported
-website sources, pauses, archives and restores them. Changes go to the git-ignored overlay
-`config/sources.local.json`, which every CLI command reads too. To see the effective registry:
-
-~~~powershell
-.\.venv\Scripts\python.exe -m gatherradar sources list
-~~~
-
-See [`docs/TELEGRAM_BOT_SETUP.md`](docs/TELEGRAM_BOT_SETUP.md).
-
-## Final Excel acceptance (Windows)
-
-One command runs the offline tests, exactly one fresh bounded crawl
-(`refresh --all-enabled --limit 5 --days 14`) into a new isolated
-`data\qa-final-<timestamp>\` directory, and writes one review bundle to return:
-
-~~~powershell
-powershell -ExecutionPolicy Bypass -File scripts\final_excel_acceptance.ps1
-~~~
-
-See [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md).
+The bot runs locally with Telegram long polling. It answers only the configured owner while the program is running. See the [Telegram setup guide](docs/TELEGRAM_BOT_SETUP.md) for credentials, access rules, and the supported workflow.
 
 ## Quick start
 
-~~~bash
+### Requirements
+
+- **Python 3.11+** and Git
+- Internet access to the sources you choose
+- **Google Chrome** for Instagram collection and one-time account sign-in
+- Optional local OCR (Tesseract with Persian/English language data, EasyOCR, or Windows OCR) for images and posters
+
+### Install and run
+
+**Windows PowerShell**
+
+```powershell
 git clone https://github.com/MohebaliDesign/GatherRadar.git
 cd GatherRadar
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 
-python -m venv .venv
-python -m pip install -e .
-~~~
+# See the available sources
+.\.venv\Scripts\python.exe -m gatherradar sources list
 
-Activate the environment with `.venv\Scripts\activate` on Windows or `source .venv/bin/activate` on macOS/Linux.
-
-Run the normal owner workflow (collection requires source access):
-
-~~~bash
-python -m gatherradar refresh --all-enabled --days 14
-~~~
-
-Open **`data/review/GatherRadar.xlsx`**. Save and close it before the next run; supported
-review decisions/notes import automatically. CSV/JSON are in `data/exports/latest/`;
-the manual Gemini handoff is in `data/exports/gemini/latest/`. No Google account,
-Google Cloud project, API key, database server, or Office installation is required
-for local persistence/export. Instagram collection prerequisites remain separate.
-
-
-Run the test suite:
-
-~~~bash
-python -m unittest discover -s tests
-~~~
-
-The tests are designed to run offline with fixtures and fakes; they do not require Instagram credentials, Chrome, Tesseract, a cloud AI provider, or live network access.
-
-## Usage
-
-Current Event exports use the exact stored refresh time in `Asia/Tehran`: ended
-Events are excluded, ongoing ranges and supported future sessions are retained,
-and unresolved schedules go to a separate `زمان‌بندی` sheet / `schedule_review.csv`.
-Historical runs re-export against their own stored clock. Instagram `--limit 5`
-selects five recent posts/reels per profile; Evenza Platform is enabled as
-`evenza_platform_instagram`. See [reliability validation](docs/CAROUSEL_RUNTIME_VALIDATION.md).
-
-### 1. Collect from a public website
-
-Use a source ID from `config/sources.yaml`:
-
-~~~bash
-python -m gatherradar collect website davvvat_website --limit 5
-~~~
-
-Website collection uses bounded static HTTP through source adapters. It respects robots rules, validates redirects/origins, and stores one `RawItem` per supported detail page.
-
-Then classify the stored observations offline:
-
-~~~bash
-python -m gatherradar extract website davvvat_website --limit 5
-~~~
-
-### 2. Authenticate Instagram once
-
-~~~bash
-python -m gatherradar auth instagram
-~~~
-
-GatherRadar opens a visible Chrome window using a dedicated profile under `data/browser/instagram-profile/`. Log in manually in that window. GatherRadar does not ask for or store your Instagram password.
-
-### 3. Collect Instagram posts
-
-~~~bash
-python -m gatherradar collect instagram davvvat_instagram --limit 5
-~~~
-
-The browser transport is the default. The older Instaloader transport remains available only when explicitly selected with `--transport instaloader`; it is not an automatic fallback.
-
-### 4. Discover events and places from stored captions
-
-~~~bash
-python -m gatherradar extract instagram davvvat_instagram --limit 5
-~~~
-
-This command is offline and write-free. It reads the latest stored observations, runs deterministic discovery, and prints the classification, evidence signals, scores, and source-supported fields.
-
-### 5. Optional: capture visual evidence and OCR
-
-~~~bash
-python -m gatherradar evidence instagram davvvat_instagram --limit 5
-~~~
-
-This revisits already-known Instagram media through the authenticated browser profile, captures bounded image/carousel/reel evidence, and runs the local OCR chain (Tesseract first by default).
-
-Then run evidence-aware discovery:
-
-~~~bash
-python -m gatherradar extract instagram davvvat_instagram --limit 5 --evidence
-~~~
-
-Evidence-aware extraction still does not persist semantic candidates. It reads stored raw/evidence data, builds conservative discovery units, and reports the transient results.
-
-### 6. Review normalized values offline
-
-~~~bash
-python -m gatherradar extract website davvvat_website --limit 5 --normalize
-python -m gatherradar extract instagram davvvat_instagram --limit 5 --evidence --normalize
-~~~
-
-`--normalize` appends source wording beside dates, times, aware timestamps, price, currency,
-reference basis and diagnostics. It reads the same local snapshot as discovery: no collection,
-browser, OCR, network or data writes. Without the flag, extract output is unchanged.
-
-Normalization uses `persiantools>=6.2,<7.0` for Jalali conversion, parsing copies for digit
-folding, and the configured source's `ZoneInfo` timezone. The package supplies `tzdata` on
-Windows. Source date and price text, candidate IDs and provenance remain unchanged.
-Date-only values stay dates, never midnight timestamps. Relative dates use stored publication
-time, or capture time as fallback. Nearby yearless dates may infer a year within a documented
-45-day window; they carry review diagnostics and `inferred` precision, not `exact`.
-
-Prices use Decimal in their stated units: `TOMAN`, `IRR`, or explicit supported foreign
-currency codes. Explicit free means zero with no invented currency. Unknown prices stay null.
-Multi-day hours retain date bounds and daily clocks without a continuous timestamp.
-Explicit same-month day lists and validated Jabama embedded sessions produce separate
-occurrences; the parent Event does not pick an arbitrary date. Weekly recurrence
-retains its supported rule without generating future dates. Broad relative dates,
-price ranges, tiers and conditional prices remain partial/unresolved. A bare relative token also needs
-clear temporal context, so a publisher named “Today” cannot invent a date.
-See [the normalization contract](docs/DATA_CONTRACTS.md#deterministic-normalization-stage-7)
-for exact policies and [the validation report](docs/STAGE7_VALIDATION.md) for measured results.
-
-### 7. Review canonical events across sources (Stage 8)
-
-~~~bash
-python -m gatherradar canonicalize --source davvvat_website --source davvvat_instagram --limit 5
-python -m gatherradar canonicalize --all-enabled --instagram-evidence --limit 5
-~~~
-
-This is offline analysis of existing local stores: no collection, browser, OCR, network,
-or data writes. `--source` is repeatable; `--all-enabled` analyzes only enabled sources
-with local data and reports missing stores. `--limit` is 1–30 raw items **per source**.
-Website selection uses storage order; Instagram uses stored publication recency.
-Explicit selection can inspect disabled sources offline. `--config` and `--data-dir`
-work as on other commands.
-
-Instagram defaults to caption-only discovery. `--instagram-evidence` opts into Stage 5
-grouping of stored evidence with a current-caption fallback for items without usable
-media. The report identifies each source's path. Legacy `extract instagram` is unchanged.
-
-Only strong `same_event` pairs auto-group, and every member must match every other
-member. Possible duplicates remain separate review suggestions. Inferred dates,
-recurring schedules, missing titles and unresolved sessions cannot auto-group.
-Canonical drafts preserve unknown fields, membership, field provenance and conflicts;
-all default to `needs_review`.
-
-Event IDs use the earliest observed raw-item anchor (plus an evidence slot for separate
-media events), so later corroborating sources and content edits normally preserve them.
-Composition-based duplicate-group IDs are separate. Persistent split/merge identity is
-not automatically resolved. Stage 9 persists the authoritative anchors without guessing
-aliases. This `canonicalize` command itself remains write-free.
-
-See [the Stage 8 contract](docs/DATA_CONTRACTS.md#conservative-canonicalization-stage-8)
-and [actual validation](docs/STAGE8_VALIDATION.md). The bounded local sample contained
-no sufficiently strong duplicate pair; positive grouping is covered by synthetic fixtures.
-
-### 8. Refresh and review locally (Stage 9)
-
-The owner workflow is one non-interactive command:
-
-```bash
-python -m gatherradar refresh --all-enabled --days 14
+# Try one supported website source
+.\.venv\Scripts\python.exe -m gatherradar refresh --source vadoostan_website --limit 5 --days 14
 ```
 
-It ends with a publisher/channel summary (channel statuses, publisher coverage and any
-potentially reduced fields), then canonical/displayed Event counts and separate
-data-readiness counts.
+**macOS / Linux** (with the required browser and OCR tools configured separately)
 
-Local workbook schema 3 opens on the latest Events. Permanent tabs are `تاریخچه اجراها`,
-`بررسی تکراری‌ها`, and `راهنما`; `_meta` is hidden. Only the header row is frozen.
-Centralized compact styling uses Vazir for Persian/mixed content and Poppins for English
-and technical values. Install those fonts for best appearance; fonts are not bundled,
-and fallback depends on the spreadsheet client. Statuses use labelled badges/dropdowns;
-source links use short labels while retaining exact targets. CSV/JSON remain machine
-interchange formats. See [layout and schema-1 recovery](docs/LOCAL_REVIEW.md).
+```bash
+git clone https://github.com/MohebaliDesign/GatherRadar.git
+cd GatherRadar
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m gatherradar refresh --source vadoostan_website --limit 5 --days 14
+```
 
-The owner has accepted the Stage 9 architecture and workbook UX. The latest bounded
-run audits source-field completeness for every displayed Event across Vadoostan, Jabama
-Events, Jabama Experiences and one authenticated Instagram source; see
-[the acceptance report](docs/STAGE9_VALIDATION.md) and
-[source field coverage](docs/SOURCE_FIELD_COVERAGE.md).
+Once the run finishes, open `data/review/GatherRadar.xlsx`. Source availability and the number of matching events vary over time.
 
-Reading the Event columns:
+### Collect from Instagram
 
-| Column | What it holds |
+Instagram uses a **dedicated local Chrome profile**. Sign in yourself once; GatherRadar does not ask for your Instagram password.
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar auth instagram
+
+# Collect from enabled sources, including configured Instagram accounts
+.\.venv\Scripts\python.exe -m gatherradar refresh --all-enabled --limit 5 --days 14
+```
+
+For better text extraction from posters, install a supported OCR engine and check availability with `python -m gatherradar ocr check`. See the [local workflow guide](docs/LOCAL_REVIEW.md) for additional options and offline reprocessing.
+
+### Run your own Telegram instance
+
+The source includes a private, owner-controlled bot. To use it independently, create **your own bot** with [@BotFather](https://t.me/BotFather), configure your own token and Telegram user ID as environment variables, and start:
+
+```powershell
+.\.venv\Scripts\python.exe -m gatherradar telegram run
+```
+
+**Important:** The current implementation also validates the official username `GatherRadar_Bot`. If you create a separate bot, adjust `EXPECTED_USERNAME` in `src/gatherradar/telegram_bot/settings.py` to your bot's username. Never use or publish another bot owner's token. Full instructions are in [Telegram bot setup](docs/TELEGRAM_BOT_SETUP.md).
+
+## Under the hood
+
+GatherRadar is built with **Python** and a modular, source-aware pipeline. Its architecture keeps crawling, event interpretation, storage, and presentation separate so each part can be developed and tested independently.
+
+| Area | Responsibility |
 | --- | --- |
-| `مکان` | The named venue |
-| `منطقه / محله` | The approximate area or neighborhood the source states — not a precise address |
-| `آدرس` | The precise address, only when the source publishes one |
-| `زمان‌بندی اعلام‌شده` | The source's exact schedule wording, shown for multiple sessions, weekly recurrence and daily windows, or whenever the normalized date is incomplete |
-| `توضیحات / معرفی` | The source's own description, complete — not an AI summary |
-| `ظرفیت / وضعیت ثبت‌نام` | The source's availability wording, e.g. `تکمیل ظرفیت` (which also sets the Event status to sold out) |
-| `مدت` / `برگزارکننده` | A stated duration and an explicitly labelled organizer or host |
-| `آمادگی داده` | Filter ready-for-review, enrichment, schedule-review and unavailable-source records independently of your decision |
-| `دلیل بررسی` | A Persian explanation of readiness; missing optional facts are not scored as defects |
-| `جلسه‌ها` | Source-supported dated sessions with their own clock, price and availability |
+| `acquisition/` + `collectors/` | Approved-source access, website adapters, and Instagram capture. |
+| `ocr/` + `extraction/` + `grouping/` | Image text, source-grounded signals, and discovery of event candidates. |
+| `normalization/` + `deduplication/` | Dates, sessions, prices, and conservative event matching. |
+| `storage/` + `review/` + `exports/` | Local records, human review, and XLSX/CSV/JSON output. |
+| `orchestration/` | Runs, source progress, and workflow coordination. |
+| `telegram_bot/` | Owner-only commands, source management, job status, and result delivery. |
 
-Records/portable schema 3 includes structured `occurrences`, `schedule_kind`,
-`recurrence_rule`, readiness reasons and quality indicators. Historical database
-payloads gain safe empty defaults on read; Event IDs and saved owner decisions
-remain authoritative. XLSX stays schema 3 with additive snapshot columns.
-Caption descriptions are unchanged source text only for a defensible single-Event
-unit. Media roundups are kept separate. See [data-quality validation](docs/DATA_QUALITY_VALIDATION.md).
+The stack includes **Playwright/Chrome**, **SQLite**, **openpyxl**, and **python-telegram-bot**. Core event extraction is rule-based; OCR is local and optional. Detailed data contracts and implementation notes live in the linked documentation rather than this README.
 
-Listing-card facts (for example a price or sold-out badge shown only in the list) belong
-to that item and are kept with provenance; a listing and detail page that disagree leave
-the field empty and marked `تعارض داده` rather than choosing one.
+### Working with sources
 
-~~~bash
-python -m gatherradar refresh --all-enabled --days 14
-python -m gatherradar refresh --source davvvat_website --limit 2 --days 14
-python -m gatherradar refresh --all-enabled --skip-instagram-evidence
-python -m gatherradar refresh --all-enabled --stored --days 14
-~~~
+Built-in sources are defined in [`config/sources.yaml`](config/sources.yaml). Owner-added sources and their enabled/archived states are stored locally in `config/sources.local.json` and are not committed to Git.
 
-The last command uses existing local observations only: no collection, browser, OCR,
-network or Google. Normal refresh instead uses exactly this invocation's observed
-items, including unchanged items. Source failures remain visible as partial/failed runs.
-SQLite commits before exports, so an export failure can be recovered offline.
+Instagram accounts can be added through the Telegram manager. Websites must match a supported adapter before they can be crawled; adding an arbitrary URL does **not** create a new scraper. Disabled, archived, and access-policy-blocked sources are excluded from active collection.
 
-The Persian RTL workbook includes a guide, run index, persistent duplicate-review
-queue, and independent Event/Place run sheets. Dates are Jalali with computed weekdays;
-IDs, normalized values and provenance are hidden. Source/registration links are clickable.
-Dated Events sort ascending and unknown dates stay last. The default horizon is 14 days.
+## Privacy and responsible collection
 
-Event decisions/notes carry by exact stable ID. Duplicate decisions are retained without
-forcing merges. Only supported human fields import; arbitrary title/date/price edits
-remain local visual edits. Place review is run-specific; Place deduplication is absent.
-Corrupt/locked workbooks are never silently replaced. Historical snapshots are preserved.
+GatherRadar is **local-first**. Runtime captures, Chrome profiles, credentials, databases, and exports stay on the machine running the application and are excluded from Git by the project configuration.
 
-### 9. Offline recovery and exports
+Collection is limited to approved public sources and must respect source terms, robots rules, and access restrictions. Do not use it to bypass authentication or collect private accounts, messages, or unrelated personal information.
 
-~~~bash
-python -m gatherradar status
-python -m gatherradar review import
-python -m gatherradar export --run latest
-python -m gatherradar export --run <run_id>
-python -m gatherradar export csv --run latest
-python -m gatherradar export json --run latest
-python -m gatherradar export gemini --run latest
-~~~
+Results can be incomplete: source layouts change, visual text can be difficult to recognize, and some event details may be missing or contradictory. Review source evidence before relying on an event's time, place, price, or availability.
 
-Defaults: `data/state/gatherradar.sqlite3`, `data/review/GatherRadar.xlsx`,
-`data/exports/`. Override with `--db`, `--workbook`, `--export-dir`, or `--data-dir`.
-Exports have `latest/` and `runs/<run_id>/` versions. CSV uses UTF-8 BOM and protects
-formula-like text; JSON retains exact strings and structured arrays. Re-export reads
-SQLite only. Keep the database local with a single writer; review/export files may
-optionally be kept in a synced folder.
+## For developers
 
-See [local review and recovery](docs/LOCAL_REVIEW.md),
-[the Stage 9 data contract](docs/DATA_CONTRACTS.md#local-review-and-persistence-stage-9),
-and [actual validation](docs/STAGE9_VALIDATION.md).
+The codebase is open to exploration and contributions. To run the offline regression suite:
 
-### 10. Optional Gemini handoff
+```bash
+python -m unittest discover -s tests
+```
 
-Want a Google Sheet through your existing Gemini browser workflow?
-
-1. Run GatherRadar.
-2. Open `data/exports/gemini/latest/`.
-3. Open Gemini manually and upload the bundle's CSV, JSON and manifest files.
-4. Give it `GEMINI_INSTRUCTIONS.md` and ask it to create/format the review Sheet,
-   if that capability is available in your account.
-5. Check row counts, IDs and source links before relying on the result.
-
-This is manual, one-way publishing. GatherRadar needs no Gemini API or Google Cloud
-setup for it; you may need a signed-in Gemini/Google browser session. Nothing is uploaded
-or synchronized back automatically. Use the local XLSX for persistent review state.
-See [Gemini workflow and factual-integrity safeguards](docs/GEMINI_HANDOFF.md).
-
-### Optional Google Sheets API integration
-
-~~~bash
-python -m pip install -e ".[google-sheets]"
-python -m gatherradar auth google --credentials "path/to/credentials.json"
-python -m gatherradar sheets setup
-python -m gatherradar sheets status
-python -m gatherradar sheets export --run latest
-python -m gatherradar sheets sync --all-enabled --days 14
-python -m gatherradar sheets refresh --source davvvat_website --limit 2
-~~~
-
-These explicit Google commands retain the prior Desktop OAuth/immutable Sheets adapter.
-They are separate from the default local workflow and still await live validation.
-See [optional setup](docs/GOOGLE_SHEETS_SETUP.md). Missing Google setup does not block
-local Stage 9. No automatic synchronization of Google/Gemini edits into SQLite exists.
-
-## Discovery model
-
-The discovery layer is provider-neutral:
-
-~~~text
-RawItem / DiscoveryUnit
-        ↓
-ExtractionInput
-        ↓
-DiscoveryProvider
-        ↓
-DiscoveryFacts
-        ↓
-DiscoveryService
-        ↓
-EventCandidate | PlaceCandidate | Other
-~~~
-
-The shipped provider is `RuleBasedDiscoveryProvider` (`rule-based/1`). It combines explicit signals rather than relying on a single keyword. For example, event terminology normally needs supporting date, time, registration, invitation, or venue context before content is classified as an event.
-
-The service layer owns deterministic validation, provenance, candidate mapping, and stable candidate IDs. The provider only decides the semantic type and source-supported facts. This keeps the architecture open to future discovery providers without coupling the rest of the pipeline to a model or vendor.
-
-Current candidate fields can include titles, categories, source date text, venue/address/city, event format, price text, registration URL, summary, language, and the direct evidence URL. Discovery leaves normalized values unset; the separate opt-in normalization layer produces a copy with supported structured values and diagnostics.
-
-For the full record shapes and evidence/grouping rules, see [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md).
-
-## Evidence and grouping
-
-GatherRadar keeps original source text separate from visual evidence:
-
-- `CAPTION` — original Instagram caption
-- `WEBSITE_TEXT` — primary text selected from a supported website detail page
-- `IMAGE_OCR` — OCR from a single image
-- `CAROUSEL_SLIDE_OCR` — OCR from an ordered carousel slide
-- `REEL_FRAME_OCR` — OCR from a timestamped reel frame
-
-`RawItem.raw_text` is never replaced with OCR output. Evidence is stored separately with artifact and OCR provenance.
-
-The current grouping strategy, `conservative/2`, prefers false negatives over unsafe merges. New anchors split groups; only adjacent structured supporting evidence can attach when there is no competing topic or recognized conflict. A media fragment that only repeats an anchor's exact title within the same post joins that anchor instead of becoming a parallel candidate. Ambiguous fragments remain separate.
-
-## Source registry
-
-All approved sources live in [`config/sources.yaml`](config/sources.yaml). The registry currently contains website and Instagram sources and can carry per-source hints such as timezone, locale, city, username, website adapter, content selector, and supported detail-path prefixes.
-
-For ordinary list/detail websites, the generic website adapter can often be configured without changing orchestration or discovery. Sites with unusual layouts should get a small dedicated `WebsiteAdapter` plus sanitized fixtures and tests.
-
-Website sources currently configured: Davvvat, Vadoostan, Jabama Events and Jabama
-Experiences (`jabama_experiences_website`, the public `تجربه‌ها` listing, sharing the
-Jabama adapter). Davvvat's robots.txt disallows the GatherRadar user agent (re-checked
-2026-09-27), so `davvvat_website` is kept but `enabled: false`; `--all-enabled` skips it
-and it is never bypassed. Davvvat Instagram is unaffected. Commands below that name
-`davvvat_website` illustrate the syntax; use an enabled website source.
-
-Sources are **channels** of a publisher (`publisher_key`). `refresh` reports every
-channel's status (`success`, `empty`, `unavailable`, `policy_blocked`,
-`access_restricted`, `temporary_failure`, `parse_failure`, `stored`) and a separate
-`publisher_coverage`: a publisher is covered when any channel contributed this run.
-**Publisher coverage ≠ every channel available.** Davvvat is covered through Instagram;
-its website channel is `policy_blocked` and the run lists the fields that may therefore
-be missing. Disabled channels take `disabled_reason: robots | terms | owner`. See
-[publisher channels and recovery](docs/PUBLISHER_RECOVERY.md).
-
-GatherRadar is intentionally **not** a general-purpose web crawler. JavaScript-only, authenticated, unsupported, or structurally incompatible websites may require a new adapter or may remain out of scope.
-
-## Repository structure
-
-~~~text
-GatherRadar/
-├── config/
-│   └── sources.yaml              # curated source registry
-├── docs/
-│   └── DATA_CONTRACTS.md         # record, evidence, grouping, and provenance contracts
-├── src/gatherradar/
-│   ├── collectors/               # website + Instagram acquisition boundaries
-│   ├── domain/                   # Source, RawItem, evidence, and candidate models
-│   ├── extraction/               # provider interface, signals, rules, fields, service
-│   ├── grouping/                 # evidence selection + conservative grouping
-│   ├── normalization/            # deterministic dates, times, prices and diagnostics
-│   ├── deduplication/            # pair decisions, complete-link groups, canonical drafts
-│   ├── ocr/                      # OCR provider boundary, local fallback chain: Tesseract, EasyOCR, Windows OCR
-│   ├── orchestration/            # collection/evidence/discovery run coordination
-│   ├── review/                   # shared schema, interfaces and owner workflow
-│   ├── exports/                  # XLSX, CSV/JSON and manual Gemini bundle
-│   ├── sheets/                   # optional OAuth/API adapter
-│   ├── storage/                  # JSONL audit, media and SQLite canonical/review state
-│   ├── config.py                 # source registry loading/validation
-│   └── cli.py                    # command-line interface
-├── tests/
-│   └── fixtures/                 # sanitized offline fixtures
-├── PROJECT_CONTEXT.md            # product direction and architecture brief
-├── pyproject.toml
-└── README.md
-~~~
-
-### Runtime data
-
-Local runtime state is written below `data/` and is ignored by Git:
-
-~~~text
-data/
-├── raw/                          # append-only collected observations
-├── evidence/                     # append-only evidence/OCR records
-├── media/                        # content-addressed captured artifacts
-├── browser/instagram-profile/    # dedicated persistent Chrome profile
-├── state/gatherradar.sqlite3     # canonical/review state
-├── review/GatherRadar.xlsx       # default human workspace
-├── exports/                      # CSV/JSON and Gemini latest + per-run bundles
-├── auth/google/token.json        # optional personal Google token; never commit
-├── google/sheets_state.json      # private workbook configuration
-└── runs/                         # lightweight run manifests; no raw payloads
-~~~
-
-Do not commit browser profiles, cookies, sessions, raw private exports, or credentials.
-
-## Design principles
-
-1. **Source-supported facts only.** Missing facts stay unknown.
-2. **Traceability over convenience.** Every semantic result should remain connected to the source observation/evidence that produced it.
-3. **Explicit side effects.** Collection, evidence acquisition, and offline discovery are separate commands.
-4. **Deterministic core.** The current discovery engine is reviewable, local, free, and has no AI SDK dependency.
-5. **Adapter isolation.** Source-specific layout logic stays behind collector/adapter boundaries.
-6. **Human review is part of the MVP.** The goal is trustworthy shortlisting, not autonomous publishing.
-
-## Roadmap
-
-The intended MVP continuation is:
-
-1. Review Stage 7 date/time/price normalization; category/location normalization remains deferred.
-2. Review Stage 8 conservative event groups and possible-duplicate suggestions; Place deduplication remains deferred.
-3. Review local Stage 9 persistence/export; optional live Google validation is separate.
-4. Pilot the manual review workflow and refine measured extraction errors.
-5. Evaluate broader delivery only after the owner validates the discovery workflow; no scheduler is implemented.
-
-Telegram publishing to the community (beyond the owner-only bot), recommendations, community voting, automated booking, a public dashboard, and a multi-user SaaS product are intentionally outside the current implementation.
-
-## Safety and collection boundaries
-
-GatherRadar is built around approved public sources. The project should not bypass authentication, CAPTCHAs, access controls, anti-bot protections, or platform restrictions. Website collection follows robots directives and bounded request behavior; Instagram uses an ordinary visible browser session authenticated manually by the owner.
-
-The project does not need followers, comments, direct messages, private profiles, or unrelated personal data to discover events.
+If you find a bug, have an idea for a supported source, or want to contribute an improvement, open a [GitHub Issue](https://github.com/MohebaliDesign/GatherRadar/issues) or submit a pull request. Keep credentials and captured private data out of commits.
 
 ## Documentation
 
-- [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) — product goals, boundaries, and longer-term MVP architecture
-- [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md) — detailed data, evidence, storage, grouping, and provenance contracts
-- [`docs/LOCAL_REVIEW.md`](docs/LOCAL_REVIEW.md) — local workflow, formats and recovery
-- [`docs/GEMINI_HANDOFF.md`](docs/GEMINI_HANDOFF.md) — optional manual publishing
-- [`docs/SOURCE_FIELD_COVERAGE.md`](docs/SOURCE_FIELD_COVERAGE.md) — which facts each source exposes and the per-Event field audit
-- [`docs/STAGE9_VALIDATION.md`](docs/STAGE9_VALIDATION.md) — Stage 9 acceptance evidence
-- [`docs/FINAL_EXCEL_ACCEPTANCE.md`](docs/FINAL_EXCEL_ACCEPTANCE.md) — final Excel closure, case results and the one-run local acceptance
-- [`docs/TELEGRAM_BOT_SETUP.md`](docs/TELEGRAM_BOT_SETUP.md) — owner-only Telegram bot: architecture, security and Windows setup
-- [`docs/PUBLISHER_RECOVERY.md`](docs/PUBLISHER_RECOVERY.md) — publisher/channel/strategy model, coverage and Davvvat channel investigation
-- [`config/sources.yaml`](config/sources.yaml) — currently approved sources and adapter configuration
+- [Telegram bot — setup and usage](docs/TELEGRAM_BOT_SETUP.md)
+- [Local review and Excel workflow](docs/LOCAL_REVIEW.md)
+- [Data model and provenance contracts](docs/DATA_CONTRACTS.md)
+- [Source acquisition and channel coverage](docs/PUBLISHER_RECOVERY.md)
 
-## License
+## Creator and license
 
-GatherRadar is licensed under the [MIT License](LICENSE).
+**Created by [Mohamad Mohebali](https://github.com/MohebaliDesign)** — a product-design-led project combining event discovery, user-centered workflows, and AI-assisted development.
+
+GatherRadar is released under the **[MIT License](LICENSE)**. Reuse and redistribution are permitted under its terms, including preservation of the copyright and license notice.
+
+Copyright © 2026 Mohamad Mohebali.
